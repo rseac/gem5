@@ -53,17 +53,21 @@ system.mem_ctrl.dram = DDR3_1600_8x8()
 system.mem_ctrl.dram.range = system.mem_ranges[0]
 system.mem_ctrl.port = system.membus.mem_side_ports
 
+import argparse
+
+# Parse arguments
+parser = argparse.ArgumentParser(description='Run gem5 simulation with ARA latencies.')
+parser.add_argument('cmd', type=str, help='Path to the binary to execute')
+args = parser.parse_args()
+
 # Create the process
 process = Process()
-# Use a dummy workload or allow user to pass binary
-binary = 'rvv_test.bin'
-# Just a placeholder, needs actual binary path to run
-process.cmd = [binary]
+process.cmd = [args.cmd]
 system.cpu.workload = process
 system.cpu.createThreads()
 
 # Set up the system workload (Critical fix for !seWorkload error)
-system.workload = SEWorkload.init_compatible(binary)
+system.workload = SEWorkload.init_compatible(args.cmd)
 
 # Instantiate the system
 root = Root(full_system=False, system=system)
