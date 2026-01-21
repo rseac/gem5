@@ -51,6 +51,24 @@ Exiting @ tick ...
 Total Execution Cycles: 12345
 ```
 
+## Configured Latencies
+
+The following table lists the specific latencies implemented in `AraConfig.py`, derived from the ARA hardware documentation:
+
+| Operation Class | Latency (Cycles) | Notes |
+| :--- | :--- | :--- |
+| **Integer Arithmetic** | 1 | Add, Sub, Logic, Shift |
+| **Integer Multiply** | 1 | Pipelined |
+| **Integer Divide** | 32 | Serial divider (avg) |
+| **Float Add / Mul / FMA** | 5 | Conservative estimate for 64-bit |
+| **Float Divide / Sqrt** | 10 | Iterative |
+| **Float Conversion** | 2 | Int-to-Float, Float-to-Int |
+| **Float Compare** | 1 | Min, Max, Eq, Lt |
+| **Reductions** | 1 | Vector reductions |
+| **Load / Store** | 1 | Address Generation Unit (AGU) latency only |
+
+*Note: VLEN (Vector Length) does not affect these pipeline latencies.*
+
 ## Modifying Latencies
 
 If you need to adjust the latencies (e.g., to test optimization sensitivity):
