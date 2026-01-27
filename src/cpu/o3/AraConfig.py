@@ -71,7 +71,7 @@ class AraSIMD_Unit(FUDesc):
         # ARA Floating Point Unit (FPU) latencies are higher than integer units.
         # We use the conservative maximum latency (for 64-bit elements) of 5 cycles.
         OpDesc(opClass="SimdFloatAdd", opLat=5),
-        OpDesc(opClass="SimdFloatAlu", opLat=5),
+        OpDesc(opClass="SimdFloatAlu", opLat=5), # Explicitly set to 5
         OpDesc(opClass="SimdFloatMult", opLat=5),
         OpDesc(opClass="SimdFloatMultAcc", opLat=5),
         OpDesc(opClass="SimdFloatMatMultAcc", opLat=5),
