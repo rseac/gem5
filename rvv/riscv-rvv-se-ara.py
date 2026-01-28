@@ -71,22 +71,16 @@ import gem5.resources.resource as res
 from gem5.resources.resource import obtain_resource
 from gem5.simulate.simulator import Simulator
 from gem5.utils.requires import requires
-from cpu.o3.AraConfig import AraFUPool
+from cpu.o3.AraConfig import AraO3CPU
+
 
 class RVVCore(BaseCPUCore):
     def __init__(self, elen, vlen, cpu_id):
-        super().__init__(core=RiscvO3CPU(cpu_id=cpu_id), isa=ISA.RISCV)
+        # Use our custom AraO3CPU which handles FUPool configuration automatically
+        super().__init__(core=AraO3CPU(cpu_id=cpu_id), isa=ISA.RISCV)
         self.core.isa[0].elen = elen
         self.core.isa[0].vlen = vlen
-        # Explicitly assign the ARA Functional Unit Pool to the core
-        # Create a single pool instance to be shared
-        ara_pool = AraFUPool()
-        self.core.fuPool = ara_pool
-        
-        # Vital: Assign the same pool to the Instruction Queues (IQ)
-        # Otherwise, IQ uses DefaultFUPool which has standard latencies
-        for iq in self.core.instQueues:
-            iq.fuPool = ara_pool
+
 
 
 requires(isa_required=ISA.RISCV)
@@ -152,6 +146,20 @@ import m5 # For curTick()
 
 simulator = Simulator(board=board, full_system=False)
 print("Beginning simulation!")
+
+# Verification: Print the FUPool type for the first core to confirm ARA usage
+core = board.get_processor().get_cores()[0].core
+print(f"Core 0 FUPool: {type(core.fuPool).__name__}")
+
+# Inspect the ARA SIMD Unit (Index 5) for verification
+try:
+    ara_unit = core.fuPool.FUList[5]
+    print(f"Inspecting FUList[5] ({type(ara_unit).__name__}):")
+    for i, op in enumerate(ara_unit.opList):
+        op_name = op.opClass
+        print(f"  Item {i}: Name={op_name} Latency={op.opLat}")
+except Exception as e:
+    print(f"  Could not inspect FUList[5]: {e}")
 
 simulator.run()
 

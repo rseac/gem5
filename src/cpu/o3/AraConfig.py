@@ -149,3 +149,32 @@ class AraFUPool(FUPool):
         WritePort(),    # Memory Write Ports
         RdWrPort(),     # Read/Write Ports
     ]
+
+try:
+    from m5.objects import RiscvO3CPU
+    class AraO3CPU(RiscvO3CPU):
+        """
+        Custom RiscvO3CPU that automatically uses the AraFUPool.
+        
+        This class handles the boiler-plate of assigning the custom functional unit pool
+        to both the Core (backend) and the Instruction Queues (IQ), which is required
+        because the standard IQUnit defaults to a standard FUPool.
+        """
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            
+            # Create a dedicated ARA FUPool for this core
+            self.ara_fu_pool = AraFUPool()
+            
+            # Assign to the Core (for Execute stage usage)
+            self.fuPool = self.ara_fu_pool
+            
+            # Assign to InstQueues (for Issue logic usage)
+            # We must iterate because instQueues is a VectorParam
+            for iq in self.instQueues:
+                iq.fuPool = self.ara_fu_pool
+
+except ImportError:
+    # RiscvO3CPU might not be available if not building for RISCV or if running 
+    # check scripts. We pass to avoid breaking imports in those cases.
+    pass
