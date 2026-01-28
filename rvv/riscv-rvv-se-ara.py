@@ -71,16 +71,22 @@ import gem5.resources.resource as res
 from gem5.resources.resource import obtain_resource
 from gem5.simulate.simulator import Simulator
 from gem5.utils.requires import requires
-from cpu.o3.AraConfig import AraO3CPU
-
+from cpu.o3.AraConfig import AraFUPool
 
 class RVVCore(BaseCPUCore):
     def __init__(self, elen, vlen, cpu_id):
-        # Use our custom AraO3CPU which handles FUPool configuration automatically
-        super().__init__(core=AraO3CPU(cpu_id=cpu_id), isa=ISA.RISCV)
+        super().__init__(core=RiscvO3CPU(cpu_id=cpu_id), isa=ISA.RISCV)
         self.core.isa[0].elen = elen
         self.core.isa[0].vlen = vlen
-
+        # Explicitly assign the ARA Functional Unit Pool to the core
+        # Create a single pool instance to be shared
+        ara_pool = AraFUPool()
+        self.core.fuPool = ara_pool
+        
+        # Vital: Assign the same pool to the Instruction Queues (IQ)
+        # Otherwise, IQ uses DefaultFUPool which has standard latencies
+        for iq in self.core.instQueues:
+            iq.fuPool = ara_pool
 
 
 requires(isa_required=ISA.RISCV)
