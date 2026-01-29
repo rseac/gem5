@@ -56,7 +56,6 @@ import os
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../src'))
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '/gem5/src'))
 
-from m5.objects import RiscvO3CPU
 
 from gem5.components.boards.simple_board import SimpleBoard
 from gem5.components.cachehierarchies.classic.private_l1_private_l2_cache_hierarchy import (
@@ -71,22 +70,15 @@ import gem5.resources.resource as res
 from gem5.resources.resource import obtain_resource
 from gem5.simulate.simulator import Simulator
 from gem5.utils.requires import requires
-from cpu.o3.AraConfig import AraFUPool
+# from cpu.o3.AraConfig import AraFUPool # Removed
 
 class RVVCore(BaseCPUCore):
     def __init__(self, elen, vlen, cpu_id):
-        super().__init__(core=RiscvO3CPU(cpu_id=cpu_id), isa=ISA.RISCV)
+        # Use our custom SelectedCPU which handles FUPool configuration automatically
+        super().__init__(core=SelectedCPU(cpu_id=cpu_id), isa=ISA.RISCV)
         self.core.isa[0].elen = elen
         self.core.isa[0].vlen = vlen
-        # Explicitly assign the ARA Functional Unit Pool to the core
-        # Create a single pool instance to be shared
-        ara_pool = AraFUPool()
-        self.core.fuPool = ara_pool
-        
-        # Vital: Assign the same pool to the Instruction Queues (IQ)
-        # Otherwise, IQ uses DefaultFUPool which has standard latencies
-        for iq in self.core.instQueues:
-            iq.fuPool = ara_pool
+
 
 
 requires(isa_required=ISA.RISCV)
@@ -115,8 +107,19 @@ parser.add_argument("-d", "--l1d", required=False, type=str, default="32KiB")
 parser.add_argument("-2", "--l2", required=False, type=str, default="512KiB")
 
 parser.add_argument("-p", "--parms", required=False, type = str, default='2048')
+parser.add_argument("--cpu-type", type=str, default="AraO3", choices=["AraO3", "AraMinor"], 
+                    help="CPU model to use: AraO3 (O3CPU) or AraMinor (MinorCPU)")
 
 args = parser.parse_args()
+
+# Import the selected CPU model
+if args.cpu_type == "AraO3":
+    from cpu.o3.AraConfig import AraO3CPU as SelectedCPU
+elif args.cpu_type == "AraMinor":
+    from cpu.minor.AraMinorConfig import AraMinorCPU as SelectedCPU
+else:
+    print(f"Error: Unknown CPU type {args.cpu_type}")
+    sys.exit(1)
 
 cache_hierarchy = PrivateL1PrivateL2CacheHierarchy(
     #l1d_size="32KiB", l1i_size="32KiB", l2_size="512KiB"
@@ -153,19 +156,6 @@ import m5 # For curTick()
 simulator = Simulator(board=board, full_system=False)
 print("Beginning simulation!")
 
-# Verification: Print the FUPool type for the first core to confirm ARA usage
-core = board.get_processor().get_cores()[0].core
-print(f"Core 0 FUPool: {type(core.fuPool).__name__}")
-
-# Inspect the ARA SIMD Unit (Index 5) for verification
-try:
-    ara_unit = core.fuPool.FUList[5]
-    print(f"Inspecting FUList[5] ({type(ara_unit).__name__}):")
-    for i, op in enumerate(ara_unit.opList):
-        op_name = op.opClass
-        print(f"  Item {i}: Name={op_name} Latency={op.opLat}")
-except Exception as e:
-    print(f"  Could not inspect FUList[5]: {e}")
 
 simulator.run()
 
