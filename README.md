@@ -23,8 +23,24 @@ If you wish to examine the core modifications that enable this dynamic vector la
 *   `src/cpu/minor/execute.cc`: MinorCPU issue-stage intersection.
 *   `src/cpu/o3/inst_queue.cc`: O3CPU dependency calculation intersection.
 
+In addition to dynamic execution latency logic, ARA-specific hardware configuration models have been built in Python to parameterize the O3 and Minor simulators:
+*   `src/cpu/o3/AraConfig.py`: Defines the execution units and default latency mappings for the ARA Out-of-Order model (`AraO3CPU`). It configures an `AraFUPool` allocating multiple specialized subunits natively handling the `issueLat` and structural limits. For example, it assigns `count=4` to general `AraSIMD_Unit` blocks to mimic the 4-lane hardware boundaries.
+*   `src/cpu/minor/AraMinorConfig.py`: Defines the execution units and default latency mappings for the ARA In-Order model (`AraMinorCPU`). It instantiates localized `MinorOpClassSet` groups representing logical functions (like `AraMinorIntDivVectorFU` which strictly processes `SimdDiv` Operations), allocating their baseline latency parameter structures.
+
 ## Running ARA Benchmarks
 You can execute RISC-V vector binaries under these ARA-modeled processors using the provided testing configuration scripts inside the `rvv/` folder.
+
+**Simulation Script (`rvv/riscv-rvv-se-ara.py`) Arguments:**
+The execution script supports several configuration parameters for tailoring the simulated ARA environment:
+*   `resource`: (Positional) The compiled RISC-V binary to execute.
+*   `--cpu-type`: System CPU model to use (`AraO3` or `AraMinor`). Defaults to `AraO3`.
+*   `-v, --vlen`: Vector Length (VLEN) in bits. Defaults to `256`.
+*   `-e, --elen`: Vector Extension Length (ELEN) in bits. Defaults to `64`.
+*   `-c, --cores`: Number of cores to simulate. Defaults to `1`.
+*   `-d, --l1d`: Size of the Level 1 Data Cache. Defaults to `32KiB`.
+*   `-2, --l2`: Size of the Level 2 Cache. Defaults to `512KiB`.
+*   `-p, --parms`: Execution arguments to pass to the running binary (e.g., matrix elements). Defaults to `2048`.
+
 
 Example:
 ```bash
