@@ -1,4 +1,41 @@
-# The gem5 Simulator
+# The gem5 Simulator (ARA Vector Timing Model Extension)
+
+This repository is a modified fork of [gem5](https://www.gem5.org/) that incorporates dynamic operation latency bounds mimicking the **ARA RISC-V Vector Architecture**.
+
+## Vanilla gem5 vs. ARA Timing Model
+
+In the default gem5 repository, functional unit latencies (`opLat`) are strictly static. When creating a CPU model config (like `O3CPU` or `MinorCPU`), functional units are assigned a generic, unchanging latency for classes of operations (e.g. `SimdFloatAdd` = 5 cycles) regardless of how much work that operation actually performs.
+
+**The ARA Modification:**
+Pipelined Vector Hardware processors process a finite amount of data per clock tick (e.g. one 64-bit element per lane per cycle). That means the time it takes an instruction to leave a functional pipeline depends *entirely* on the size of the elements passing through it. 
+
+To model this, we introduced the `dynamicOpLatency` interface directly into gem5's `StaticInst` layer and hooked it into the Vector (`vtype`) CSRs.
+
+### How it Works
+When the O3 or Minor CPU schedulers fetch an instruction, they intercept the standard latency fetch and instead dynamically evaluate:
+1.  **SEW (Standard Element Width):** Floating point calculations scale latency dynamically according to the element size requested (`vsew + 2`). Unpipelined elements like `__rvv_f64` divisions (`SimdDivOp`) take significantly longer (`4 << vsew`) than 16-bit half-precision calculations.
+2.  **LMUL (Length Multiplier):** We rely on gem5's decoder which automatically splits `LMUL > 1` macro instructions into `num_microops` based on the grouping limits. These micro-ops individually pass through the functional units incurring the `dynamicOpLatency`, scaling the structural hazards and pipeline throughput completely organically.
+
+### Codebase Changes
+If you wish to examine the core modifications that enable this dynamic vector latency, see the following files:
+*   `src/cpu/static_inst.hh`: The `dynamicOpLatency` virtual dispatch interface.
+*   `src/arch/riscv/insts/vector.hh`: The RISC-V overriding logic evaluating the `ThreadContext->PCState` for SEW bounds.
+*   `src/cpu/minor/execute.cc`: MinorCPU issue-stage intersection.
+*   `src/cpu/o3/inst_queue.cc`: O3CPU dependency calculation intersection.
+
+## Running ARA Benchmarks
+You can execute RISC-V vector binaries under these ARA-modeled processors using the provided testing configuration scripts inside the `rvv/` folder.
+
+Example:
+```bash
+./build/RISCV/gem5.opt rvv/riscv-rvv-se-ara.py rvv/rvv_arith_latency_64.bin --cpu-type AraMinor
+```
+
+For more details on crafting and verifying tests that empirically highlight the pipeline depths scaling natively with Element Widths (SEW), see the testing documentation at [rvv/README.md](rvv/README.md).
+
+---
+
+## Original gem5 Repository Information
 
 This is the repository for the gem5 simulator. It contains the full source code
 for the simulator and all tests and regressions.
