@@ -400,6 +400,17 @@ class StaticInst : public RefCounted, public StaticInstFlags
         return Cycles(0);
     }
 
+    /**
+     * Chaining Latency. Returns the cycle when the first result elements
+     * are ready for consumption by dependent instructions.
+     * Defaults to dynamicOpLatency() for non-vector instructions.
+     */
+    virtual Cycles
+    chainingLatency(ThreadContext *tc) const
+    {
+        return dynamicOpLatency(tc);
+    }
+
     /// Return logical index (architectural reg num) of i'th destination reg.
     /// Only the entries from 0 through numDestRegs()-1 are valid.
     const RegId &

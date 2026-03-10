@@ -195,6 +195,94 @@ class VectorMicroInst : public RiscvMicroInst
     {
         this->flags[IsVector] = true;
     }
+
+    Cycles
+    dynamicOpLatency(ThreadContext *tc) const override
+    {
+        // For VectorMicroInst, the latency depends on the number of elements
+        // processed by this micro-op and the available lanes.
+        // ARA typically has 2 lanes (128-bit datapath).
+        const int NrLanes = 2;
+        const int ELEN = 64;
+
+        // Number of elements processed per cycle per lane is (ELEN / sew)
+        // Total elements per cycle = NrLanes * (ELEN / sew)
+        int elements_per_cycle = NrLanes * (ELEN / sew);
+        if (elements_per_cycle == 0) elements_per_cycle = 1;
+
+        // Cycles for throughput = ceil(microVl / elements_per_cycle)
+        int throughput_cycles = (microVl + elements_per_cycle - 1) /
+                                 elements_per_cycle;
+
+        // Pipeline latency depends on OpClass
+        int pipeline_lat = 1;
+        switch (opClass()) {
+          case SimdFloatAddOp:
+          case SimdFloatAluOp:
+          case SimdFloatMultOp:
+          case SimdFloatMultAccOp:
+          case SimdFloatMatMultAccOp:
+            pipeline_lat = 5; // ARA 64-bit FP pipeline depth
+            break;
+          case SimdFloatCvtOp:
+            pipeline_lat = 2;
+            break;
+          case SimdFloatDivOp:
+          case SimdFloatSqrtOp:
+            pipeline_lat = 10;
+            break;
+          case SimdMultOp:
+          case SimdMultAccOp:
+            pipeline_lat = 1; // ARA 64-bit Int Mul is 1 cycle
+            break;
+          case SimdDivOp:
+            pipeline_lat = 32;
+            break;
+          default:
+            pipeline_lat = 1; // Default for Alu, Shift, etc.
+            break;
+        }
+
+        // Total latency = Pipeline depth + (Throughput cycles - 1)
+        // We subtract 1 because the first element group is included in the
+        // pipeline depth.
+        return Cycles(pipeline_lat + (throughput_cycles - 1));
+    }
+
+    Cycles
+    chainingLatency(ThreadContext *tc) const override
+    {
+        // Chaining latency in ARA allows a consumer to start after the
+        // producer's pipeline stages are complete (first element ready).
+        // We add a small constant overhead (2 cycles) to model VRF write
+        // and hazard synchronization delays seen in hardware.
+        int pipeline_lat = 1;
+        switch (opClass()) {
+          case SimdFloatAddOp:
+          case SimdFloatAluOp:
+          case SimdFloatMultOp:
+          case SimdFloatMultAccOp:
+          case SimdFloatMatMultAccOp:
+            pipeline_lat = 5;
+            break;
+          case SimdFloatCvtOp:
+            pipeline_lat = 2;
+            break;
+          case SimdFloatDivOp:
+          case SimdFloatSqrtOp:
+            pipeline_lat = 10;
+            break;
+          case SimdDivOp:
+            pipeline_lat = 32;
+            break;
+          default:
+            pipeline_lat = 1;
+            break;
+        }
+
+        const int CHAINING_OVERHEAD = 2;
+        return Cycles(pipeline_lat + CHAINING_OVERHEAD);
+    }
 };
 
 class VectorNopMicroInst : public RiscvMicroInst

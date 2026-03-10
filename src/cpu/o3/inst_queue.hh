@@ -181,6 +181,24 @@ class InstructionQueue
     // Typedef of iterator through the list of instructions.
     typedef typename std::list<DynInstPtr>::iterator ListIt;
 
+    /** Wake Dependents event class for chaining. */
+    class WakeDependents : public Event
+    {
+      private:
+        /** Executing instruction. */
+        DynInstPtr inst;
+
+        /** Pointer back to the instruction queue. */
+        InstructionQueue *iqPtr;
+
+      public:
+        /** Construct a wake dependents event. */
+        WakeDependents(const DynInstPtr &_inst, InstructionQueue *iq_ptr);
+
+        virtual void process();
+        virtual const char *description() const;
+    };
+
     /** FU completion event class. */
     class FUCompletion : public Event
     {

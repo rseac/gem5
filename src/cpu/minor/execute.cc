@@ -686,6 +686,13 @@ Execute::issue(ThreadID thread_id)
                         inst_opLat = dyn_lat;
                     }
 
+                    Cycles inst_chainingLat = inst_opLat;
+                    if (auto chain_lat = inst->staticInst->chainingLatency(
+                            cpu.getContext(thread_id));
+                        chain_lat > Cycles(0)) {
+                        inst_chainingLat = chain_lat;
+                    }
+
                     if (timing && timing->suppress) {
                         DPRINTF(MinorExecute,
                                 "Can't issue inst: %s as extra"
@@ -795,7 +802,7 @@ Execute::issue(ThreadID thread_id)
                          *  busy */
                         scoreboard[thread_id].markupInstDests(
                             inst,
-                            cpu.curCycle() + inst_opLat +
+                            cpu.curCycle() + inst_chainingLat +
                                 extra_dest_retire_lat + extra_assumed_lat,
                             cpu.getContext(thread_id),
                             issued_mem_ref && extra_assumed_lat == Cycles(0));

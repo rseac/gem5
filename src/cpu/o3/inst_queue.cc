@@ -190,6 +190,26 @@ IQUnit::numFreeEntries(const DynInstPtr &inst) const
     }
 }
 
+InstructionQueue::WakeDependents::WakeDependents(const DynInstPtr &_inst,
+                                               InstructionQueue *iq_ptr)
+    : Event(Stat_Event_Pri, AutoDelete),
+      inst(_inst),
+      iqPtr(iq_ptr)
+{}
+
+void
+InstructionQueue::WakeDependents::process()
+{
+    iqPtr->wakeDependents(inst);
+    inst = NULL;
+}
+
+const char *
+InstructionQueue::WakeDependents::description() const
+{
+    return "Wake dependents for chaining";
+}
+
 InstructionQueue::FUCompletion::FUCompletion(const DynInstPtr &_inst,
                                              FUPool *fu_pool, int fu_idx,
                                              InstructionQueue *iq_ptr)
@@ -926,6 +946,19 @@ InstructionQueue::scheduleReadyInsts()
             } else {
                 assert(idx != FUPool::NoCapableFU);
                 bool pipelined = fu_pool->isPipelined(op_class);
+
+                Cycles chaining_latency = op_latency;
+                if (auto chain_lat = issuing_inst->staticInst->chainingLatency(
+                        issuing_inst->tcBase());
+                    chain_lat > Cycles(0)) {
+                    chaining_latency = chain_lat;
+                }
+
+                // Generate wake dependents event for chaining
+                auto wakeup = new WakeDependents(issuing_inst, this);
+                cpu->schedule(wakeup,
+                              cpu->clockEdge(Cycles(chaining_latency - 1)));
+
                 // Generate completion event for the FU
                 ++wbOutstanding;
                 auto execution =
