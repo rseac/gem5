@@ -99,7 +99,7 @@ class BaseCPU(ClockedObject):
     system = Param.System(Parent.any, "system object")
     cpu_id = Param.Int(-1, "CPU identifier")
     enable_vector_chaining = Param.Bool(True, "Enable RISC-V Vector Chaining")
-    vector_lanes = Param.Unsigned(2, "Number of vector lanes (elements per cycle at ELEN)")
+    vector_timing_throughput = Param.Unsigned(2, "Number of vector elements processed per cycle (timing model throughput)")
     socket_id = Param.Unsigned(0, "Physical Socket identifier")
     numThreads = Param.Unsigned(1, "number of HW thread contexts")
     pwr_gating_latency = Param.Cycles(

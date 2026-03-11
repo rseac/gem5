@@ -201,7 +201,7 @@ class VectorMicroInst : public RiscvMicroInst
     {
         // For VectorMicroInst, the latency depends on the number of elements
         // processed by this micro-op and the available lanes.
-        const int NrLanes = tc->getCpuPtr()->vectorLanes;
+        const int NrLanes = tc->getCpuPtr()->vectorTimingThroughput;
         const int ELEN = 64;
 
         // Number of elements processed per cycle per lane is (ELEN / sew)

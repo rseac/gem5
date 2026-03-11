@@ -152,9 +152,25 @@ try:
         """
         Custom RiscvMinorCPU that automatically uses the AraMinorFUPool.
         """
+        simd_units = Param.Unsigned(1, "Number of SIMD functional unit sets (physical lane count)")
+
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
             self.executeFuncUnits = AraMinorFUPool()
+            
+            # Add extra sets of vector functional units if requested
+            # The base pool already has one set (1 of each vector FU type).
+            # We add N-1 additional units for each type.
+            for i in range(self.simd_units - 1):
+                self.executeFuncUnits.funcUnits.extend([
+                    AraMinorIntVectorFU(),
+                    AraMinorIntDivVectorFU(),
+                    AraMinorFloatVectorFU(),
+                    AraMinorFloatCmpFU(),
+                    AraMinorFloatCvtFU(),
+                    AraMinorFloatDivSqrtFU(),
+                    AraMinorMemFU()
+                ])
             
 except ImportError:
     pass

@@ -416,8 +416,8 @@ class BaseCPU : public ClockedObject
     /** Enable RISC-V Vector Chaining */
     bool enableVectorChaining;
 
-    /** Number of vector lanes */
-    unsigned vectorLanes;
+    /** Number of vector elements per cycle for timing model */
+    unsigned vectorTimingThroughput;
 
     System *system;
 

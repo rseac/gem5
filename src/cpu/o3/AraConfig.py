@@ -160,11 +160,26 @@ try:
         to both the Core (backend) and the Instruction Queues (IQ), which is required
         because the standard IQUnit defaults to a standard FUPool.
         """
+        simd_units = Param.Unsigned(4, "Number of SIMD functional units (physical lane count)")
+
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
             
             # Create a dedicated ARA FUPool for this core
+            # We create a new instance of AraSIMD_Unit and set its count
+            # before adding it to the pool.
+            simd_unit = AraSIMD_Unit()
+            simd_unit.count = self.simd_units
+
             self.ara_fu_pool = AraFUPool()
+            # Replace the default AraSIMD_Unit in the pool with our custom-count one
+            new_fu_list = []
+            for fu in self.ara_fu_pool.FUList:
+                if isinstance(fu, AraSIMD_Unit):
+                    new_fu_list.append(simd_unit)
+                else:
+                    new_fu_list.append(fu)
+            self.ara_fu_pool.FUList = new_fu_list
             
             # Assign to the Core (for Execute stage usage)
             self.fuPool = self.ara_fu_pool
