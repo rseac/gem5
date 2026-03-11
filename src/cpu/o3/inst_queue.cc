@@ -1084,6 +1084,11 @@ InstructionQueue::commit(const InstSeqNum &inst, ThreadID tid)
 int
 InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
 {
+    if (completed_inst->isResultReady()) {
+        return 0;
+    }
+    completed_inst->setResultReady();
+
     int dependents = 0;
 
     // The instruction queue here takes care of both floating and int ops
