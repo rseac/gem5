@@ -201,6 +201,10 @@ void
 InstructionQueue::WakeDependents::process()
 {
     if (!inst->isSquashed()) {
+        // Add to execute list so it can functionally execute and wake dependents
+        iqPtr->issueToExecuteQueue->access(-1)->size++;
+        iqPtr->instsToExecute.push_back(inst);
+        
         iqPtr->wakeDependents(inst);
     }
     inst = NULL;
@@ -821,7 +825,7 @@ InstructionQueue::processFUCompletion(const DynInstPtr &inst, FUPool *fu_pool,
         fu_pool->freeUnitNextCycle(fu_idx);
     }
 
-    if (!inst->isSquashed()) {
+    if (!inst->isSquashed() && !inst->isResultReady()) {
         // @todo: Ensure that these FU Completions happen at the beginning
         // of a cycle, otherwise they could add too many instructions to
         // the queue.
@@ -958,12 +962,16 @@ InstructionQueue::scheduleReadyInsts()
                     chaining_latency = chain_lat;
                 }
 
-                // Generate wake dependents event for chaining
-                auto wakeup = new WakeDependents(issuing_inst, this);
-                cpu->schedule(wakeup,
-                              cpu->clockEdge(Cycles(chaining_latency - 1)));
+                // If chaining is possible, schedule the wake dependents event early.
+                // This event will also trigger the functional execution of the instruction
+                // so that its results are available for the consumers.
+                if (chaining_latency < op_latency) {
+                    auto wakeup = new WakeDependents(issuing_inst, this);
+                    cpu->schedule(wakeup,
+                                  cpu->clockEdge(Cycles(chaining_latency - 1)));
+                }
 
-                // Generate completion event for the FU
+                // Generate completion event for the FU release and final cleanup.
                 ++wbOutstanding;
                 auto execution =
                     new FUCompletion(issuing_inst, fu_pool, idx, this);
