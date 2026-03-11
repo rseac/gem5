@@ -39,6 +39,7 @@
 #include "arch/riscv/utility.hh"
 #include "cpu/exec_context.hh"
 #include "cpu/static_inst.hh"
+#include "debug/VectorTiming.hh"
 
 namespace gem5
 {
@@ -213,38 +214,13 @@ class VectorMicroInst : public RiscvMicroInst
         int throughput_cycles = (microVl + elements_per_cycle - 1) /
                                  elements_per_cycle;
 
-        // Pipeline latency depends on OpClass
-        int pipeline_lat = 1;
-        switch (opClass()) {
-          case SimdFloatAddOp:
-          case SimdFloatAluOp:
-          case SimdFloatMultOp:
-          case SimdFloatMultAccOp:
-          case SimdFloatMatMultAccOp:
-            pipeline_lat = 5; // ARA 64-bit FP pipeline depth
-            break;
-          case SimdFloatCvtOp:
-            pipeline_lat = 2;
-            break;
-          case SimdFloatDivOp:
-          case SimdFloatSqrtOp:
-            pipeline_lat = 10;
-            break;
-          case SimdMultOp:
-          case SimdMultAccOp:
-            pipeline_lat = 1; // ARA 64-bit Int Mul is 1 cycle
-            break;
-          case SimdDivOp:
-            pipeline_lat = 32;
-            break;
-          default:
-            pipeline_lat = 1; // Default for Alu, Shift, etc.
-            break;
-        }
+        DPRINTF(VectorTiming, "dynamicOpLatency: microVl=%d, sew=%d, "
+                "throughput=%d, res=%d\n",
+                microVl, sew, throughput_cycles, throughput_cycles);
 
-        // Total occupancy = Pipeline depth + (Throughput cycles - 1)
-        // This represents the total time the functional unit is busy.
-        return Cycles(pipeline_lat + (throughput_cycles - 1));
+        // Total occupancy = Throughput cycles
+        // This is how many cycles the functional unit is busy.
+        return Cycles(throughput_cycles);
     }
 
     Cycles
@@ -257,8 +233,8 @@ class VectorMicroInst : public RiscvMicroInst
 
         // Chaining latency in ARA allows a consumer to start after the
         // producer's pipeline stages are complete (first element ready).
-        // We add a small constant overhead (1 cycle) to model VRF write
-        // and hazard synchronization delays.
+        // We add a small constant overhead (2 cycles) to model VRF write
+        // and hazard synchronization delays seen in hardware.
         int pipeline_lat = 1;
         switch (opClass()) {
           case SimdFloatAddOp:
@@ -284,7 +260,12 @@ class VectorMicroInst : public RiscvMicroInst
         }
 
         const int CHAINING_OVERHEAD = 2;
-        return Cycles(pipeline_lat + CHAINING_OVERHEAD);
+        Cycles res = Cycles(pipeline_lat + CHAINING_OVERHEAD);
+
+        DPRINTF(VectorTiming, "chainingLatency: opClass=%d, pipe=%d, res=%d\n",
+                opClass(), pipeline_lat, res);
+
+        return res;
     }
 };
 
