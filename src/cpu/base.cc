@@ -147,6 +147,10 @@ BaseCPU::BaseCPU(const Params &p, bool is_checker)
       powerGatingOnIdle(p.power_gating_on_idle),
       enterPwrGatingEvent([this]{ enterPwrGating(); }, name())
 {
+    inform("CPU %s: Vector Chaining %s, Throughput %d, SIMD Units %d\n",
+           name(), enableVectorChaining ? "ENABLED" : "DISABLED",
+           vectorTimingThroughput, simdUnits);
+
     // if Python did not provide a valid ID, do it here
     if (_cpuId == -1 ) {
         _cpuId = cpuList.size();
