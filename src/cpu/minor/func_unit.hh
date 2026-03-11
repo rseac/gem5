@@ -208,6 +208,10 @@ class QueuedInst
   public:
     MinorDynInstPtr inst;
 
+    /** Optional latency overrides for vector instructions */
+    Cycles overrideIssueLat{0};
+    Cycles overrideOpLat{0};
+
   public:
     QueuedInst(MinorDynInstPtr inst_ = MinorDynInst::bubble()) :
         inst(inst_)

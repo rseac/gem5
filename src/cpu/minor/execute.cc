@@ -745,6 +745,11 @@ Execute::issue(ThreadID thread_id)
                         issued_mem_ref = inst->isMemRef();
 
                         QueuedInst fu_inst(inst);
+                        if (inst->staticInst->isVector()) {
+                            // The Functional Unit is occupied for the total 
+                            // throughput cycles.
+                            fu_inst.overrideIssueLat = inst_opLat;
+                        }
 
                         /* Decorate the inst with FU details */
                         inst->fuIndex = fu_index;

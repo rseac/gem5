@@ -163,7 +163,11 @@ FUPipeline::advance()
      *  the next instruction can follow */
     if (alreadyPushed()) {
         if (nextInsertCycle <= timeSource.curCycle()) {
-            nextInsertCycle = timeSource.curCycle() + description.issueLat;
+            Cycles issue_lat = description.issueLat;
+            if (pushWire->overrideIssueLat > Cycles(0)) {
+                issue_lat = pushWire->overrideIssueLat;
+            }
+            nextInsertCycle = timeSource.curCycle() + issue_lat;
         }
     } else if (was_stalled && nextInsertCycle != 0) {
         /* Don't count stalled cycles as part of the issue latency */

@@ -40,15 +40,17 @@ The timing model uses the following variables to calculate latency:
 ---
 
 ### B. AraMinor (In-Order) Chaining Mechanism
-In the `MinorCPU`, chaining is implemented via **Scoreboard Decoupling**.
+In the `MinorCPU`, chaining is implemented via **Scoreboard Decoupling** and **Dynamic FU Occupancy**.
 
-1.  **Dual-Timing Issue**: When an instruction is issued, it calculates:
-    - **`inst_opLat`**: FU Occupancy (Total time busy).
-    - **`inst_chainingLat`**: Result Ready time (Early wakeup).
-2.  **Scoreboard Markup**: Destination registers are marked ready at `curCycle + inst_chainingLat`.
-3.  **Overlapped Execution**: Pipelined vector units (`issueLat = 1`) allow consumers to issue while the producer is still in its occupancy phase.
-
-**Note on MinorCPU Effectiveness**: Chaining benefits in `AraMinor` are most visible with large vectors (`VLEN >= 1024`). With smaller vectors, the functional unit occupancy often completes before the pipeline depth delay is finished, leaving no "tail" elements to overlap with the next instruction.
+1.  **Dual-Timing Issue**: When an instruction is issued in `execute.cc`, the model calculates two distinct cycles:
+    - **`inst_opLat`**: The total cycles the Functional Unit is busy.
+    - **`inst_chainingLat`**: The cycle the result is ready for consumers.
+2.  **Scoreboard Markup**: The destination registers are marked as ready at `curCycle + inst_chainingLat`. This allows dependent instructions to clear data hazards early.
+3.  **Dynamic FU Occupancy**:
+    - We added `overrideIssueLat` to the `QueuedInst` class in `func_unit.hh`.
+    - Modified `FUPipeline::advance` in `func_unit.cc` to use this override when calculating `nextInsertCycle`.
+    - This ensures that while consumers can clear data hazards early, the Functional Unit remains busy for the full `inst_opLat` (throughput duration), correctly modeling structural bottlenecks.
+4.  **Functional Unit Pipelining**: We updated `AraMinorConfig.py` to ensure all vector units are configured as pipelined, allowing a consumer to issue while the producer is still in its occupancy phase.
 
 ---
 
@@ -67,14 +69,14 @@ In the `O3CPU`, chaining is implemented via **Event-Driven Decoupling**.
     - It releases the Functional Unit back to the `FUPool`.
     - It marks the producer as "Executed" for the commit stage.
 4.  **Stability Guards**:
-    - **Functional Order**: By executing the producer functionally at the chaining point, we ensure consumers do not read uninitialized data (fixing the "Address 0" SEGV).
+    - **Functional Order**: By executing the producer functionally at the chaining point, we ensure consumers do not read uninitialized data.
     - **Double-Issue Guard**: A check in `processFUCompletion` ensures that if an instruction was already added to the execution list by the early `WakeDependents` event, it is not added again.
 
 ---
 
 ## 4. Exhaustive Code Modifications
 
-### A. StaticInst Base Interface (`src/cpu/static_inst.hh`)
+### A. Core StaticInst Interface (`src/cpu/static_inst.hh`)
 ```cpp
 virtual Cycles dynamicOpLatency(ThreadContext *tc) const;
 virtual Cycles chainingLatency(ThreadContext *tc) const; // Defaults to dynamicOpLatency
@@ -84,25 +86,29 @@ virtual Cycles chainingLatency(ThreadContext *tc) const; // Defaults to dynamicO
 ```python
 enable_vector_chaining = Param.Bool(True, "Enable RISC-V Vector Chaining")
 vector_timing_throughput = Param.Unsigned(2, "Elements processed per cycle")
-```
-```cpp
-bool enableVectorChaining;
-unsigned vectorTimingThroughput; 
+simd_units = Param.Unsigned(1, "Number of physical SIMD lanes")
 ```
 
-### C. Functional Unit Configuration (`AraConfig.py`, `AraMinorConfig.py`)
-```python
-simd_units = Param.Unsigned(4, "Number of SIMD functional units (physical lanes)")
-# O3: Dynamically sets AraSIMD_Unit.count = simd_units
-# Minor: Dynamically extends FU list with (simd_units - 1) extra vector units
+### C. MinorCPU Infrastructure (`func_unit.hh`, `func_unit.cc`, `execute.cc`)
+```cpp
+// Added overrideIssueLat to QueuedInst to allow dynamic FU occupancy
+class QueuedInst {
+    Cycles overrideIssueLat{0};
+};
+
+// Modified FUPipeline to respect the override
+void FUPipeline::advance() {
+    if (pushWire->overrideIssueLat > Cycles(0)) 
+        nextInsertCycle = timeSource.curCycle() + pushWire->overrideIssueLat;
+}
 ```
 
 ---
 
 ## 5. Configuration Guidelines
 
-1.  **`simd-units`**: Models the **Structural Parallelism**. Set this to match the number of physical lanes if you want to model instruction-level parallelism limitations.
-2.  **`vector-timing-throughput`**: Models the **Data Parallelism**. Set this to match the lanes to see the throughput speedup of a single engine.
+1.  **`simd-units`**: Models the **Structural Parallelism**. Match this to physical lanes to model ILP limitations.
+2.  **`vector-timing-throughput`**: Models the **Data Parallelism**. Match this to lanes to see the throughput speedup of a single engine.
 
 ---
 
