@@ -48,7 +48,7 @@ class AraMinorIntDivVectorFU(MinorFU):
     """Integer Vector Divide - ~32 Cycles Latency"""
     opClasses = makeOpClassSet(["SimdDiv"])
     opLat = 32
-    issueLat = 32 # Not pipelined
+    issueLat = 1 # Pipelined to allow chaining start
 
 class AraMinorFloatVectorFU(MinorFU):
     """Floating Point Vector Operations (Add, Mult, Mac) - 5 Cycles Latency"""
@@ -77,7 +77,7 @@ class AraMinorFloatDivSqrtFU(MinorFU):
     """Floating Point Divide/Sqrt - ~10 Cycles Latency"""
     opClasses = makeOpClassSet(["SimdFloatDiv", "SimdFloatSqrt"])
     opLat = 10
-    issueLat = 10 # Not pipelined
+    issueLat = 1 # Pipelined to allow chaining start
 
 class AraMinorMemFU(MinorFU):
     """Vector Memory Operations (AGU) - 1 Cycle Latency"""

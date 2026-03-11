@@ -10,101 +10,100 @@ In baseline gem5, vector instructions occupy functional units (FUs) for their en
 
 Our implementation decouples **Structural Hazards** (FU occupancy) from **Data Hazards** (Result availability), accurately modeling the element-streaming nature of ARA.
 
-### Key Logic Decoupling
-- **`dynamicOpLatency`**: Models **FU Occupancy**. It represents the time the FU is physically busy processing elements.
-- **`chainingLatency`**: Models **Result Readiness**. It represents the cycle when the *first* elements are written back and ready for consumption.
-
 ---
 
 ## 2. Hardware-Rooted Justification (ARA RTL)
 
 Research into the ARA hardware source (`ara/hardware/src/lane/operand_requester.sv`) confirmed:
 1.  **No Bypassing**: ARA does not have operand bypassing; results must be written to the Vector Register File (VRF) before being read.
-2.  **Registered Synchronization**: The `operand_requester` uses a registered signal `vinsn_result_written_q`.
+2.  **Registered Synchronization**: The `operand_requester` uses a registered signal `vinsn_result_written_q` to track written results.
 3.  **Issue-to-Issue Delay**: This adds a **2-cycle physical overhead** on top of the fixed pipeline depth (e.g., 5 cycles for FP).
-4.  **Throughput scaling**: FU occupancy is strictly `Total_Bits / (Throughput_Factor * ELEN)`.
+4.  **Throughput scaling**: FU occupancy is strictly the time to process elements through the physical lanes.
 
 ---
 
-## 3. Exhaustive Code Modifications
+## 3. Timing Model Deep-Dive
 
-### A. Core StaticInst Interface
-**File: `gem5/src/cpu/static_inst.hh`**
-Added the standard interface for all instructions to report their chaining capability.
+### A. Core Vector Timing Logic (`vector.hh`)
+The timing model uses the following variables to calculate latency:
+- **`microVl`**: Number of elements in the current micro-op.
+- **`vector_timing_throughput`**: The number of 64-bit element slots processed per cycle.
+- **`sew`**: Standard Element Width (8, 16, 32, or 64).
+
+#### Throughput Calculation Example:
+**Configuration**: VLEN=1024, SEW=32, LMUL=8, `vector_timing_throughput`=2.
+1.  **Elements per micro-op**: Each micro-op handles `VLEN/SEW` elements. $1024 / 32 = 32$ elements.
+2.  **Elements per cycle**: The unit processes `throughput * (64/SEW)` elements per cycle. $2 \times (64/32) = 4$ elements/cycle.
+3.  **Occupancy (`dynamicOpLatency`)**: $\text{Elements} / \text{ElementsPerCycle} = 32 / 4 = \mathbf{8 \text{ Cycles}}$.
+4.  **Readiness (`chainingLatency`)**: $\text{PipelineDepth (5)} + \text{Overhead (2)} = \mathbf{7 \text{ Cycles}}$.
+
+---
+
+### B. AraMinor (In-Order) Chaining Mechanism
+In the `MinorCPU`, chaining is implemented via **Scoreboard Decoupling**.
+
+1.  **Dual-Timing Issue**: When an instruction is issued in `execute.cc`, the model calculates two distinct cycles:
+    - **`inst_opLat`**: The cycles the Functional Unit is busy.
+    - **`inst_chainingLat`**: The cycle the result is ready.
+2.  **Scoreboard Markup**: The destination registers are marked as ready at `curCycle + inst_chainingLat`.
+3.  **Overlapped Execution**:
+    - The next instruction in the pipeline checks the scoreboard.
+    - If it depends on the producer, it sees the register as "Ready" at cycle 7 (per the example above).
+    - Because the Functional Units are configured as **pipelined** (`issueLat = 1` in `AraMinorConfig.py`), the consumer can issue to the unit even though the producer is still in its "Occupancy" phase (which lasts until cycle 8).
+
+---
+
+### C. AraO3 (Out-of-Order) Chaining Mechanism
+In the `O3CPU`, chaining is implemented via **Event-Driven Decoupling**.
+
+1.  **Decoupled Scheduling**: Instead of a single completion event, the `InstructionQueue` now schedules two separate events:
+    - **`WakeDependents` Event**: Scheduled at `chainingLatency`.
+    - **`FUCompletion` Event**: Scheduled at `dynamicOpLatency`.
+2.  **Early Functional Execution**:
+    - The `WakeDependents` event is responsible for the **Functional Execution** of the instruction.
+    - It adds the producer to the execution list so it actually generates data.
+    - It then calls `wakeDependents()` to allow instructions in the Issue Queue to become "Ready".
+3.  **Structural Integrity**:
+    - The `FUCompletion` event handles the structural cleanup.
+    - It releases the Functional Unit back to the `FUPool`.
+    - It marks the producer as "Executed" for the commit stage.
+4.  **Stability Guards**:
+    - **Functional Order**: By executing the producer functionally at the chaining point, we ensure consumers do not read uninitialized data (fixing the "Address 0" SEGV).
+    - **Double-Issue Guard**: A check in `processFUCompletion` ensures that if an instruction was already added to the execution list by the early `WakeDependents` event, it is not added again.
+
+---
+
+## 4. Exhaustive Code Modifications
+
+### A. StaticInst Base Interface (`src/cpu/static_inst.hh`)
 ```cpp
-virtual Cycles
-dynamicOpLatency(ThreadContext *tc) const {
-    return Cycles(0);
-}
-
-virtual Cycles
-chainingLatency(ThreadContext *tc) const {
-    return dynamicOpLatency(tc); // Defaults to wait-until-end for scalars
-}
+virtual Cycles dynamicOpLatency(ThreadContext *tc) const;
+virtual Cycles chainingLatency(ThreadContext *tc) const; // Defaults to dynamicOpLatency
 ```
 
-### B. Global SimObject Parameters
-**Files: `gem5/src/cpu/BaseCPU.py`, `base.hh`, `base.cc`**
+### B. Global Parameters (`BaseCPU.py`, `base.hh`, `base.cc`)
 ```python
-# BaseCPU.py
 enable_vector_chaining = Param.Bool(True, "Enable RISC-V Vector Chaining")
-vector_timing_throughput = Param.Unsigned(2, "Elements processed per cycle (timing model)")
+vector_timing_throughput = Param.Unsigned(2, "Elements processed per cycle")
 ```
 ```cpp
-// base.hh & base.cc
 bool enableVectorChaining;
-unsigned vectorTimingThroughput; // Initialized in constructor
+unsigned vectorTimingThroughput; 
 ```
 
-### C. RISC-V Vector Timing Model
-**File: `gem5/src/arch/riscv/insts/vector.hh`**
-Implemented the ARA-specific throughput and pipeline depth logic.
-
-```cpp
-Cycles
-dynamicOpLatency(ThreadContext *tc) const override {
-    const int NrLanes = tc->getCpuPtr()->vectorTimingThroughput;
-    const int ELEN = 64;
-    int elements_per_cycle = NrLanes * (ELEN / sew);
-    if (elements_per_cycle == 0) elements_per_cycle = 1;
-
-    // Occupancy = Throughput Cycles
-    return Cycles((microVl + elements_per_cycle - 1) / elements_per_cycle);
-}
-
-Cycles
-chainingLatency(ThreadContext *tc) const override {
-    if (!tc->getCpuPtr()->enableVectorChaining) return dynamicOpLatency(tc);
-    
-    int pipeline_lat = ...; // (Mapping: FP=5, Int=1, Div=32)
-    const int CHAINING_OVERHEAD = 2; // Matches ARA hardware synchronization
-    return Cycles(pipeline_lat + CHAINING_OVERHEAD);
-}
+### C. Functional Unit Configuration (`AraConfig.py`, `AraMinorConfig.py`)
+```python
+simd_units = Param.Unsigned(4, "Number of SIMD functional units (physical lanes)")
+# O3: Dynamically sets AraSIMD_Unit.count = simd_units
+# Minor: Dynamically extends FU list with (simd_units - 1) extra vector units
 ```
-
----
-
-## 4. Stability Guards & Functional Logic (O3CPU)
-
-To prevent SEGVs and LSQ assertions, the following decoupled logic was implemented in `inst_queue.cc`:
-
-1.  **Functional Ordering**: The `WakeDependents` event (at `chainingLatency`) executes the producer functionally *before* waking consumers.
-2.  **Redundancy Guard**: Added `isResultReady()` check to prevent multiple wakeups from the same instruction.
-3.  **Memory Consistency**: Chaining is restricted to arithmetic operations to preserve LSQ ordering.
 
 ---
 
 ## 5. Configuration Guidelines
 
-The relationship between `simd-units` and `vector-timing-throughput` is as follows:
-
-1.  **`simd-units` (Hardware Lanes)**: This parameter in `riscv-rvv-se-ara.py` sets the number of physical functional units in the functional unit pool. This determines how many instructions can be issued in parallel (structural parallelism).
-2.  **`vector-timing-throughput` (Timing Model)**: This parameter determines the cycle-by-cycle throughput used in the `dynamicOpLatency` calculation. This determines how fast an individual instruction finishes.
-
-**Standard ARA Configuration**:
-To model a standard 4-lane ARA engine:
-- `--simd-units 4` (Models 4 physical lanes).
-- `--vector-timing-throughput 4` (Models the throughput speedup of those lanes).
+1.  **`simd-units`**: Models the **Structural Parallelism**. Set this to match the number of physical lanes if you want to model instruction-level parallelism limitations.
+2.  **`vector-timing-throughput`**: Models the **Data Parallelism**. Set this to match the lanes to see the throughput speedup of a single engine.
 
 ---
 
