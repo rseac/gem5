@@ -242,9 +242,9 @@ class VectorMicroInst : public RiscvMicroInst
             break;
         }
 
-        // Total occupancy = Throughput cycles
-        // This is how many cycles the functional unit is busy.
-        return Cycles(throughput_cycles);
+        // Total occupancy = Pipeline depth + (Throughput cycles - 1)
+        // This represents the total time the functional unit is busy.
+        return Cycles(pipeline_lat + (throughput_cycles - 1));
     }
 
     Cycles

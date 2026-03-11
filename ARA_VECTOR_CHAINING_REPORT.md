@@ -34,7 +34,7 @@ The timing model uses the following variables to calculate latency:
 **Configuration**: VLEN=1024, SEW=32, LMUL=8, `vector_timing_throughput`=2.
 1.  **Elements per micro-op**: Each micro-op handles `VLEN/SEW` elements. $1024 / 32 = 32$ elements.
 2.  **Elements per cycle**: The unit processes `throughput * (64/SEW)` elements per cycle. $2 \times (64/32) = 4$ elements/cycle.
-3.  **Occupancy (`dynamicOpLatency`)**: $\text{Elements} / \text{ElementsPerCycle} = 32 / 4 = \mathbf{8 \text{ Cycles}}$.
+3.  **Occupancy (`dynamicOpLatency`)**: $\text{PipelineDepth (5)} + (\text{Elements} / \text{ElementsPerCycle}) - 1 = 5 + (32/4) - 1 = \mathbf{12 \text{ Cycles}}$.
 4.  **Readiness (`chainingLatency`)**: $\text{PipelineDepth (5)} + \text{Overhead (2)} = \mathbf{7 \text{ Cycles}}$.
 
 ---
@@ -42,14 +42,13 @@ The timing model uses the following variables to calculate latency:
 ### B. AraMinor (In-Order) Chaining Mechanism
 In the `MinorCPU`, chaining is implemented via **Scoreboard Decoupling**.
 
-1.  **Dual-Timing Issue**: When an instruction is issued in `execute.cc`, the model calculates two distinct cycles:
-    - **`inst_opLat`**: The cycles the Functional Unit is busy.
-    - **`inst_chainingLat`**: The cycle the result is ready.
-2.  **Scoreboard Markup**: The destination registers are marked as ready at `curCycle + inst_chainingLat`.
-3.  **Overlapped Execution**:
-    - The next instruction in the pipeline checks the scoreboard.
-    - If it depends on the producer, it sees the register as "Ready" at cycle 7 (per the example above).
-    - Because the Functional Units are configured as **pipelined** (`issueLat = 1` in `AraMinorConfig.py`), the consumer can issue to the unit even though the producer is still in its "Occupancy" phase (which lasts until cycle 8).
+1.  **Dual-Timing Issue**: When an instruction is issued, it calculates:
+    - **`inst_opLat`**: FU Occupancy (Total time busy).
+    - **`inst_chainingLat`**: Result Ready time (Early wakeup).
+2.  **Scoreboard Markup**: Destination registers are marked ready at `curCycle + inst_chainingLat`.
+3.  **Overlapped Execution**: Pipelined vector units (`issueLat = 1`) allow consumers to issue while the producer is still in its occupancy phase.
+
+**Note on MinorCPU Effectiveness**: Chaining benefits in `AraMinor` are most visible with large vectors (`VLEN >= 1024`). With smaller vectors, the functional unit occupancy often completes before the pipeline depth delay is finished, leaving no "tail" elements to overlap with the next instruction.
 
 ---
 
