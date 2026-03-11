@@ -201,8 +201,7 @@ class VectorMicroInst : public RiscvMicroInst
     {
         // For VectorMicroInst, the latency depends on the number of elements
         // processed by this micro-op and the available lanes.
-        // ARA typically has 2 lanes (128-bit datapath).
-        const int NrLanes = 2;
+        const int NrLanes = tc->getCpuPtr()->vectorLanes;
         const int ELEN = 64;
 
         // Number of elements processed per cycle per lane is (ELEN / sew)
