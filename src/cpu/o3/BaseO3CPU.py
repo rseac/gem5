@@ -240,8 +240,6 @@ class BaseO3CPU(BaseCPU):
         1, "Max number of taken predictions per cycle"
     )
 
-    enable_vector_chaining = Param.Bool(True, "Enable RISC-V Vector Chaining")
-
 
 add_citation(
     BaseO3CPU,

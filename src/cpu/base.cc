@@ -134,7 +134,7 @@ BaseCPU::BaseCPU(const Params &p, bool is_checker)
       _switchedOut(p.switched_out), _cacheLineSize(p.system->cacheLineSize()),
       modelResetPort(p.name + ".model_reset"),
       interrupts(p.interrupts), numThreads(p.numThreads),
-      enableVectorChaining(p.enable_vector_chaining), system(p.system),
+      enableVectorChaining(true), system(p.system),
       previousCycle(0), previousState(CPU_STATE_SLEEP),
       functionTraceStream(nullptr), currentFunctionStart(0),
       currentFunctionEnd(0), functionEntryTick(0),

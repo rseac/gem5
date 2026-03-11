@@ -437,8 +437,6 @@ class BaseMinorCPU(BaseCPU):
         True, "Enable cycle skipping when the processor is idle\n"
     )
 
-    enable_vector_chaining = Param.Bool(True, "Enable RISC-V Vector Chaining")
-
     branchPred = Param.BranchPredictor(
         BranchPredictor(
             conditionalBranchPred=TournamentBP(numThreads=Parent.numThreads)
