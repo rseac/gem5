@@ -695,7 +695,7 @@ Execute::issue(ThreadID thread_id)
 
                     DPRINTF(MinorExecute, "Issuing [sn:%llu]: op_latency=%i, "
                             "chaining_latency=%i, chaining_enabled=%d\n",
-                            inst->seqNum, inst_opLat, inst_chainingLat,
+                            inst->id.execSeqNum, inst_opLat, inst_chainingLat,
                             cpu.enableVectorChaining);
 
                     if (timing && timing->suppress) {
