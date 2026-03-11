@@ -259,7 +259,7 @@ class VectorMicroInst : public RiscvMicroInst
             break;
         }
 
-        const int CHAINING_OVERHEAD = 2;
+        const int CHAINING_OVERHEAD = 0;
         Cycles res = Cycles(pipeline_lat + CHAINING_OVERHEAD);
 
         DPRINTF(VectorTiming, "chainingLatency: opClass=%d, pipe=%d, res=%d\n",

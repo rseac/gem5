@@ -809,7 +809,8 @@ Execute::issue(ThreadID thread_id)
                         cpu.activityRecorder->activity();
 
                         /* Mark the destinations for this instruction as
-                         *  busy */
+                         *  busy. Use inst_chainingLat for early release
+                         *  if chaining is enabled. */
                         scoreboard[thread_id].markupInstDests(
                             inst,
                             cpu.curCycle() + inst_chainingLat +

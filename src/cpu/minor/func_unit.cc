@@ -162,14 +162,15 @@ FUPipeline::advance()
     /* If an instruction was pushed into the pipeline, set the delay before
      *  the next instruction can follow */
     if (alreadyPushed()) {
+        Cycles issue_lat = description.issueLat;
+        if (pushWire->overrideIssueLat > Cycles(0)) {
+            issue_lat = pushWire->overrideIssueLat;
+        }
+        
         if (nextInsertCycle <= timeSource.curCycle()) {
-            Cycles issue_lat = description.issueLat;
-            if (pushWire->overrideIssueLat > Cycles(0)) {
-                issue_lat = pushWire->overrideIssueLat;
-            }
             nextInsertCycle = timeSource.curCycle() + issue_lat;
         }
-    } else if (was_stalled && nextInsertCycle != 0) {
+    } else if (was_stalled && nextInsertCycle > timeSource.curCycle()) {
         /* Don't count stalled cycles as part of the issue latency */
         ++nextInsertCycle;
     }
