@@ -419,6 +419,9 @@ class BaseCPU : public ClockedObject
     /** Number of vector elements per cycle for timing model */
     unsigned vectorTimingThroughput;
 
+    /** Number of SIMD functional units */
+    unsigned simdUnits;
+
     System *system;
 
     /**

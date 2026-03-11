@@ -100,6 +100,7 @@ class BaseCPU(ClockedObject):
     cpu_id = Param.Int(-1, "CPU identifier")
     enable_vector_chaining = Param.Bool(True, "Enable RISC-V Vector Chaining")
     vector_timing_throughput = Param.Unsigned(2, "Number of vector elements processed per cycle (timing model throughput)")
+    simd_units = Param.Unsigned(1, "Number of SIMD functional units (physical lane count)")
     socket_id = Param.Unsigned(0, "Physical Socket identifier")
     numThreads = Param.Unsigned(1, "number of HW thread contexts")
     pwr_gating_latency = Param.Cycles(

@@ -160,8 +160,6 @@ try:
         to both the Core (backend) and the Instruction Queues (IQ), which is required
         because the standard IQUnit defaults to a standard FUPool.
         """
-        simd_units = Param.Unsigned(4, "Number of SIMD functional units (physical lane count)")
-
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
             

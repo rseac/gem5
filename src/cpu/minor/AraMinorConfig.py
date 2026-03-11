@@ -152,8 +152,6 @@ try:
         """
         Custom RiscvMinorCPU that automatically uses the AraMinorFUPool.
         """
-        simd_units = Param.Unsigned(1, "Number of SIMD functional unit sets (physical lane count)")
-
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
             self.executeFuncUnits = AraMinorFUPool()
