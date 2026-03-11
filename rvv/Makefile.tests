@@ -1,0 +1,23 @@
+# --- Setup ---
+CROSS_COMPILE = riscv64-unknown-linux-gnu-
+CC      = $(CROSS_COMPILE)gcc
+OBJDUMP = $(CROSS_COMPILE)objdump
+
+# --- Flags ---
+VECTOR_FLAGS = -O3 -march=rv64gcv -mabi=lp64d
+CFLAGS   = -static $(VECTOR_FLAGS)
+
+# --- Files ---
+CHAINING_TEST = rvv_chaining_test
+SCALAR_TEST   = scalar_wakeup_test
+
+all: $(CHAINING_TEST).bin $(SCALAR_TEST).bin
+
+%.bin: %.c
+	$(CC) $(CFLAGS) -o $@ $<
+	$(OBJDUMP) -d $@ > $*.dump
+
+clean:
+	rm -f *.bin *.dump
+
+.PHONY: all clean
