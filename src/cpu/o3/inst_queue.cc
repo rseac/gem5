@@ -200,7 +200,9 @@ InstructionQueue::WakeDependents::WakeDependents(const DynInstPtr &_inst,
 void
 InstructionQueue::WakeDependents::process()
 {
-    iqPtr->wakeDependents(inst);
+    if (!inst->isSquashed()) {
+        iqPtr->wakeDependents(inst);
+    }
     inst = NULL;
 }
 
@@ -819,11 +821,13 @@ InstructionQueue::processFUCompletion(const DynInstPtr &inst, FUPool *fu_pool,
         fu_pool->freeUnitNextCycle(fu_idx);
     }
 
-    // @todo: Ensure that these FU Completions happen at the beginning
-    // of a cycle, otherwise they could add too many instructions to
-    // the queue.
-    issueToExecuteQueue->access(-1)->size++;
-    instsToExecute.push_back(inst);
+    if (!inst->isSquashed()) {
+        // @todo: Ensure that these FU Completions happen at the beginning
+        // of a cycle, otherwise they could add too many instructions to
+        // the queue.
+        issueToExecuteQueue->access(-1)->size++;
+        instsToExecute.push_back(inst);
+    }
 }
 
 // @todo: Figure out a better way to remove the squashed items from the
