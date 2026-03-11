@@ -201,11 +201,10 @@ void
 InstructionQueue::WakeDependents::process()
 {
     if (!inst->isSquashed()) {
-        // Add to execute list so it can functionally execute and wake dependents
+        // Add to execute list so it can functionally execute.
+        // IEW::writebackInsts will handle waking dependents after execution.
         iqPtr->issueToExecuteQueue->access(-1)->size++;
         iqPtr->instsToExecute.push_back(inst);
-        
-        iqPtr->wakeDependents(inst);
     }
     inst = NULL;
 }

@@ -257,9 +257,36 @@ class VectorMicroInst : public RiscvMicroInst
             return dynamicOpLatency(tc);
         }
 
-        // FOR TESTING: Return a very small latency to guarantee chaining
-        // if op_latency > 1.
-        return Cycles(1);
+        // Chaining latency in ARA allows a consumer to start after the
+        // producer's pipeline stages are complete (first element ready).
+        // We add a small constant overhead (1 cycle) to model VRF write
+        // and hazard synchronization delays.
+        int pipeline_lat = 1;
+        switch (opClass()) {
+          case SimdFloatAddOp:
+          case SimdFloatAluOp:
+          case SimdFloatMultOp:
+          case SimdFloatMultAccOp:
+          case SimdFloatMatMultAccOp:
+            pipeline_lat = 5;
+            break;
+          case SimdFloatCvtOp:
+            pipeline_lat = 2;
+            break;
+          case SimdFloatDivOp:
+          case SimdFloatSqrtOp:
+            pipeline_lat = 10;
+            break;
+          case SimdDivOp:
+            pipeline_lat = 32;
+            break;
+          default:
+            pipeline_lat = 1;
+            break;
+        }
+
+        const int CHAINING_OVERHEAD = 1;
+        return Cycles(pipeline_lat + CHAINING_OVERHEAD);
     }
 };
 
