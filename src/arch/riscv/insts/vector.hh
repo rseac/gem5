@@ -242,10 +242,9 @@ class VectorMicroInst : public RiscvMicroInst
             break;
         }
 
-        // Total latency = Pipeline depth + (Throughput cycles - 1)
-        // We subtract 1 because the first element group is included in the
-        // pipeline depth.
-        return Cycles(pipeline_lat + (throughput_cycles - 1));
+        // Total occupancy = Throughput cycles
+        // This is how many cycles the functional unit is busy.
+        return Cycles(throughput_cycles);
     }
 
     Cycles
@@ -284,7 +283,7 @@ class VectorMicroInst : public RiscvMicroInst
             break;
         }
 
-        const int CHAINING_OVERHEAD = 1;
+        const int CHAINING_OVERHEAD = 2;
         return Cycles(pipeline_lat + CHAINING_OVERHEAD);
     }
 };
