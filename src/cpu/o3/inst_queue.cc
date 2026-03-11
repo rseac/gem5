@@ -962,6 +962,11 @@ InstructionQueue::scheduleReadyInsts()
                     chaining_latency = chain_lat;
                 }
 
+                DPRINTF(IQ, "Issuing [sn:%llu]: op_latency=%i, chaining_latency=%i, "
+                            "chaining_enabled=%d\n",
+                        issuing_inst->seqNum, op_latency, chaining_latency,
+                        cpu->enableVectorChaining);
+
                 // If chaining is possible, schedule the wake dependents event early.
                 // This event will also trigger the functional execution of the instruction
                 // so that its results are available for the consumers.

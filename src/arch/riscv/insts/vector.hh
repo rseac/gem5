@@ -285,7 +285,7 @@ class VectorMicroInst : public RiscvMicroInst
             break;
         }
 
-        const int CHAINING_OVERHEAD = 2;
+        const int CHAINING_OVERHEAD = 0;
         return Cycles(pipeline_lat + CHAINING_OVERHEAD);
     }
 };
