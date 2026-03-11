@@ -824,7 +824,22 @@ InstructionQueue::processFUCompletion(const DynInstPtr &inst, FUPool *fu_pool,
         fu_pool->freeUnitNextCycle(fu_idx);
     }
 
-    if (!inst->isSquashed() && !inst->isResultReady()) {
+    if (inst->isSquashed()) {
+        return;
+    }
+
+    // Check if this was a chained vector instruction that already issued functionally
+    // via the WakeDependents event.
+    Cycles op_latency = inst->staticInst->dynamicOpLatency(inst->tcBase());
+    Cycles chaining_latency = inst->staticInst->chainingLatency(inst->tcBase());
+
+    if (chaining_latency > Cycles(0) && chaining_latency < op_latency &&
+        !inst->isMemRef()) {
+        // Already added to instsToExecute by WakeDependents::process()
+        return;
+    }
+
+    if (!inst->isResultReady()) {
         // @todo: Ensure that these FU Completions happen at the beginning
         // of a cycle, otherwise they could add too many instructions to
         // the queue.
@@ -969,7 +984,9 @@ InstructionQueue::scheduleReadyInsts()
                 // If chaining is possible, schedule the wake dependents event early.
                 // This event will also trigger the functional execution of the instruction
                 // so that its results are available for the consumers.
-                if (chaining_latency < op_latency) {
+                // We only do this for non-memory instructions to avoid double-issue
+                // in the LSQ.
+                if (chaining_latency < op_latency && !issuing_inst->isMemRef()) {
                     auto wakeup = new WakeDependents(issuing_inst, this);
                     cpu->schedule(wakeup,
                                   cpu->clockEdge(Cycles(chaining_latency - 1)));
