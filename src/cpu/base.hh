@@ -413,6 +413,9 @@ class BaseCPU : public ClockedObject
      */
     ThreadID numThreads;
 
+    /** Enable RISC-V Vector Chaining */
+    bool enableVectorChaining;
+
     System *system;
 
     /**

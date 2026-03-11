@@ -252,6 +252,11 @@ class VectorMicroInst : public RiscvMicroInst
     Cycles
     chainingLatency(ThreadContext *tc) const override
     {
+        // Check if chaining is enabled in the CPU parameters
+        if (!tc->getCpuPtr()->enableVectorChaining) {
+            return dynamicOpLatency(tc);
+        }
+
         // Chaining latency in ARA allows a consumer to start after the
         // producer's pipeline stages are complete (first element ready).
         // We add a small constant overhead (2 cycles) to model VRF write

@@ -73,9 +73,11 @@ from gem5.utils.requires import requires
 # from cpu.o3.AraConfig import AraFUPool # Removed
 
 class RVVCore(BaseCPUCore):
-    def __init__(self, elen, vlen, cpu_id):
+    def __init__(self, elen, vlen, cpu_id, enable_chaining):
         # Use our custom SelectedCPU which handles FUPool configuration automatically
-        super().__init__(core=SelectedCPU(cpu_id=cpu_id), isa=ISA.RISCV)
+        core = SelectedCPU(cpu_id=cpu_id)
+        core.enable_vector_chaining = enable_chaining
+        super().__init__(core=core, isa=ISA.RISCV)
         self.core.isa[0].elen = elen
         self.core.isa[0].vlen = vlen
 
@@ -109,6 +111,8 @@ parser.add_argument("-2", "--l2", required=False, type=str, default="512KiB")
 parser.add_argument("-p", "--parms", required=False, type = str, default='2048')
 parser.add_argument("--cpu-type", type=str, default="AraO3", choices=["AraO3", "AraMinor"], 
                     help="CPU model to use: AraO3 (O3CPU) or AraMinor (MinorCPU)")
+parser.add_argument("--enable-chaining", action="store_true", default=True, help="Enable vector chaining")
+parser.add_argument("--disable-chaining", action="store_false", dest="enable_chaining", help="Disable vector chaining")
 
 args = parser.parse_args()
 
@@ -130,7 +134,7 @@ cache_hierarchy = PrivateL1PrivateL2CacheHierarchy(
 memory = SingleChannelDDR4_2400(size="8GiB")
 
 processor = BaseCPUProcessor(
-    cores=[RVVCore(args.elen, args.vlen, i) for i in range(args.cores)]
+    cores=[RVVCore(args.elen, args.vlen, i, args.enable_chaining) for i in range(args.cores)]
 )
 
 # --- VITAL: ASSIGN ARA FU POOL ---

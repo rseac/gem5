@@ -3,7 +3,7 @@
 
 int main() {
     const int LMUL = 8;
-    const int ITERATIONS = 1000;
+    const int ITERATIONS = 50;
     
     printf("Starting Vector Chaining Test (LMUL=%d)...\n", LMUL);
 
