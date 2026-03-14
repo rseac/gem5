@@ -163,36 +163,18 @@ try:
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
             
-            # Create a dedicated ARA FUPool for the Core's Execute stage
-            simd_unit = AraSIMD_Unit()
-            simd_unit.count = self.simd_units
-
-            self.fuPool = AraFUPool()
-            # Replace the default AraSIMD_Unit in the pool with our custom-count one
-            new_fu_list = []
-            for fu in self.fuPool.FUList:
-                if isinstance(fu, AraSIMD_Unit):
-                    new_fu_list.append(simd_unit)
-                else:
-                    new_fu_list.append(fu)
-            self.fuPool.FUList = new_fu_list
-            
-            # Assign to InstQueues (for Issue logic usage)
-            # We MUST create unique instances for each IQ unit to avoid 
-            # configuration hierarchy cycles and "orphan node" errors.
+            # In the O3 CPU model, functional units are assigned per Instruction Queue (IQ).
+            # We MUST create unique instances for every unit in every pool to avoid 
+            # gem5 configuration errors (orphan nodes or multiple parents).
             for iq in self.instQueues:
-                iq_simd_unit = AraSIMD_Unit()
-                iq_simd_unit.count = self.simd_units
-                
-                iq_fu_pool = AraFUPool()
-                iq_new_fu_list = []
-                for fu in iq_fu_pool.FUList:
-                    if isinstance(fu, AraSIMD_Unit):
-                        iq_new_fu_list.append(iq_simd_unit)
-                    else:
-                        iq_new_fu_list.append(fu)
-                iq_fu_pool.FUList = iq_new_fu_list
-                iq.fuPool = iq_fu_pool
+                # Create a fresh set of functional units for this specific IQ unit.
+                # We instantiate the custom AraSIMD_Unit with the requested count.
+                iq.fuPool = FUPool(FUList = [
+                    IntALU(), IntMultDiv(), FP_ALU(), FP_MultDiv(),
+                    ReadPort(), AraSIMD_Unit(count=self.simd_units),
+                    Matrix_Unit(), System_Unit(), PredALU(),
+                    WritePort(), RdWrPort()
+                ])
 
 except ImportError:
     # RiscvO3CPU might not be available if not building for RISCV or if running 
