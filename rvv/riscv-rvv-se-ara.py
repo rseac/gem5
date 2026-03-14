@@ -178,6 +178,8 @@ print("=" * 50)
 # board.set_se_binary_workload(binary, arguments=[args.parms])
 board.set_se_binary_workload(binary, arguments=args.parms.split())
 
+import m5 # For curTick()
+simulator = Simulator(board=board, full_system=False)
 
 simulator.run()
 
