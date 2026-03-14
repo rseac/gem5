@@ -185,5 +185,13 @@ simulator.run()
 
 # Output cycles (assuming 1GHz clock as configured in SimpleBoard)
 # 1GHz = 1000 ps period (default gem5 tick is 1ps)
-cycles = m5.curTick() / 1000
-print(f"Total Execution Cycles: {int(cycles)}")
+cycles = int(m5.curTick() / 1000)
+
+print("\n" + "=" * 50)
+print("      ARA RISC-V VECTOR SIMULATION RESULTS")
+print("-" * 50)
+print(f"  CPU Model:            {args.cpu_type}")
+print(f"  Vector Chaining:      {'ENABLED' if args.enable_chaining else 'DISABLED'}")
+print(f"  Total Ticks:          {m5.curTick()} ps")
+print(f"  Total Execution Cycles: {cycles}")
+print("=" * 50 + "\n")

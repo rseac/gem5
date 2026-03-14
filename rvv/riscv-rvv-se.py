@@ -127,12 +127,35 @@ if args.resource in resources:
     binary = obtain_resource(args.resource)
 else:
     binary = res.BinaryResource(args.resource)
-print("Parms: ", args.parms)
+
+# --- Formatted Parameter Summary ---
+print("=" * 50)
+print("      RISC-V VECTOR (RVV) SIMUATION CONFIG")
+print("-" * 50)
+print(f"  Binary Resource:  {args.resource}")
+print(f"  Program Args:     {args.parms}")
+print(f"  Cores:            {args.cores}")
+print(f"  VLEN:             {args.vlen} bits")
+print(f"  ELEN:             {args.elen} bits")
+print(f"  L1D Cache:        {args.l1d}")
+print(f"  L2 Cache:         {args.l2}")
+print("-" * 50)
+print("Beginning simulation...")
+print("=" * 50)
+
 #board.set_se_binary_workload(binary, arguments=[args.parms])
 board.set_se_binary_workload(binary, arguments=args.parms.split())
 
 simulator = Simulator(board=board, full_system=False)
-print("Beginning simulation!")
-
 
 simulator.run()
+
+import m5
+cycles = int(m5.curTick() / 1000)
+
+print("\n" + "=" * 50)
+print("      RISC-V VECTOR (RVV) SIMULATION RESULTS")
+print("-" * 50)
+print(f"  Total Ticks:          {m5.curTick()} ps")
+print(f"  Total Execution Cycles: {cycles}")
+print("=" * 50 + "\n")
