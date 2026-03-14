@@ -214,13 +214,33 @@ class VectorMicroInst : public RiscvMicroInst
         int throughput_cycles = (microVl + elements_per_cycle - 1) /
                                  elements_per_cycle;
 
-        DPRINTF(VectorTiming, "dynamicOpLatency: microVl=%d, sew=%d, "
-                "throughput=%d, res=%d\n",
-                microVl, sew, throughput_cycles, throughput_cycles);
+        // Total occupancy depends on whether the unit is pipelined.
+        // For pipelined units, occupancy = throughput cycles.
+        // For non-pipelined units (Div), occupancy = pipeline depth + throughput.
+        int pipeline_lat = 0;
+        switch (opClass()) {
+          case SimdDivOp:
+            // Integer Division: 4 << vsew (e.g., 32 for EW64)
+            pipeline_lat = 4 << vsew;
+            break;
+          case SimdFloatDivOp:
+          case SimdFloatSqrtOp:
+            // FP Div/Sqrt: 3 cycle pipe
+            pipeline_lat = 3;
+            break;
+          default:
+            // Most units (ALU, Mult, etc.) are fully pipelined in ARA
+            pipeline_lat = 0;
+            break;
+        }
 
-        // Total occupancy = Throughput cycles
-        // This is how many cycles the functional unit is busy.
-        return Cycles(throughput_cycles);
+        int res = pipeline_lat + throughput_cycles;
+
+        DPRINTF(VectorTiming, "dynamicOpLatency: opClass=%d, microVl=%d, "
+                "sew=%d, throughput=%d, pipe=%d, res=%d\n",
+                opClass(), microVl, sew, throughput_cycles, pipeline_lat, res);
+
+        return Cycles(res);
     }
 
     Cycles
@@ -242,28 +262,40 @@ class VectorMicroInst : public RiscvMicroInst
           case SimdFloatMultOp:
           case SimdFloatMultAccOp:
           case SimdFloatMatMultAccOp:
-            pipeline_lat = 5;
+            // Hardware MFpu latencies are SEW dependent:
+            // EW64=5, EW32=4, EW16=3, EW8=2. 
+            // In RiscvISA, vsew: 0->8b, 1->16b, 2->32b, 3->64b.
+            // So pipeline_lat = vsew + 2.
+            pipeline_lat = vsew + 2;
             break;
           case SimdFloatCvtOp:
-            pipeline_lat = 2;
+            pipeline_lat = 2; // Conversion logic is 2 cycles.
             break;
           case SimdFloatDivOp:
           case SimdFloatSqrtOp:
-            pipeline_lat = 10;
+            pipeline_lat = 3; // Div/Sqrt pipe is 3 cycles.
             break;
           case SimdDivOp:
-            pipeline_lat = 32;
+            // Integer Division: EW64: 32, EW32: 16, EW16: 8, EW8: 4.
+            // (Scales as 4 << vsew)
+            pipeline_lat = 4 << vsew;
+            break;
+          case SimdMultOp:
+          case SimdMultAccOp:
+            // EW8 Mult is 0 cycles (purely combinational). Others are 1.
+            pipeline_lat = (sew == 8) ? 0 : 1;
             break;
           default:
             pipeline_lat = 1;
             break;
         }
 
-        const int CHAINING_OVERHEAD = 0;
+        const int CHAINING_OVERHEAD = 2;
         Cycles res = Cycles(pipeline_lat + CHAINING_OVERHEAD);
 
-        DPRINTF(VectorTiming, "chainingLatency: opClass=%d, pipe=%d, res=%d\n",
-                opClass(), pipeline_lat, res);
+        DPRINTF(VectorTiming, "chainingLatency: opClass=%d, vsew=%d, "
+                "pipe=%d, res=%d\n",
+                opClass(), vsew, pipeline_lat, res);
 
         return res;
     }
