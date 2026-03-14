@@ -115,8 +115,8 @@ parser.add_argument("--cpu-type", type=str, default="AraO3", choices=["AraO3", "
                     help="CPU model to use: AraO3 (O3CPU) or AraMinor (MinorCPU)")
 parser.add_argument("--enable-chaining", action="store_true", default=True, help="Enable vector chaining")
 parser.add_argument("--disable-chaining", action="store_false", dest="enable_chaining", help="Disable vector chaining")
-parser.add_argument("--vector-timing-throughput", type=int, default=2, help="Number of elements per cycle for timing model")
-parser.add_argument("--simd-units", type=int, default=4, help="Number of physical SIMD lanes")
+parser.add_argument("--vector-timing-throughput", type=int, default=4, help="Number of elements per cycle for timing model")
+parser.add_argument("--simd-units", type=int, default=2, help="Number of physical SIMD lanes")
 
 args = parser.parse_args()
 

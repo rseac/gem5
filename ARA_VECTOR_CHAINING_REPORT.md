@@ -175,7 +175,14 @@ Use `--simd-units 2` to provide hardware for the overlapped instruction to issue
 ./build/RISCV/gem5.opt rvv/riscv-rvv-se-ara.py <binary> \
     --cpu-type AraO3 \
     --enable-chaining \
-    --simd-units 4 \
-    --vector-timing-throughput 2 \
+    --simd-units 2 \
+    --vector-timing-throughput 4 \
     --vlen 1024
 ```
+
+#### Important Parameters for AraO3 Chaining
+When running `AraO3`, two parameters are critical for achieving realistic chaining performance:
+1.  **`--vector-timing-throughput`**: This represents the number of vector elements processed per cycle (modeling lane width). A value of **4** is common for high-performance configurations.
+2.  **`--simd-units`**: This represents the number of independent functional units. **You must set this to at least 2** to see the benefits of chaining. This allows a dependent instruction to issue to the second unit while the producer still occupies the first.
+
+*Note: These are now the default arguments in the `riscv-rvv-se-ara.py` script.*
