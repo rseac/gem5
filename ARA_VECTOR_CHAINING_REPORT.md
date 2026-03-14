@@ -142,17 +142,33 @@ The following table confirms the consistency between the ARA hardware pipeline d
 
 ---
 
-## 6. Performance Verification Examples
+## 7. Lane Configuration & Parameter Mapping
 
-| Metric | logic | No Chaining | Chaining Enabled |
-| :--- | :--- | :--- | :--- |
-| **`vadd` Issue** | Issue cycle | 0 | 0 |
-| **`vmul` Issue** | Scoreboard release | 32 | 7 |
-| **Total Ticks** | 2-Inst Chain | ~64 | ~39 |
+To accurately match the AraO3 model to specific ARA hardware lane counts, use the following recommended parameters.
+
+| ARA Hardware Lanes | `--vector-timing-throughput` | `--simd-units` | Modeling Intent | Min VLEN for Chaining* |
+| :--- | :--- | :--- | :--- | :--- |
+| **2 Lanes** | 2 | 2 | 2-lane streaming | > 896 bits |
+| **4 Lanes** | 4 | 2 | 4-lane streaming | > 1792 bits |
+| **8 Lanes** | 8 | 2 | 8-lane streaming | > 3584 bits |
+| **16 Lanes** | 16 | 2 | 16-lane streaming | > 7168 bits |
+| **32 Lanes** | 32 | 2 | 32-lane streaming | > 14336 bits |
+| **64 Lanes** | 64 | 2 | 64-lane streaming | > 28672 bits |
+| **128 Lanes** | 128 | 2 | 128-lane streaming | > 57344 bits |
+
+*\*Calculated for FP64 (SEW=64) where Chaining Latency is ~7 cycles. Chaining only triggers if occupancy > readiness.*
+
+### Key Configuration Logic
+
+1.  **Why `--simd-units` stays at 2?**
+    Even with many lanes, ARA is typically a **single-issue** engine. We use 2 units to model the "Bucket Brigade" overlap: Unit 1 handles the producer, and Unit 2 handles the consumer starting early. Setting this higher (e.g., 128) would incorrectly model a massive superscalar processor that could start 128 independent vector instructions in one cycle.
+
+2.  **The "Vanishing Chaining" Effect**
+    As you increase lanes, the hardware becomes so fast that it may finish an entire vector instruction before the first result even clears the pipeline. If your lanes finish in 4 cycles but the pipeline depth is 7, **chaining is impossible**. You must use very large `VLEN` values on wide-lane configurations to see the performance benefits of chaining.
 
 ---
 
-## 6. Invocation & Usage
+## 8. Invocation & Usage
 
 ### Compilation
 ```bash
