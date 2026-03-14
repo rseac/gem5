@@ -26,7 +26,7 @@
 
 from m5.objects.FuncUnit import *
 from m5.objects.FuncUnitConfig import *
-from m5.objects import FUPool
+from m5.objects.FUPool import FUPool
 from m5.params import *
 from m5.SimObject import SimObject
 
@@ -36,15 +36,9 @@ class AraSIMD_Unit(FUDesc):
     
     This class defines the specific latencies (opLat) for each vector operation class (opClass).
     The values are derived from the ARA hardware documentation specifications.
-    
-    Attributes:
-        opList (list): A list of OpDesc objects, each mapping a specific instruction type (OpClass)
-                       to a latency in cycles (opLat).
-        count (int):   The number of identical units available in the CPU.
     """
     opList = [
         # --- Integer Arithmetic ---
-        # ARA documentation specifies 1 cycle pipeline latency for basic integer ALU ops.
         OpDesc(opClass="SimdAdd", opLat=1),
         OpDesc(opClass="SimdAddAcc", opLat=1),
         OpDesc(opClass="SimdAlu", opLat=1),
@@ -55,46 +49,32 @@ class AraSIMD_Unit(FUDesc):
         OpDesc(opClass="SimdShiftAcc", opLat=1),
         
         # --- Integer Multiply ---
-        # ARA implementation uses a pipelined multiplier.
-        # Latency is effectively 1 cycle per element/instruction issue due to pipelining.
         OpDesc(opClass="SimdMult", opLat=1),
         OpDesc(opClass="SimdMultAcc", opLat=1),
         OpDesc(opClass="SimdMatMultAcc", opLat=1),
         
         # --- Integer Divide ---
-        # ARA uses a serial divider with variable latency (up to 64 cycles).
-        # We set a representative average latency of 32 cycles.
-        # pipelined=False indicates the unit cannot accept new instructions until the current one finishes.
         OpDesc(opClass="SimdDiv", opLat=32, pipelined=False),
         
         # --- Float Arithmetic ---
-        # ARA Floating Point Unit (FPU) latencies are higher than integer units.
-        # We use the conservative maximum latency (for 64-bit elements) of 5 cycles.
         OpDesc(opClass="SimdFloatAdd", opLat=5),
-        OpDesc(opClass="SimdFloatAlu", opLat=5), # Explicitly set to 5
+        OpDesc(opClass="SimdFloatAlu", opLat=5),
         OpDesc(opClass="SimdFloatMult", opLat=5),
         OpDesc(opClass="SimdFloatMultAcc", opLat=5),
         OpDesc(opClass="SimdFloatMatMultAcc", opLat=5),
         
         # --- Float Misc / Compare ---
-        # Comparisons are faster, typically 1 cycle.
         OpDesc(opClass="SimdFloatCmp", opLat=1),
         OpDesc(opClass="SimdFloatMisc", opLat=1),
         
         # --- Float Conversion ---
-        # Floating point conversion operations take 2 cycles in ARA.
         OpDesc(opClass="SimdFloatCvt", opLat=2),
         
         # --- Float Divide / Square Root ---
-        # Iterative operations with high latency.
-        # Setting a conservative latency of 10 cycles. 
-        # pipelined=False because the iterative unit is not fully pipelined in the same way.
         OpDesc(opClass="SimdFloatDiv", opLat=10, pipelined=False),
         OpDesc(opClass="SimdFloatSqrt", opLat=10, pipelined=False),
         
         # --- Reductions ---
-        # Reduction operations effectively feed back into the pipeline.
-        # Base latency is 1 cycle.
         OpDesc(opClass="SimdReduceAdd", opLat=1),
         OpDesc(opClass="SimdReduceAlu", opLat=1),
         OpDesc(opClass="SimdReduceCmp", opLat=1),
@@ -102,10 +82,6 @@ class AraSIMD_Unit(FUDesc):
         OpDesc(opClass="SimdFloatReduceCmp", opLat=1),
         
         # --- Load / Store Address Generation ---
-        # These latencies represent the Address Generation Unit (AGU) time.
-        # This is strictly the time to calculate addresses and issue requests to the memory system.
-        # The actual memory access latency is modeled separately by the cache and memory controllers
-        # connected to the CPU. 1 cycle is standard for AGU.
         OpDesc(opClass="SimdUnitStrideLoad", opLat=1),
         OpDesc(opClass="SimdUnitStrideStore", opLat=1),
         OpDesc(opClass="SimdUnitStrideMaskLoad", opLat=1),
@@ -123,52 +99,23 @@ class AraSIMD_Unit(FUDesc):
         OpDesc(opClass="SimdConfig", opLat=1),
     ]
     
-    # count=4 means the CPU effectively has 4 of these vector units available.
-    # This models a superscalar capability where the CPU can issue up to 4 vector instructions
-    # per cycle if dependencies allow, mimicking the high throughput of the ARA vector engine.
     count = 4
-
-class AraFUPool(FUPool):
-    """
-    Custom Functional Unit Pool for an ARA-like O3 CPU configuration.
-    
-    This pool aggregates all functional units available to the CPU.
-    It includes the standard scalar units (IntALU, FP_ALU, etc.) and replaces the 
-    default vector unit with our custom 'AraSIMD_Unit'.
-    """
-    FUList = [
-        IntALU(),       # Standard Integer ALUs (Scalar)
-        IntMultDiv(),   # Standard Integer Multiply/Divide (Scalar)
-        FP_ALU(),       # Standard Floating Point ALUs (Scalar)
-        FP_MultDiv(),   # Standard Floating Point Mult/Div (Scalar)
-        ReadPort(),     # Memory Read Ports
-        AraSIMD_Unit(), # <--- Custom ARA Vector Unit defined above
-        Matrix_Unit(),  # Matrix Unit (if used)
-        System_Unit(),  # System instructions
-        PredALU(),      # Predicated ALU
-        WritePort(),    # Memory Write Ports
-        RdWrPort(),     # Read/Write Ports
-    ]
 
 try:
     from m5.objects import RiscvO3CPU
     class AraO3CPU(RiscvO3CPU):
         """
-        Custom RiscvO3CPU that automatically uses the AraFUPool.
-        
-        This class handles the boiler-plate of assigning the custom functional unit pool
-        to both the Core (backend) and the Instruction Queues (IQ), which is required
-        because the standard IQUnit defaults to a standard FUPool.
+        Custom RiscvO3CPU that automatically sets up the ARA Functional Unit Pool.
         """
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
             
-            # In the O3 CPU model, functional units are assigned per Instruction Queue (IQ).
-            # We MUST create unique instances for every unit in every pool to avoid 
-            # gem5 configuration errors (orphan nodes or multiple parents).
+            # CRITICAL: In gem5, SimObject instances (like functional units) must 
+            # have a clear parent-child relationship. We instantiate them inside
+            # the constructor so they are immediately attached to their parents.
             for iq in self.instQueues:
-                # Create a fresh set of functional units for this specific IQ unit.
-                # We instantiate the custom AraSIMD_Unit with the requested count.
+                # We provide a fresh set of functional units for every Instruction Queue (IQ).
+                # This prevents 'multiple parent' and 'orphan node' RuntimeErrors.
                 iq.fuPool = FUPool(FUList = [
                     IntALU(), IntMultDiv(), FP_ALU(), FP_MultDiv(),
                     ReadPort(), AraSIMD_Unit(count=self.simd_units),
@@ -177,6 +124,4 @@ try:
                 ])
 
 except ImportError:
-    # RiscvO3CPU might not be available if not building for RISCV or if running 
-    # check scripts. We pass to avoid breaking imports in those cases.
     pass
