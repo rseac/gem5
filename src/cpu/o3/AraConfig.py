@@ -163,29 +163,36 @@ try:
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
             
-            # Create a dedicated ARA FUPool for this core
-            # We create a new instance of AraSIMD_Unit and set its count
-            # before adding it to the pool.
+            # Create a dedicated ARA FUPool for the Core's Execute stage
             simd_unit = AraSIMD_Unit()
             simd_unit.count = self.simd_units
 
-            self.ara_fu_pool = AraFUPool()
+            self.fuPool = AraFUPool()
             # Replace the default AraSIMD_Unit in the pool with our custom-count one
             new_fu_list = []
-            for fu in self.ara_fu_pool.FUList:
+            for fu in self.fuPool.FUList:
                 if isinstance(fu, AraSIMD_Unit):
                     new_fu_list.append(simd_unit)
                 else:
                     new_fu_list.append(fu)
-            self.ara_fu_pool.FUList = new_fu_list
-            
-            # Assign to the Core (for Execute stage usage)
-            self.fuPool = self.ara_fu_pool
+            self.fuPool.FUList = new_fu_list
             
             # Assign to InstQueues (for Issue logic usage)
-            # We must iterate because instQueues is a VectorParam
+            # We MUST create unique instances for each IQ unit to avoid 
+            # configuration hierarchy cycles and "orphan node" errors.
             for iq in self.instQueues:
-                iq.fuPool = self.ara_fu_pool
+                iq_simd_unit = AraSIMD_Unit()
+                iq_simd_unit.count = self.simd_units
+                
+                iq_fu_pool = AraFUPool()
+                iq_new_fu_list = []
+                for fu in iq_fu_pool.FUList:
+                    if isinstance(fu, AraSIMD_Unit):
+                        iq_new_fu_list.append(iq_simd_unit)
+                    else:
+                        iq_new_fu_list.append(fu)
+                iq_fu_pool.FUList = iq_new_fu_list
+                iq.fuPool = iq_fu_pool
 
 except ImportError:
     # RiscvO3CPU might not be available if not building for RISCV or if running 
