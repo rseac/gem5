@@ -155,14 +155,28 @@ if args.resource in resources:
     binary = obtain_resource(args.resource)
 else:
     binary = res.BinaryResource(args.resource)
-print("Parms: ", args.parms)
-#board.set_se_binary_workload(binary, arguments=[args.parms])
+
+# --- Formatted Parameter Summary ---
+print("=" * 50)
+print("       ARA RISC-V VECTOR SIMUATION CONFIG")
+print("-" * 50)
+print(f"  Binary Resource:  {args.resource}")
+print(f"  Program Args:     {args.parms}")
+print(f"  CPU Model:        {args.cpu_type}")
+print(f"  Cores:            {args.cores}")
+print(f"  VLEN:             {args.vlen} bits")
+print(f"  ELEN:             {args.elen} bits")
+print(f"  Vector Chaining:  {'ENABLED' if args.enable_chaining else 'DISABLED'}")
+print(f"  Throughput:       {args.vector_timing_throughput} elements/cycle")
+print(f"  SIMD Units:       {args.simd_units} parallel units")
+print(f"  L1D Cache:        {args.l1d}")
+print(f"  L2 Cache:         {args.l2}")
+print("-" * 50)
+print("Beginning simulation...")
+print("=" * 50)
+
+# board.set_se_binary_workload(binary, arguments=[args.parms])
 board.set_se_binary_workload(binary, arguments=args.parms.split())
-
-import m5 # For curTick()
-
-simulator = Simulator(board=board, full_system=False)
-print("Beginning simulation!")
 
 
 simulator.run()
