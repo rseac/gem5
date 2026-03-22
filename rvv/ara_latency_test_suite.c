@@ -91,37 +91,45 @@ TEST_LATENCY(vfsqrt_e32,32, vfloat32m1_t, INIT_FP32, __riscv_vfsqrt_v_f32m1)
 // --- Slides (VFU_SlideUnit) ---
 TEST_LATENCY(vslide_e32, 32, vint32m1_t, INIT_INT(32), __riscv_vslidedown_vx_i32m1)
 
+// --- Category 6: Throughput (Lane Verification) ---
+// These tests use independent instructions to measure the hardware's 
+// processing bandwidth, which directly reveals the number of lanes.
+TEST_THROUGHPUT(vadd_thru_e32, 32, vint32m1_t, INIT_INT(32), __riscv_vadd_vv_i32m1)
+TEST_THROUGHPUT(vadd_thru_e64, 64, vint64m1_t, INIT_INT(64), __riscv_vadd_vv_i64m1)
+
 int main() {
     printf("==================================================\n");
-    printf("   ARA HARDWARE LATENCY VERIFICATION SUITE\n");
+    printf("   ARA HARDWARE LATENCY & LANE TEST SUITE\n");
+    printf("   VLEN: %d bits\n", VLEN);
     printf("==================================================\n");
 
-    printf("\n[1] Integer Arithmetic (Target: 1 cycle pipe)\n");
+    printf("\n[1] Pipeline Latency (Dependent Chain)\n");
+    printf("Target: Pipeline Depth + Chaining Overhead\n");
+    test_latency_vadd_e32();
+    test_latency_vfadd_e32();
+    test_latency_vfadd_e64();
+
+    printf("\n[2] Throughput / Occupancy (Independent Stream)\n");
+    printf("Note: Cycles/Inst should match ceil(VLEN / (Lanes * SEW))\n");
+    test_throughput_vadd_thru_e32();
+    test_throughput_vadd_thru_e64();
+
+    printf("\n[3] Integer Category Latencies\n");
     test_latency_vadd_e8();
     test_latency_vadd_e16();
-    test_latency_vadd_e32();
     test_latency_vadd_e64();
-
-    printf("\n[2] Integer Multiply (Target: 0-1 cycle pipe)\n");
     test_latency_vmul_e8();
     test_latency_vmul_e32();
     test_latency_vmul_e64();
-
-    printf("\n[3] Integer Divide (Target: Variable 2-65 cycles)\n");
     test_latency_vdiv_e32();
     test_latency_vdiv_e64();
 
-    printf("\n[4] FP Arithmetic (Target: SEW+2 pipe)\n");
-    test_latency_vfadd_e32();
-    test_latency_vfadd_e64();
+    printf("\n[4] Floating Point Category Latencies\n");
     test_latency_vfmul_e32();
-    test_latency_vfmul_e64();
-
-    printf("\n[5] FP Iterative (Target: 3 cycle pipe)\n");
     test_latency_vfdiv_e32();
     test_latency_vfsqrt_e32();
 
-    printf("\n[6] Slide Operations (Target: 1 cycle pipe)\n");
+    printf("\n[5] Misc Operations\n");
     test_latency_vslide_e32();
 
     printf("\n==================================================\n");

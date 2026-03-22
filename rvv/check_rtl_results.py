@@ -29,56 +29,101 @@ EXPECTED_LATENCIES = {
     "vredsum_e32": 3.0,
 }
 
+import math
+
+# --- Configuration ---
+# You can override these via command line if your hardware differs
+DEFAULT_VLEN = 128
+DEFAULT_LANES = 2
+
+# --- Gold Standard Latencies ---
+# Expected Pipeline Depth + 2 Cycle Overhead
+LATENCY_EXPECTS = {
+    "vadd_e8":     3.0, "vadd_e16":    3.0, "vadd_e32":    3.0, "vadd_e64":    3.0,
+    "vmul_e8":     2.0, "vmul_e32":    3.0, "vmul_e64":    3.0,
+    "vdiv_e32":    18.0, "vdiv_e64":   34.0,
+    "vfadd_e32":   6.0, "vfadd_e64":   7.0,
+    "vfmul_e32":   6.0, "vfdiv_e32":   5.0, "vfsqrt_e32":  5.0,
+    "vslide_e32":  3.0,
+}
+
 def parse_rtl_output(file_path):
-    results = {}
-    # Pattern: LAT [vadd_e8       ] SEW=8 :   3.00
-    pattern = re.compile(r"LAT\s+\[([\w_]+)\s+\]\s+SEW=\d+\s*:\s+([\d\.]+)")
+    lat_results = {}
+    thru_results = {}
+    vlen = DEFAULT_VLEN
+    
+    # Patterns
+    lat_pattern  = re.compile(r"LAT\s+\[([\w_]+)\s+\]\s+SEW=(\d+)\s*:\s+([\d\.]+)")
+    thru_pattern = re.compile(r"THROUGH\s+\[([\w_]+)\s+\]\s+SEW=(\d+)\s*:\s+([\d\.]+)")
+    vlen_pattern = re.compile(r"VLEN:\s+(\d+)\s+bits")
     
     try:
         with open(file_path, 'r') as f:
             for line in f:
-                match = pattern.search(line)
-                if match:
-                    name = match.group(1).strip()
-                    value = float(match.group(2))
-                    results[name] = value
+                # Detect VLEN
+                v_match = vlen_pattern.search(line)
+                if v_match: vlen = int(v_match.group(1))
+                
+                # Detect Latencies
+                l_match = lat_pattern.search(line)
+                if l_match:
+                    name = l_match.group(1).strip()
+                    lat_results[name] = float(l_match.group(3))
+                
+                # Detect Throughputs
+                t_match = thru_pattern.search(line)
+                if t_match:
+                    name = t_match.group(1).strip()
+                    thru_results[name] = (float(t_match.group(3)), int(t_match.group(2)))
     except FileNotFoundError:
         print(f"Error: Could not find result file '{file_path}'")
         sys.exit(1)
-    return results
+    return vlen, lat_results, thru_results
 
-def compare_results(actual):
-    print("=" * 65)
-    print(f"{'Instruction':<20} | {'Expected':<10} | {'Actual':<10} | {'Delta':<8} | {'Status'}")
-    print("-" * 65)
+def compare_results(vlen, actual_lat, actual_thru, lanes):
+    print("=" * 70)
+    print(f" ARA VERIFICATION: VLEN={vlen}, LANES={lanes}")
+    print("-" * 70)
+    print(f"{'Metric':<8} | {'Instruction':<18} | {'Exp':<8} | {'Act':<8} | {'Delta':<6} | {'Stat'}")
+    print("-" * 70)
     
     passed = 0
     total = 0
     
-    for name, exp_val in EXPECTED_LATENCIES.items():
-        if name in actual:
-            total += 1
-            act_val = actual[name]
+    # 1. Check Pipeline Latencies
+    for name, exp_val in LATENCY_EXPECTS.items():
+        total += 1
+        if name in actual_lat:
+            act_val = actual_lat[name]
             delta = abs(act_val - exp_val)
-            status = "PASS" if delta < 0.15 else "FAIL" # Allowing minor jitter
-            
-            if status == "PASS": passed += 1
-            
-            print(f"{name:<20} | {exp_val:<10.2f} | {act_val:<10.2f} | {act_val-exp_val:<+8.2f} | {status}")
+            stat = "PASS" if delta < 0.15 else "FAIL"
+            if stat == "PASS": passed += 1
+            print(f"LAT      | {name:<18} | {exp_val:<8.2f} | {act_val:<8.2f} | {act_val-exp_val:<+6.2f} | {stat}")
         else:
-            print(f"{name:<20} | {exp_val:<10.2f} | {'MISSING':<10} | {'-':<8} | SKIP")
+            print(f"LAT      | {name:<18} | {exp_val:<8.2f} | {'MISS':<8} | {'-':<6} | SKIP")
 
-    print("=" * 65)
-    print(f"VERIFICATION SUMMARY: {passed}/{total} Passed")
+    # 2. Check Throughput (Lane counts)
+    for name, (act_val, sew) in actual_thru.items():
+        total += 1
+        # Exp Throughput = ceil(VLEN / (Lanes * SEW))
+        exp_val = math.ceil(vlen / (lanes * sew))
+        delta = abs(act_val - exp_val)
+        stat = "PASS" if delta < 0.15 else "FAIL"
+        if stat == "PASS": passed += 1
+        print(f"THROUGH  | {name:<18} | {exp_val:<8.2f} | {act_val:<8.2f} | {act_val-exp_val:<+6.2f} | {stat}")
+
+    print("=" * 70)
+    print(f"SUMMARY: {passed}/{total} Tests Passed")
     if passed == total:
-        print("RESULT: ARA Hardware Latencies match gem5 AraO3 configuration.")
+        print("SUCCESS: ARA Hardware matches gem5 configuration.")
     else:
-        print("RESULT: Discrepancies detected. gem5 model calibration required.")
+        print("FAILURE: Discrepancies detected.")
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: ./check_rtl_results.py <rtl_sim_output.log>")
+        print("Usage: ./check_rtl_results.py <log> [lanes_override]")
         sys.exit(1)
     
-    actual_results = parse_rtl_output(sys.argv[1])
-    compare_results(actual_results)
+    lanes = int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_LANES
+    vlen, a_lat, a_thru = parse_rtl_output(sys.argv[1])
+    compare_results(vlen, a_lat, a_thru, lanes)
