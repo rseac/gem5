@@ -168,12 +168,42 @@ To accurately match the AraO3 model to specific ARA hardware lane counts, use th
 
 ---
 
-## 8. Invocation & Usage
+## 9. Running Hardware Verification Tests
 
-### Compilation
+A comprehensive test suite is provided in `rvv/` to verify that your ARA hardware (RTL or FPGA) matches the latencies modeled in gem5.
+
+### Step 1: Cross-Compilation
+Navigate to the `rvv/` directory and compile the test suite for your specific hardware VLEN.
 ```bash
-scons build/RISCV/gem5.opt -j$(nproc)
+cd rvv/
+# Default VLEN=128
+make -f Makefile.hardware
+# For custom VLEN (e.g., 512)
+make -f Makefile.hardware VLEN=512
 ```
+
+### Step 2: Execution on ARA RTL
+Run the resulting binary `ara_latency_test.bin` on your ARA RTL simulation platform. Ensure you capture the console output to a log file.
+```bash
+# Example for Verilator/VCS
+./sim_cluster ara_latency_test.bin > rtl_test.log
+```
+
+### Step 3: Automatic Validation
+Run the Python validation script to compare your RTL results against the gem5 Gold Standard. Specify the number of lanes in your hardware build.
+```bash
+# Check results for a 2-lane hardware build
+./check_rtl_results.py rtl_test.log 2
+
+# Check results for a 4-lane hardware build
+./check_rtl_results.py rtl_test.log 4
+```
+
+### Interpreting Results
+- **PASS**: The hardware cycles per instruction match the gem5 model (within 0.15 cycle jitter).
+- **FAIL**: Discrepancy detected. This indicates either:
+  1. The ARA hardware has changed its pipeline depth or synchronization logic.
+  2. The `AraO3` parameters in gem5 need to be recalibrated to match the new hardware state.
 
 ### Running AraMinor
 Use `--simd-units 2` to provide hardware for the overlapped instruction to issue to.
