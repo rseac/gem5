@@ -1,0 +1,33 @@
+# Makefile for ARA Hardware Latency Verification
+# Designed for cross-compilation to ARA RTL/FPGA
+
+CROSS_COMPILE = riscv64-unknown-elf-
+CC      = $(CROSS_COMPILE)gcc
+OBJDUMP = $(CROSS_COMPILE)objdump
+
+# --- Configuration ---
+# VLEN should match your target ARA hardware configuration
+VLEN = 128
+
+# --- Flags ---
+# -march=rv64gcv enables Vector extension
+# -O3 is critical to prevent the compiler from breaking the unrolled dependency chains
+CFLAGS = -march=rv64gcv -mabi=lp64d -O3 -static -DVLEN=$(VLEN)
+
+TARGET = ara_latency_test.bin
+DUMP   = ara_latency_test.dump
+SRC    = ara_latency_test_suite.c
+
+all: $(TARGET) $(DUMP)
+
+$(TARGET): $(SRC)
+	$(CC) $(CFLAGS) -o $@ $<
+	@echo "Built $(TARGET) for ARA Hardware (VLEN=$(VLEN))"
+
+$(DUMP): $(TARGET)
+	$(OBJDUMP) -D $< > $@
+
+clean:
+	rm -f $(TARGET) $(DUMP)
+
+.PHONY: all clean
