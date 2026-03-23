@@ -23,6 +23,7 @@ static inline uint64_t read_cycles() {
 // Measures Pipeline Latency (Unary - 1 operand)
 #define TEST_LATENCY_1(NAME, SEW, TYPE, INIT_VAL, INST_FUNC) \
 void test_latency_##NAME() { \
+    printf("  -> Starting: " #NAME "\n"); \
     size_t vl = __riscv_vsetvl_e##SEW##m1(1); \
     TYPE v1 = INIT_VAL; \
     uint64_t start, end; \
@@ -38,11 +39,13 @@ void test_latency_##NAME() { \
     uint64_t total_cycles = end - start; \
     uint64_t total_insts = ITERATIONS * UNROLL; \
     printf("LATENCY  [%-12s] SEW=%-2d: %llu cycles / %llu insts\n", #NAME, SEW, total_cycles, total_insts); \
+    printf("  <- Finished: " #NAME "\n"); \
 }
 
 // Measures Pipeline Latency (Binary - 2 operands)
 #define TEST_LATENCY_2(NAME, SEW, TYPE, INIT_VAL, INST_FUNC) \
 void test_latency_##NAME() { \
+    printf("  -> Starting: " #NAME "\n"); \
     size_t vl = __riscv_vsetvl_e##SEW##m1(1); \
     TYPE v1 = INIT_VAL; \
     TYPE v2 = INIT_VAL; \
@@ -59,11 +62,13 @@ void test_latency_##NAME() { \
     uint64_t total_cycles = end - start; \
     uint64_t total_insts = ITERATIONS * UNROLL; \
     printf("LATENCY  [%-12s] SEW=%-2d: %llu cycles / %llu insts\n", #NAME, SEW, total_cycles, total_insts); \
+    printf("  <- Finished: " #NAME "\n"); \
 }
 
 // Measures Throughput/Occupancy (Binary - 2 operands independent)
 #define TEST_THROUGHPUT_2(NAME, SEW, TYPE, INIT_VAL, INST_FUNC) \
 void test_throughput_##NAME() { \
+    printf("  -> Starting Throughput: " #NAME "\n"); \
     size_t vl = __riscv_vsetvl_e##SEW##m1(VLEN/SEW); \
     TYPE v1 = INIT_VAL; TYPE v2 = INIT_VAL; \
     TYPE v3 = INIT_VAL; TYPE v4 = INIT_VAL; \
@@ -80,10 +85,12 @@ void test_throughput_##NAME() { \
     uint64_t total_cycles = end - start; \
     uint64_t total_insts = ITERATIONS * UNROLL; \
     printf("THROUGH  [%-12s] SEW=%-2d: %llu cycles / %llu insts\n", #NAME, SEW, total_cycles, total_insts); \
+    printf("  <- Finished Throughput: " #NAME "\n"); \
 }
 
 // Special case for slides
 void test_latency_vslide_e32() {
+    printf("  -> Starting: vslide_e32\n");
     size_t vl = __riscv_vsetvl_e32m1(1);
     vint32m1_t v1 = __riscv_vundefined_i32m1();
     uint64_t start, end;
@@ -99,6 +106,7 @@ void test_latency_vslide_e32() {
     uint64_t total_cycles = end - start;
     uint64_t total_insts = ITERATIONS * UNROLL;
     printf("LATENCY  [vslide_e32   ] SEW=32: %llu cycles / %llu insts\n", total_cycles, total_insts);
+    printf("  <- Finished: vslide_e32\n");
 }
 
 // --- Integer Arithmetic (VFU_Alu) ---
