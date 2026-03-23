@@ -52,37 +52,38 @@ def parse_rtl_output(file_path):
     thru_results = {}
     vlen = DEFAULT_VLEN
     
-    # Patterns
-    # New Format: RESULT [vadd_e8] SEW=8: 1500 / 5000
-    lat_pattern  = re.compile(r"RESULT\s+\[([\w_]+)\]\s+SEW=(\d+):\s+(\d+)\s+/\s+(\d+)")
-    thru_pattern = re.compile(r"THROUGH\s+\[([\w_]+)\]\s+SEW=(\d+):\s+(\d+)\s+/\s+(\d+)")
-    vlen_pattern = re.compile(r"VLEN:\s+(\d+)\s+bits")
-    
     try:
         with open(file_path, 'r') as f:
             for line in f:
-                # Detect VLEN
-                v_match = vlen_pattern.search(line)
-                if v_match: vlen = int(v_match.group(1))
+                parts = line.split()
+                if not parts: continue
                 
-                # Detect Latencies
-                l_match = lat_pattern.search(line)
-                if l_match:
-                    name = l_match.group(1).strip()
-                    cycles = int(l_match.group(3))
-                    insts = int(l_match.group(4))
+                # Format: VLEN_CHECK: 4096
+                if parts[0] == "VLEN_CHECK:":
+                    vlen = int(parts[1])
+                
+                # Format: DATA_POINT vadd_e32 32 3000 1000
+                if parts[0] == "DATA_POINT":
+                    name = parts[1]
+                    sew = int(parts[2])
+                    cycles = int(parts[3])
+                    insts = int(parts[4])
                     lat_results[name] = float(cycles) / insts
                 
-                # Detect Throughputs
-                t_match = thru_pattern.search(line)
-                if t_match:
-                    name = t_match.group(1).strip()
-                    cycles = int(t_match.group(3))
-                    insts = int(t_match.group(4))
-                    thru_results[name] = (float(cycles) / insts, int(t_match.group(2)))
+                # Format: DATA_THROUGH vadd_thru_e32 32 1000 1000
+                if parts[0] == "DATA_THROUGH":
+                    name = parts[1]
+                    sew = int(parts[2])
+                    cycles = int(parts[3])
+                    insts = int(parts[4])
+                    thru_results[name] = (float(cycles) / insts, sew)
+                    
     except FileNotFoundError:
         print(f"Error: Could not find result file '{file_path}'")
         sys.exit(1)
+    except (ValueError, IndexError):
+        # Skip malformed lines
+        pass
     return vlen, lat_results, thru_results
 
 def compare_results(vlen, actual_lat, actual_thru, lanes):
