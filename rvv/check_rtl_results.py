@@ -53,9 +53,9 @@ def parse_rtl_output(file_path):
     vlen = DEFAULT_VLEN
     
     # Patterns
-    # New Format: LATENCY  [vadd_e8       ] SEW=8 : 1500 cycles / 5000 insts
-    lat_pattern  = re.compile(r"LATENCY\s+\[([\w_]+)\s+\]\s+SEW=(\d+)\s*:\s+(\d+)\s+cycles\s+/\s+(\d+)\s+insts")
-    thru_pattern = re.compile(r"THROUGH\s+\[([\w_]+)\s+\]\s+SEW=(\d+)\s*:\s+(\d+)\s+cycles\s+/\s+(\d+)\s+insts")
+    # New Format: RESULT [vadd_e8] SEW=8: 1500 / 5000
+    lat_pattern  = re.compile(r"RESULT\s+\[([\w_]+)\]\s+SEW=(\d+):\s+(\d+)\s+/\s+(\d+)")
+    thru_pattern = re.compile(r"THROUGH\s+\[([\w_]+)\]\s+SEW=(\d+):\s+(\d+)\s+/\s+(\d+)")
     vlen_pattern = re.compile(r"VLEN:\s+(\d+)\s+bits")
     
     try:
@@ -72,12 +72,6 @@ def parse_rtl_output(file_path):
                     cycles = int(l_match.group(3))
                     insts = int(l_match.group(4))
                     lat_results[name] = float(cycles) / insts
-                
-                # Special case for slides format: LATENCY  [vslide_e32   ] SEW=32: 1500 cycles / 5000 insts
-                if "vslide_e32" in line:
-                    s_match = re.search(r"\[(vslide_e32)\s+\]\s+SEW=32:\s+(\d+)\s+cycles\s+/\s+(\d+)\s+insts", line)
-                    if s_match:
-                        lat_results["vslide_e32"] = float(s_match.group(2)) / int(s_match.group(3))
                 
                 # Detect Throughputs
                 t_match = thru_pattern.search(line)
