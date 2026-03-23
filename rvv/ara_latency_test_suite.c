@@ -11,21 +11,22 @@
 #define UNROLL 10
 
 // --- Measurement Infrastructure ---
-static inline uint64_t read_mcycle() {
+// Use rdcycle (user-mode) instead of mcycle (machine-mode) for better compatibility
+static inline uint64_t read_cycles() {
     uint64_t val;
-    asm volatile ("csrr %0, mcycle" : "=r" (val));
+    asm volatile ("rdcycle %0" : "=r" (val));
     return val;
 }
 
 // --- Test Macros ---
 
-// Meaures Pipeline Latency (Unary - 1 operand)
+// Measures Pipeline Latency (Unary - 1 operand)
 #define TEST_LATENCY_1(NAME, SEW, TYPE, INIT_VAL, INST_FUNC) \
 void test_latency_##NAME() { \
     size_t vl = __riscv_vsetvl_e##SEW##m1(1); \
     TYPE v1 = INIT_VAL; \
     uint64_t start, end; \
-    start = read_mcycle(); \
+    start = read_cycles(); \
     for (int i = 0; i < ITERATIONS; i++) { \
         v1 = INST_FUNC(v1, vl); v1 = INST_FUNC(v1, vl); \
         v1 = INST_FUNC(v1, vl); v1 = INST_FUNC(v1, vl); \
@@ -33,19 +34,20 @@ void test_latency_##NAME() { \
         v1 = INST_FUNC(v1, vl); v1 = INST_FUNC(v1, vl); \
         v1 = INST_FUNC(v1, vl); v1 = INST_FUNC(v1, vl); \
     } \
-    end = read_mcycle(); \
-    double avg = (double)(end - start) / (ITERATIONS * UNROLL); \
-    printf("LATENCY  [%-12s] SEW=%-2d: %6.2f cycles/inst\n", #NAME, SEW, avg); \
+    end = read_cycles(); \
+    uint64_t total_cycles = end - start; \
+    uint64_t total_insts = ITERATIONS * UNROLL; \
+    printf("LATENCY  [%-12s] SEW=%-2d: %llu cycles / %llu insts\n", #NAME, SEW, total_cycles, total_insts); \
 }
 
-// Meaures Pipeline Latency (Binary - 2 operands)
+// Measures Pipeline Latency (Binary - 2 operands)
 #define TEST_LATENCY_2(NAME, SEW, TYPE, INIT_VAL, INST_FUNC) \
 void test_latency_##NAME() { \
     size_t vl = __riscv_vsetvl_e##SEW##m1(1); \
     TYPE v1 = INIT_VAL; \
     TYPE v2 = INIT_VAL; \
     uint64_t start, end; \
-    start = read_mcycle(); \
+    start = read_cycles(); \
     for (int i = 0; i < ITERATIONS; i++) { \
         v1 = INST_FUNC(v1, v2, vl); v1 = INST_FUNC(v1, v2, vl); \
         v1 = INST_FUNC(v1, v2, vl); v1 = INST_FUNC(v1, v2, vl); \
@@ -53,9 +55,10 @@ void test_latency_##NAME() { \
         v1 = INST_FUNC(v1, v2, vl); v1 = INST_FUNC(v1, v2, vl); \
         v1 = INST_FUNC(v1, v2, vl); v1 = INST_FUNC(v1, v2, vl); \
     } \
-    end = read_mcycle(); \
-    double avg = (double)(end - start) / (ITERATIONS * UNROLL); \
-    printf("LATENCY  [%-12s] SEW=%-2d: %6.2f cycles/inst\n", #NAME, SEW, avg); \
+    end = read_cycles(); \
+    uint64_t total_cycles = end - start; \
+    uint64_t total_insts = ITERATIONS * UNROLL; \
+    printf("LATENCY  [%-12s] SEW=%-2d: %llu cycles / %llu insts\n", #NAME, SEW, total_cycles, total_insts); \
 }
 
 // Measures Throughput/Occupancy (Binary - 2 operands independent)
@@ -65,7 +68,7 @@ void test_throughput_##NAME() { \
     TYPE v1 = INIT_VAL; TYPE v2 = INIT_VAL; \
     TYPE v3 = INIT_VAL; TYPE v4 = INIT_VAL; \
     uint64_t start, end; \
-    start = read_mcycle(); \
+    start = read_cycles(); \
     for (int i = 0; i < ITERATIONS; i++) { \
         v1 = INST_FUNC(v1, v2, vl); v3 = INST_FUNC(v3, v4, vl); \
         v1 = INST_FUNC(v1, v2, vl); v3 = INST_FUNC(v3, v4, vl); \
@@ -73,9 +76,10 @@ void test_throughput_##NAME() { \
         v1 = INST_FUNC(v1, v2, vl); v3 = INST_FUNC(v3, v4, vl); \
         v1 = INST_FUNC(v1, v2, vl); v3 = INST_FUNC(v3, v4, vl); \
     } \
-    end = read_mcycle(); \
-    double avg = (double)(end - start) / (ITERATIONS * UNROLL); \
-    printf("THROUGH  [%-12s] SEW=%-2d: %6.2f cycles/inst\n", #NAME, SEW, avg); \
+    end = read_cycles(); \
+    uint64_t total_cycles = end - start; \
+    uint64_t total_insts = ITERATIONS * UNROLL; \
+    printf("THROUGH  [%-12s] SEW=%-2d: %llu cycles / %llu insts\n", #NAME, SEW, total_cycles, total_insts); \
 }
 
 // Special case for slides
@@ -83,7 +87,7 @@ void test_latency_vslide_e32() {
     size_t vl = __riscv_vsetvl_e32m1(1);
     vint32m1_t v1 = __riscv_vundefined_i32m1();
     uint64_t start, end;
-    start = read_mcycle();
+    start = read_cycles();
     for (int i = 0; i < ITERATIONS; i++) {
         v1 = __riscv_vslidedown_vx_i32m1(v1, 1, vl); v1 = __riscv_vslidedown_vx_i32m1(v1, 1, vl);
         v1 = __riscv_vslidedown_vx_i32m1(v1, 1, vl); v1 = __riscv_vslidedown_vx_i32m1(v1, 1, vl);
@@ -91,9 +95,10 @@ void test_latency_vslide_e32() {
         v1 = __riscv_vslidedown_vx_i32m1(v1, 1, vl); v1 = __riscv_vslidedown_vx_i32m1(v1, 1, vl);
         v1 = __riscv_vslidedown_vx_i32m1(v1, 1, vl); v1 = __riscv_vslidedown_vx_i32m1(v1, 1, vl);
     }
-    end = read_mcycle();
-    double avg = (double)(end - start) / (ITERATIONS * UNROLL);
-    printf("LATENCY  [vslide_e32   ] SEW=32: %6.2f cycles/inst\n", avg);
+    end = read_cycles();
+    uint64_t total_cycles = end - start;
+    uint64_t total_insts = ITERATIONS * UNROLL;
+    printf("LATENCY  [vslide_e32   ] SEW=32: %llu cycles / %llu insts\n", total_cycles, total_insts);
 }
 
 // --- Integer Arithmetic (VFU_Alu) ---
@@ -134,23 +139,17 @@ int main() {
     printf("   ARA HARDWARE LATENCY & LANE TEST SUITE\n");
     printf("   VLEN: %d bits\n", VLEN);
     printf("==================================================\n");
-    fflush(stdout);
 
-    printf("\n[1] Pipeline Latency (Dependent Chain)...\n");
-    printf("Target: Pipeline Depth + Chaining Overhead\n");
-    fflush(stdout);
+    printf("\n[1] Pipeline Latency (Dependent Chain)\n");
     test_latency_vadd_e32();
     test_latency_vfadd_e32();
     test_latency_vfadd_e64();
 
-    printf("\n[2] Throughput / Occupancy (Independent Stream)...\n");
-    printf("Note: Cycles/Inst should match ceil(VLEN / (Lanes * SEW))\n");
-    fflush(stdout);
+    printf("\n[2] Throughput / Occupancy (Independent Stream)\n");
     test_throughput_vadd_thru_e32();
     test_throughput_vadd_thru_e64();
 
-    printf("\n[3] Integer Category Latencies...\n");
-    fflush(stdout);
+    printf("\n[3] Integer Category Latencies\n");
     test_latency_vadd_e8();
     test_latency_vadd_e16();
     test_latency_vadd_e64();
@@ -160,20 +159,17 @@ int main() {
     test_latency_vdiv_e32();
     test_latency_vdiv_e64();
 
-    printf("\n[4] Floating Point Category Latencies...\n");
-    fflush(stdout);
+    printf("\n[4] Floating Point Category Latencies\n");
     test_latency_vfmul_e32();
     test_latency_vfdiv_e32();
     test_latency_vfsqrt_e32();
 
-    printf("\n[5] Misc Operations...\n");
-    fflush(stdout);
+    printf("\n[5] Misc Operations\n");
     test_latency_vslide_e32();
 
     printf("\n==================================================\n");
     printf("   VERIFICATION COMPLETE\n");
     printf("==================================================\n");
-    fflush(stdout);
 
     return 0;
 }
