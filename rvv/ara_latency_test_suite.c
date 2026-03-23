@@ -134,19 +134,23 @@ int main() {
     printf("   ARA HARDWARE LATENCY & LANE TEST SUITE\n");
     printf("   VLEN: %d bits\n", VLEN);
     printf("==================================================\n");
+    fflush(stdout);
 
-    printf("\n[1] Pipeline Latency (Dependent Chain)\n");
+    printf("\n[1] Pipeline Latency (Dependent Chain)...\n");
     printf("Target: Pipeline Depth + Chaining Overhead\n");
+    fflush(stdout);
     test_latency_vadd_e32();
     test_latency_vfadd_e32();
     test_latency_vfadd_e64();
 
-    printf("\n[2] Throughput / Occupancy (Independent Stream)\n");
+    printf("\n[2] Throughput / Occupancy (Independent Stream)...\n");
     printf("Note: Cycles/Inst should match ceil(VLEN / (Lanes * SEW))\n");
+    fflush(stdout);
     test_throughput_vadd_thru_e32();
     test_throughput_vadd_thru_e64();
 
-    printf("\n[3] Integer Category Latencies\n");
+    printf("\n[3] Integer Category Latencies...\n");
+    fflush(stdout);
     test_latency_vadd_e8();
     test_latency_vadd_e16();
     test_latency_vadd_e64();
@@ -156,17 +160,20 @@ int main() {
     test_latency_vdiv_e32();
     test_latency_vdiv_e64();
 
-    printf("\n[4] Floating Point Category Latencies\n");
+    printf("\n[4] Floating Point Category Latencies...\n");
+    fflush(stdout);
     test_latency_vfmul_e32();
     test_latency_vfdiv_e32();
     test_latency_vfsqrt_e32();
 
-    printf("\n[5] Misc Operations\n");
+    printf("\n[5] Misc Operations...\n");
+    fflush(stdout);
     test_latency_vslide_e32();
 
     printf("\n==================================================\n");
     printf("   VERIFICATION COMPLETE\n");
     printf("==================================================\n");
+    fflush(stdout);
 
     return 0;
 }
