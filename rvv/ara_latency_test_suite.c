@@ -15,15 +15,19 @@
 #define VLEN 4096
 #endif
 
-#define ITERATIONS 100
+// Increased iterations for better accuracy on large VLEN
+#define ITERATIONS 500
 #define UNROLL 10
 
 static void enable_vector() {
     asm volatile ("vsetvli zero, zero, e32, m1, ta, ma");
 }
 
-// Robust optimization barrier: pass the vector through a memory clobber
-#define OPT_BARRIER(v) asm volatile("" : : : "memory")
+// Strong optimization sink: prevents the compiler from deleting the vector loops
+// by forcing it to assume the vector variable's memory is read.
+static void sink_result(void* ptr) {
+    asm volatile("" : : "r"(ptr) : "memory");
+}
 
 #define TEST_LAT_1(NAME, SEW, TYPE, INIT, FUNC) \
 void lat_##NAME() { \
@@ -37,7 +41,7 @@ void lat_##NAME() { \
     } \
     stop_timer(); \
     uint64_t cycles = get_timer(); \
-    OPT_BARRIER(v1); \
+    sink_result(&v1); \
     printf("DATA_POINT %s %d %llu %d\n", #NAME, SEW, cycles, (ITERATIONS * UNROLL)); \
 }
 
@@ -53,7 +57,7 @@ void lat_##NAME() { \
     } \
     stop_timer(); \
     uint64_t cycles = get_timer(); \
-    OPT_BARRIER(v1); \
+    sink_result(&v1); \
     printf("DATA_POINT %s %d %llu %d\n", #NAME, SEW, cycles, (ITERATIONS * UNROLL)); \
 }
 
@@ -69,8 +73,7 @@ void thru_##NAME() { \
     } \
     stop_timer(); \
     uint64_t cycles = get_timer(); \
-    OPT_BARRIER(v1); \
-    OPT_BARRIER(v3); \
+    sink_result(&v1); sink_result(&v3); \
     printf("DATA_THROUGH %s %d %llu %d\n", #NAME, SEW, cycles, (ITERATIONS * UNROLL)); \
 }
 
@@ -89,7 +92,7 @@ void lat_vslide_e32() {
     }
     stop_timer();
     uint64_t cycles = get_timer();
-    OPT_BARRIER(v1);
+    sink_result(&v1);
     printf("DATA_POINT vslide_e32 32 %llu %d\n", cycles, (ITERATIONS * UNROLL));
 }
 
