@@ -122,6 +122,7 @@ TEST_THROUGH_2(vadd_thru_e32, 32, vint32m1_t, INIT_INT(32), __riscv_vadd_vv_i32m
 TEST_THROUGH_2(vadd_thru_e64, 64, vint64m1_t, INIT_INT(64), __riscv_vadd_vv_i64m1)
 
 int main() {
+    HW_CNT_READY;
     enable_vector();
     printf("VLEN_CHECK: %d\n", VLEN);
     
