@@ -27,15 +27,15 @@ void lat_##NAME() { \
     printf("RUNNING_%s\n", #NAME); \
     size_t vl = __riscv_vsetvl_e##SEW##m1(1); \
     TYPE v1 = INIT; \
-    uint64_t start, end; \
-    start = mcycle(); \
+    start_timer(); \
     for (int i = 0; i < ITERATIONS; i++) { \
         v1 = FUNC(v1, vl); v1 = FUNC(v1, vl); v1 = FUNC(v1, vl); v1 = FUNC(v1, vl); v1 = FUNC(v1, vl); \
         v1 = FUNC(v1, vl); v1 = FUNC(v1, vl); v1 = FUNC(v1, vl); v1 = FUNC(v1, vl); v1 = FUNC(v1, vl); \
     } \
-    end = mcycle(); \
+    stop_timer(); \
+    uint64_t cycles = get_timer(); \
     asm volatile("" : : "v"(v1)); \
-    printf("DATA_POINT %s %d %llu %d\n", #NAME, SEW, (end - start), (ITERATIONS * UNROLL)); \
+    printf("DATA_POINT %s %d %llu %d\n", #NAME, SEW, cycles, (ITERATIONS * UNROLL)); \
 }
 
 #define TEST_LAT_2(NAME, SEW, TYPE, INIT, FUNC) \
@@ -43,15 +43,15 @@ void lat_##NAME() { \
     printf("RUNNING_%s\n", #NAME); \
     size_t vl = __riscv_vsetvl_e##SEW##m1(1); \
     TYPE v1 = INIT; TYPE v2 = INIT; \
-    uint64_t start, end; \
-    start = mcycle(); \
+    start_timer(); \
     for (int i = 0; i < ITERATIONS; i++) { \
         v1 = FUNC(v1, v2, vl); v1 = FUNC(v1, v2, vl); v1 = FUNC(v1, v2, vl); v1 = FUNC(v1, v2, vl); v1 = FUNC(v1, v2, vl); \
         v1 = FUNC(v1, v2, vl); v1 = FUNC(v1, v2, vl); v1 = FUNC(v1, v2, vl); v1 = FUNC(v1, v2, vl); v1 = FUNC(v1, v2, vl); \
     } \
-    end = mcycle(); \
+    stop_timer(); \
+    uint64_t cycles = get_timer(); \
     asm volatile("" : : "v"(v1)); \
-    printf("DATA_POINT %s %d %llu %d\n", #NAME, SEW, (end - start), (ITERATIONS * UNROLL)); \
+    printf("DATA_POINT %s %d %llu %d\n", #NAME, SEW, cycles, (ITERATIONS * UNROLL)); \
 }
 
 #define TEST_THROUGH_2(NAME, SEW, TYPE, INIT, FUNC) \
@@ -59,15 +59,15 @@ void thru_##NAME() { \
     printf("RUNNING_THROUGH_%s\n", #NAME); \
     size_t vl = __riscv_vsetvl_e##SEW##m1(VLEN/SEW); \
     TYPE v1 = INIT; TYPE v2 = INIT; TYPE v3 = INIT; TYPE v4 = INIT; \
-    uint64_t start, end; \
-    start = mcycle(); \
+    start_timer(); \
     for (int i = 0; i < ITERATIONS; i++) { \
         v1 = FUNC(v1, v2, vl); v3 = FUNC(v3, v4, vl); v1 = FUNC(v1, v2, vl); v3 = FUNC(v3, v4, vl); v1 = FUNC(v1, v2, vl); \
         v3 = FUNC(v3, v4, vl); v1 = FUNC(v1, v2, vl); v3 = FUNC(v3, v4, vl); v1 = FUNC(v1, v2, vl); v3 = FUNC(v3, v4, vl); \
     } \
-    end = mcycle(); \
+    stop_timer(); \
+    uint64_t cycles = get_timer(); \
     asm volatile("" : : "v"(v1), "v"(v3)); \
-    printf("DATA_THROUGH %s %d %llu %d\n", #NAME, SEW, (end - start), (ITERATIONS * UNROLL)); \
+    printf("DATA_THROUGH %s %d %llu %d\n", #NAME, SEW, cycles, (ITERATIONS * UNROLL)); \
 }
 
 // Special case for slides
@@ -75,8 +75,7 @@ void lat_vslide_e32() {
     printf("RUNNING_vslide_e32\n");
     size_t vl = __riscv_vsetvl_e32m1(1);
     vint32m1_t v1 = __riscv_vundefined_i32m1();
-    uint64_t start, end;
-    start = mcycle();
+    start_timer();
     for (int i = 0; i < ITERATIONS; i++) {
         v1 = __riscv_vslidedown_vx_i32m1(v1, 1, vl); v1 = __riscv_vslidedown_vx_i32m1(v1, 1, vl);
         v1 = __riscv_vslidedown_vx_i32m1(v1, 1, vl); v1 = __riscv_vslidedown_vx_i32m1(v1, 1, vl);
@@ -84,9 +83,10 @@ void lat_vslide_e32() {
         v1 = __riscv_vslidedown_vx_i32m1(v1, 1, vl); v1 = __riscv_vslidedown_vx_i32m1(v1, 1, vl);
         v1 = __riscv_vslidedown_vx_i32m1(v1, 1, vl); v1 = __riscv_vslidedown_vx_i32m1(v1, 1, vl);
     }
-    end = mcycle();
-    asm volatile("" : : "v"(v1)); \
-    printf("DATA_POINT vslide_e32 32 %llu %d\n", (end - start), (ITERATIONS * UNROLL));
+    stop_timer();
+    uint64_t cycles = get_timer();
+    asm volatile("" : : "v"(v1));
+    printf("DATA_POINT vslide_e32 32 %llu %d\n", cycles, (ITERATIONS * UNROLL));
 }
 
 #define INIT_INT(S) __riscv_vundefined_i##S##m1()
