@@ -11,7 +11,7 @@
 #endif
 
 #ifndef VLEN
-#define VLEN 128
+#define VLEN 4096
 #endif
 
 #define ITERATIONS 100

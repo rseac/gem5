@@ -7,7 +7,7 @@ OBJDUMP = $(CROSS_COMPILE)objdump
 
 # --- Configuration ---
 # VLEN should match your target ARA hardware configuration
-VLEN = 128
+VLEN = 4096
 
 # --- Flags ---
 # -march=rv64gcv enables Vector extension
