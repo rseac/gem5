@@ -4,8 +4,8 @@ import re
 import math
 
 # --- Configuration ---
-DEFAULT_VLEN = 128
-DEFAULT_LANES = 2
+DEFAULT_VLEN = 4096
+DEFAULT_LANES = 4
 
 def get_expected_latency(name, sew):
     """
@@ -24,9 +24,9 @@ def get_expected_latency(name, sew):
     
     # VFU_Div (Iterative Divider)
     elif name.startswith("vdiv"):
-        # Scale: 4 << vsew
+        # Scale: 4 << vsew + 1 cycle throughput (as modeled in gem5 occupancy)
         vsew_val = {8:0, 16:1, 32:2, 64:3}[sew]
-        pipe = 4 << vsew_val
+        pipe = (4 << vsew_val) + 1
     
     # VFU_MFpu (Floating Point)
     elif name.startswith(("vfadd", "vfmul", "vfmacc")):
