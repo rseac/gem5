@@ -1,6 +1,14 @@
 #include <riscv_vector.h>
-#include <stdio.h>
 #include <stdint.h>
+
+#ifdef SPIKE
+#include "util.h"
+#include <stdio.h>
+#elif defined ARA_LINUX
+#include <stdio.h>
+#else
+#include "printf.h"
+#endif
 
 #ifndef VLEN
 #define VLEN 128
