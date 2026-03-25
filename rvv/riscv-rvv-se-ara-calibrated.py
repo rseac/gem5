@@ -1,12 +1,6 @@
 # Copyright (c) 2024 Barcelona Supercomputing Center
 # (Standard License Header ...)
 
-"""
-Calibrated ARA gem5 run script.
-This version accurately models the CVA6 dispatch bottleneck (6 cycles)
-and the single-issue frontend of the ARA hardware.
-"""
-
 import argparse
 import sys
 import os
@@ -23,54 +17,101 @@ from gem5.components.processors.base_cpu_core import BaseCPUCore
 from gem5.components.processors.base_cpu_processor import BaseCPUProcessor
 from gem5.isas import ISA
 import gem5.resources.resource as res
-from gem5.resources.resource import obtain_resource
 from gem5.simulate.simulator import Simulator
 from gem5.utils.requires import requires
 
+from m5.objects.FuncUnit import OpDesc, FUDesc
+from m5.objects.FUPool import FUPool
+from m5.objects.FuncUnitConfig import *
+
 requires(isa_required=ISA.RISCV)
 
+# --- Calibrated Functional Unit Definition ---
+class CalibratedAraSIMD_Unit(FUDesc):
+    """
+    Calibrated ARA SIMD Unit.
+    opLat=3: 1-cycle pipe + 2-cycle sync overhead.
+    issueLat=6: CVA6 dispatch bottleneck.
+    """
+    opList = [
+        OpDesc(opClass="SimdAdd", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdAddAcc", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdAlu", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdCmp", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdCvt", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdMisc", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdShift", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdShiftAcc", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdMult", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdMultAcc", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdMatMultAcc", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdDiv", opLat=34, issueLat=6, pipelined=False),
+        OpDesc(opClass="SimdFloatAdd", opLat=6, issueLat=6),
+        OpDesc(opClass="SimdFloatAlu", opLat=6, issueLat=6),
+        OpDesc(opClass="SimdFloatMult", opLat=6, issueLat=6),
+        OpDesc(opClass="SimdFloatMultAcc", opLat=6, issueLat=6),
+        OpDesc(opClass="SimdFloatMatMultAcc", opLat=6, issueLat=6),
+        OpDesc(opClass="SimdFloatCmp", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdFloatMisc", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdFloatCvt", opLat=4, issueLat=6),
+        OpDesc(opClass="SimdFloatDiv", opLat=5, issueLat=6, pipelined=False),
+        OpDesc(opClass="SimdFloatSqrt", opLat=5, issueLat=6, pipelined=False),
+        OpDesc(opClass="SimdReduceAdd", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdReduceAlu", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdReduceCmp", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdFloatReduceAdd", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdFloatReduceCmp", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdUnitStrideLoad", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdUnitStrideStore", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdUnitStrideMaskLoad", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdUnitStrideMaskStore", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdStridedLoad", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdStridedStore", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdIndexedLoad", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdIndexedStore", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdWholeRegisterLoad", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdWholeRegisterStore", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdUnitStrideSegmentedLoad", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdUnitStrideSegmentedStore", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdExt", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdFloatExt", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdConfig", opLat=3, issueLat=6),
+    ]
+    count = 4
+
 class RVVCore(BaseCPUCore):
-    def __init__(self, elen, vlen, cpu_id, cpu_type, enable_chaining, vector_timing_throughput, simd_units):
-        # Import the selected CPU model
+    def __init__(self, elen, vlen, cpu_id, cpu_type, enable_chaining, vector_throughput, simd_units):
         if cpu_type == "AraO3":
             from cpu.o3.AraConfig import AraO3CPU as SelectedCPU
-            # Instantiate with Single-Issue Frontend (Calibrated for CVA6)
+            # Create core with Lean Frontend
             core = SelectedCPU(cpu_id=cpu_id,
                             fetchWidth=1, decodeWidth=1, renameWidth=1,
                             dispatchWidth=1, issueWidth=1, wbWidth=1,
                             commitWidth=1, squashWidth=1,
-                            # Stabilized delays to prevent TimeBuffer assertions
                             fetchToDecodeDelay=2, decodeToRenameDelay=2,
                             renameToIEWDelay=2, renameToROBDelay=2,
                             iewToCommitDelay=2, iewToRenameDelay=2)
+            
+            # Substitute the Functional Unit Pool with our calibrated version
+            for iq in core.instQueues:
+                iq.fuPool = FUPool(FUList = [
+                    IntALU(), IntMultDiv(), FP_ALU(), FP_MultDiv(),
+                    ReadPort(), CalibratedAraSIMD_Unit(count=simd_units),
+                    Matrix_Unit(), System_Unit(), PredALU(),
+                    WritePort(), RdWrPort()
+                ])
         else:
             from cpu.minor.AraMinorConfig import AraMinorCPU as SelectedCPU
             core = SelectedCPU(cpu_id=cpu_id)
             
         core.enable_vector_chaining = enable_chaining
-        core.vector_timing_throughput = vector_timing_throughput
+        core.vector_timing_throughput = vector_throughput
         core.simd_units = simd_units
-        
-        # --- Runtime Calibration of Functional Units ---
-        # Force the 6-cycle issue bottleneck and 3-cycle pipe depth
-        if hasattr(core, 'instQueues'):
-            for iq in core.instQueues:
-                if hasattr(iq, 'fuPool'):
-                    for fu in iq.fuPool.FUList:
-                        for op in fu.opList:
-                            op_name = str(op.opClass)
-                            if op_name.startswith('Simd'):
-                                op.issueLat = 6
-                                if "Div" in op_name or "Sqrt" in op_name:
-                                    op.opLat = op.opLat + 2
-                                else:
-                                    op.opLat = 3
-
         super().__init__(core=core, isa=ISA.RISCV)
         self.core.isa[0].elen = elen
         self.core.isa[0].vlen = vlen
 
-# --- CLI Arguments ---
+# --- CLI & Setup ---
 parser = argparse.ArgumentParser()
 parser.add_argument("resource", type=str)
 parser.add_argument("-v", "--vlen", required=False, type=int, default=4096)
@@ -85,7 +126,6 @@ parser.add_argument("--simd-units", type=int, default=2)
 
 args = parser.parse_args()
 
-# --- System Setup ---
 cache_hierarchy = PrivateL1PrivateL2CacheHierarchy(
     l1d_size=args.l1d, l1i_size="32KiB", l2_size=args.l2
 )
@@ -96,25 +136,14 @@ processor = BaseCPUProcessor(
                    args.simd_units)]
 )
 
-board = SimpleBoard(
-    clk_freq="1GHz",
-    processor=processor,
-    memory=memory,
-    cache_hierarchy=cache_hierarchy,
-)
-
+board = SimpleBoard(clk_freq="1GHz", processor=processor, memory=memory, cache_hierarchy=cache_hierarchy)
 binary = res.BinaryResource(args.resource)
 board.set_se_binary_workload(binary, arguments=args.parms.split())
 
-# --- Execution ---
 print("\n" + "="*60)
 print("   ARA HARDWARE-CALIBRATED SIMULATION ACTIVE")
-print("   Config: Single-Issue Frontend, 6-Cycle Dispatch Floor")
+print("   Config: Single-Issue Frontend, IssueLat=6, OpLat=3")
 print("="*60 + "\n")
 
-import m5
 simulator = Simulator(board=board, full_system=False)
 simulator.run()
-
-cycles = int(m5.curTick() / 1000)
-print(f"\nFinal Execution Cycles: {cycles}\n")
