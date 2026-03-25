@@ -30,60 +30,60 @@ requires(isa_required=ISA.RISCV)
 class CalibratedAraSIMD_Unit(FUDesc):
     """
     Calibrated ARA SIMD Unit.
-    opLat=3: 1-cycle pipe + 2-cycle sync overhead.
-    issueLat=6: CVA6 dispatch bottleneck.
+    We set opLat=6 to model the 6-cycle CVA6 dispatch floor.
     """
     opList = [
-        OpDesc(opClass="SimdAdd", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdAddAcc", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdAlu", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdCmp", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdCvt", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdMisc", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdShift", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdShiftAcc", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdMult", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdMultAcc", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdMatMultAcc", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdDiv", opLat=34, issueLat=6, pipelined=False),
-        OpDesc(opClass="SimdFloatAdd", opLat=6, issueLat=6),
-        OpDesc(opClass="SimdFloatAlu", opLat=6, issueLat=6),
-        OpDesc(opClass="SimdFloatMult", opLat=6, issueLat=6),
-        OpDesc(opClass="SimdFloatMultAcc", opLat=6, issueLat=6),
-        OpDesc(opClass="SimdFloatMatMultAcc", opLat=6, issueLat=6),
-        OpDesc(opClass="SimdFloatCmp", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdFloatMisc", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdFloatCvt", opLat=4, issueLat=6),
-        OpDesc(opClass="SimdFloatDiv", opLat=5, issueLat=6, pipelined=False),
-        OpDesc(opClass="SimdFloatSqrt", opLat=5, issueLat=6, pipelined=False),
-        OpDesc(opClass="SimdReduceAdd", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdReduceAlu", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdReduceCmp", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdFloatReduceAdd", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdFloatReduceCmp", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdUnitStrideLoad", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdUnitStrideStore", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdUnitStrideMaskLoad", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdUnitStrideMaskStore", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdStridedLoad", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdStridedStore", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdIndexedLoad", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdIndexedStore", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdWholeRegisterLoad", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdWholeRegisterStore", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdUnitStrideSegmentedLoad", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdUnitStrideSegmentedStore", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdExt", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdFloatExt", opLat=3, issueLat=6),
-        OpDesc(opClass="SimdConfig", opLat=3, issueLat=6),
+        OpDesc(opClass="SimdAdd", opLat=6),
+        OpDesc(opClass="SimdAddAcc", opLat=6),
+        OpDesc(opClass="SimdAlu", opLat=6),
+        OpDesc(opClass="SimdCmp", opLat=6),
+        OpDesc(opClass="SimdCvt", opLat=6),
+        OpDesc(opClass="SimdMisc", opLat=6),
+        OpDesc(opClass="SimdShift", opLat=6),
+        OpDesc(opClass="SimdShiftAcc", opLat=6),
+        OpDesc(opClass="SimdMult", opLat=6),
+        OpDesc(opClass="SimdMultAcc", opLat=6),
+        OpDesc(opClass="SimdMatMultAcc", opLat=6),
+        OpDesc(opClass="SimdDiv", opLat=34, pipelined=False),
+        OpDesc(opClass="SimdFloatAdd", opLat=6),
+        OpDesc(opClass="SimdFloatAlu", opLat=6),
+        OpDesc(opClass="SimdFloatMult", opLat=6),
+        OpDesc(opClass="SimdFloatMultAcc", opLat=6),
+        OpDesc(opClass="SimdFloatMatMultAcc", opLat=6),
+        OpDesc(opClass="SimdFloatCmp", opLat=6),
+        OpDesc(opClass="SimdFloatMisc", opLat=6),
+        OpDesc(opClass="SimdFloatCvt", opLat=6),
+        OpDesc(opClass="SimdFloatDiv", opLat=10, pipelined=False),
+        OpDesc(opClass="SimdFloatSqrt", opLat=10, pipelined=False),
+        OpDesc(opClass="SimdReduceAdd", opLat=6),
+        OpDesc(opClass="SimdReduceAlu", opLat=6),
+        OpDesc(opClass="SimdReduceCmp", opLat=6),
+        OpDesc(opClass="SimdFloatReduceAdd", opLat=6),
+        OpDesc(opClass="SimdFloatReduceCmp", opLat=6),
+        OpDesc(opClass="SimdUnitStrideLoad", opLat=6),
+        OpDesc(opClass="SimdUnitStrideStore", opLat=6),
+        OpDesc(opClass="SimdUnitStrideMaskLoad", opLat=6),
+        OpDesc(opClass="SimdUnitStrideMaskStore", opLat=6),
+        OpDesc(opClass="SimdStridedLoad", opLat=6),
+        OpDesc(opClass="SimdStridedStore", opLat=6),
+        OpDesc(opClass="SimdIndexedLoad", opLat=6),
+        OpDesc(opClass="SimdIndexedStore", opLat=6),
+        OpDesc(opClass="SimdWholeRegisterLoad", opLat=6),
+        OpDesc(opClass="SimdWholeRegisterStore", opLat=6),
+        OpDesc(opClass="SimdUnitStrideSegmentedLoad", opLat=6),
+        OpDesc(opClass="SimdUnitStrideSegmentedStore", opLat=6),
+        OpDesc(opClass="SimdExt", opLat=6),
+        OpDesc(opClass="SimdFloatExt", opLat=6),
+        OpDesc(opClass="SimdConfig", opLat=6),
     ]
-    count = 4
+    # We set count=1 per FUDesc to ensure the unit is busy for the full latency
+    count = 1
 
 class RVVCore(BaseCPUCore):
     def __init__(self, elen, vlen, cpu_id, cpu_type, enable_chaining, vector_throughput, simd_units):
         if cpu_type == "AraO3":
             from cpu.o3.AraConfig import AraO3CPU as SelectedCPU
-            # Create core with Lean Frontend
+            # Create core with Lean Frontend (Widths = 1)
             core = SelectedCPU(cpu_id=cpu_id,
                             fetchWidth=1, decodeWidth=1, renameWidth=1,
                             dispatchWidth=1, issueWidth=1, wbWidth=1,
@@ -92,14 +92,18 @@ class RVVCore(BaseCPUCore):
                             renameToIEWDelay=2, renameToROBDelay=2,
                             iewToCommitDelay=2, iewToRenameDelay=2)
             
-            # Substitute the Functional Unit Pool with our calibrated version
+            # Substitute the Functional Unit Pool
+            # We provide 'simd_units' number of our calibrated units
+            # Each unit is count=1, and busy for 6 cycles.
+            calibrated_units = [CalibratedAraSIMD_Unit() for _ in range(simd_units)]
+            
             for iq in core.instQueues:
                 iq.fuPool = FUPool(FUList = [
                     IntALU(), IntMultDiv(), FP_ALU(), FP_MultDiv(),
-                    ReadPort(), CalibratedAraSIMD_Unit(count=simd_units),
+                    ReadPort(), 
                     Matrix_Unit(), System_Unit(), PredALU(),
                     WritePort(), RdWrPort()
-                ])
+                ] + calibrated_units)
         else:
             from cpu.minor.AraMinorConfig import AraMinorCPU as SelectedCPU
             core = SelectedCPU(cpu_id=cpu_id)
@@ -142,7 +146,7 @@ board.set_se_binary_workload(binary, arguments=args.parms.split())
 
 print("\n" + "="*60)
 print("   ARA HARDWARE-CALIBRATED SIMULATION ACTIVE")
-print("   Config: Single-Issue Frontend, IssueLat=6, OpLat=3")
+print("   Config: Single-Issue Frontend, Issue-Floor=6")
 print("="*60 + "\n")
 
 simulator = Simulator(board=board, full_system=False)
