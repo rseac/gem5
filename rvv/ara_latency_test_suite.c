@@ -1,6 +1,12 @@
 #include <riscv_vector.h>
 #include <stdint.h>
 
+static inline uint64_t read_cycles() {
+    uint64_t val;
+    asm volatile ("rdcycle %0" : "=r" (val));
+    return val;
+}
+
 #ifdef SPIKE
 #include "util.h"
 #include <stdio.h>
@@ -8,10 +14,11 @@
 #include <stdio.h>
 #elif defined GEM5
 #include <stdio.h>
-#define start_timer() uint64_t _s = read_cycles()
-#define stop_timer()  uint64_t _e = read_cycles()
+// Use simple assignment to avoid redefinition errors in functions with multiple timers
+#define start_timer() _s = read_cycles()
+#define stop_timer()  _e = read_cycles()
 #define get_timer()   (_e - _s)
-#define HW_CNT_READY
+#define HW_CNT_READY  uint64_t _s, _e
 #else
 #include "runtime.h"
 #include "printf.h"
@@ -33,8 +40,8 @@ static void sink_result(void* ptr) {
 }
 
 // --- Diagnostic 1: VL Sweep ---
-// This determines if the overhead is fixed or scales with vector occupancy.
 void diag_vl_sweep() {
+    HW_CNT_READY;
     printf("\n[DIAG] Vector Length (VL) Sweep - SEW=32\n");
     printf("Lanes: 4 (Occupancy = ceil(VL/4))\n");
     printf("------------------------------------------\n");
@@ -70,8 +77,8 @@ void diag_vl_sweep() {
 }
 
 // --- Diagnostic 2: Scalar Interleaving ---
-// This determines if the scalar issue rate is the bottleneck.
 void diag_scalar_interleave() {
+    HW_CNT_READY;
     printf("\n[DIAG] Scalar Interleaving (Testing Issue Bottleneck)\n");
     size_t vl = __riscv_vsetvl_e32m1(1);
     vint32m1_t v1 = __riscv_vmv_v_x_i32m1(1, vl);
@@ -110,12 +117,11 @@ void diag_scalar_interleave() {
     sink_result((void*)&s1);
 
     printf("Pure Vector: %llu cycles, Interleaved: %llu cycles\n", cycles_pure, cycles_inter);
-    printf("Vector+Scalar is %.1f%% of Pure Vector time.\n", (double)cycles_inter * 100.0 / cycles_pure);
 }
 
-// --- Standard Tests ---
 #define TEST_LAT_2(NAME, SEW, TYPE, INIT, FUNC) \
 void lat_##NAME() { \
+    HW_CNT_READY; \
     printf("RUNNING_%s\n", #NAME); \
     size_t vl = __riscv_vsetvl_e##SEW##m1(1); \
     TYPE v1 = INIT; TYPE v2 = INIT; \
@@ -130,18 +136,40 @@ void lat_##NAME() { \
     printf("DATA_POINT %s %d %llu %d\n", #NAME, SEW, cycles, (ITERATIONS * UNROLL)); \
 }
 
-#define INIT_INT8   __riscv_vmv_v_x_i8m1(1, __riscv_vsetvl_e8m1(1))
-TEST_LAT_2(vadd_e8,   8,  vint8m1_t,  INIT_INT8,   __riscv_vadd_vv_i8m1)
+#define TEST_THROUGH_2(NAME, SEW, TYPE, INIT, FUNC) \
+void thru_##NAME() { \
+    HW_CNT_READY; \
+    printf("RUNNING_THROUGH_%s\n", #NAME); \
+    size_t vl = __riscv_vsetvl_e##SEW##m1(VLEN/SEW); \
+    TYPE v1 = INIT; TYPE v2 = INIT; TYPE v3 = INIT; TYPE v4 = INIT; \
+    start_timer(); \
+    for (int i = 0; i < ITERATIONS; i++) { \
+        v1 = FUNC(v1, v2, vl); v3 = FUNC(v3, v4, vl); v1 = FUNC(v1, v2, vl); v3 = FUNC(v3, v4, vl); v1 = FUNC(v1, v2, vl); \
+        v3 = FUNC(v3, v4, vl); v1 = FUNC(v1, v2, vl); v3 = FUNC(v3, v4, vl); v1 = FUNC(v1, v2, vl); v3 = FUNC(v3, v4, vl); \
+    } \
+    stop_timer(); \
+    uint64_t cycles = get_timer(); \
+    sink_result(&v1); sink_result(&v3); \
+    printf("DATA_THROUGH %s %d %llu %d\n", #NAME, SEW, cycles, (ITERATIONS * UNROLL)); \
+}
+
+#define INIT_INT32  __riscv_vmv_v_x_i32m1(1, __riscv_vsetvl_e32m1(1))
+#define INIT_INT64  __riscv_vmv_v_x_i64m1(1, __riscv_vsetvl_e64m1(1))
+
+TEST_LAT_2(vadd_e32, 32, vint32m1_t, INIT_INT32, __riscv_vadd_vv_i32m1)
+TEST_LAT_2(vadd_e64, 64, vint64m1_t, INIT_INT64, __riscv_vadd_vv_i64m1)
+TEST_THROUGH_2(vadd_thru_e32, 32, vint32m1_t, INIT_INT32, __riscv_vadd_vv_i32m1)
 
 int main() {
-    HW_CNT_READY;
     enable_vector();
     printf("==================================================\n");
-    printf("   ARA HARDWARE LATENCY DIAGNOSTIC SUITE\n");
+    printf("   ARA HARDWARE LATENCY & LANE TEST SUITE\n");
     printf("   VLEN: %d bits | Lanes: 4\n", VLEN);
     printf("==================================================\n");
 
-    lat_vadd_e8();
+    lat_vadd_e32();
+    lat_vadd_e64();
+    thru_vadd_thru_e32();
     diag_vl_sweep();
     diag_scalar_interleave();
 
