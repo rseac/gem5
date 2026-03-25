@@ -27,8 +27,11 @@ from m5.objects.FuncUnitConfig import *
 requires(isa_required=ISA.RISCV)
 
 # --- Calibrated Functional Unit Definition ---
-# We keep opLat=6 to model the measured RTL dispatch floor.
 class CalibratedAraSIMD_Unit(FUDesc):
+    """
+    Calibrated ARA SIMD Unit.
+    We set opLat=6 to match the RTL 6-cycle dispatch floor for dependent chains.
+    """
     opList = [
         OpDesc(opClass="SimdAdd", opLat=6),
         OpDesc(opClass="SimdAddAcc", opLat=6),
@@ -79,10 +82,10 @@ class RVVCore(BaseCPUCore):
     def __init__(self, elen, vlen, cpu_id, cpu_type, enable_chaining, vector_throughput, simd_units):
         if cpu_type == "AraO3":
             from cpu.o3.AraConfig import AraO3CPU as SelectedCPU
-            # Use DEFAULT frontend parameters (Stable)
+            # Stable Frontend (Defaults)
             core = SelectedCPU(cpu_id=cpu_id)
             
-            # Substitute the Functional Unit Pool
+            # CRITICAL: Force Functional Unit Substitution
             calibrated_units = [CalibratedAraSIMD_Unit() for _ in range(simd_units)]
             for iq in core.instQueues:
                 iq.fuPool = FUPool(FUList = [
@@ -95,14 +98,18 @@ class RVVCore(BaseCPUCore):
             from cpu.minor.AraMinorConfig import AraMinorCPU as SelectedCPU
             core = SelectedCPU(cpu_id=cpu_id)
             
-        core.enable_vector_chaining = enable_chaining
-        core.vector_timing_throughput = vector_throughput
-        core.simd_units = simd_units
         super().__init__(core=core, isa=ISA.RISCV)
-        self.core.isa[0].elen = elen
-        self.core.isa[0].vlen = vlen
+        
+        # --- DEEP INJECTION ---
+        # We must set VLEN and Timing parameters directly on the ISA objects
+        # This is where gem5 instructions actually look for these values.
+        for isa in self.core.isa:
+            isa.vlen = vlen
+            isa.elen = elen
+            isa.enable_vector_chaining = enable_chaining
+            isa.vector_timing_throughput = vector_throughput
 
-# --- CLI & Setup ---
+# --- CLI ---
 parser = argparse.ArgumentParser()
 parser.add_argument("resource", type=str)
 parser.add_argument("-v", "--vlen", required=False, type=int, default=4096)
@@ -110,20 +117,18 @@ parser.add_argument("-e", "--elen", required=False, type=int, default=64)
 parser.add_argument("-d", "--l1d", required=False, type=str, default="32KiB")
 parser.add_argument("-2", "--l2", required=False, type=str, default="512KiB")
 parser.add_argument("-p", "--parms", required=False, type=str, default='')
-parser.add_argument("--cpu-type", type=str, default="AraO3", choices=["AraO3", "AraMinor"])
-parser.add_argument("--enable-chaining", action="store_true", default=True)
+parser.add_argument("--cpu-type", type=str, default="AraO3")
 parser.add_argument("--vector-timing-throughput", type=int, default=4)
 parser.add_argument("--simd-units", type=int, default=2)
 
 args = parser.parse_args()
 
-cache_hierarchy = PrivateL1PrivateL2CacheHierarchy(
-    l1d_size=args.l1d, l1i_size="32KiB", l2_size=args.l2
-)
+# --- System Construction ---
+cache_hierarchy = PrivateL1PrivateL2CacheHierarchy(l1d_size=args.l1d, l1i_size="32KiB", l2_size=args.l2)
 memory = SingleChannelDDR4_2400(size="8GiB")
 processor = BaseCPUProcessor(
     cores=[RVVCore(args.elen, args.vlen, 0, args.cpu_type, 
-                   args.enable_chaining, args.vector_timing_throughput, 
+                   True, args.vector_timing_throughput, 
                    args.simd_units)]
 )
 
@@ -132,8 +137,8 @@ binary = res.BinaryResource(args.resource)
 board.set_se_binary_workload(binary, arguments=args.parms.split())
 
 print("\n" + "="*60)
-print("   ARA HARDWARE-CALIBRATED SIMULATION ACTIVE")
-print("   Config: Stable Frontend, Calibrated Vector Latencies")
+print(f"   ARA CALIBRATED SIMULATION: VLEN={args.vlen}, LANES={args.simd_units}")
+print(f"   Applying Deep ISA Injection for Timing & Throughput")
 print("="*60 + "\n")
 
 simulator = Simulator(board=board, full_system=False)
