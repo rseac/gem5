@@ -6,6 +6,12 @@
 #include <stdio.h>
 #elif defined ARA_LINUX
 #include <stdio.h>
+#elif defined GEM5
+#include <stdio.h>
+#define start_timer() uint64_t _s = read_cycles()
+#define stop_timer()  uint64_t _e = read_cycles()
+#define get_timer()   (_e - _s)
+#define HW_CNT_READY
 #else
 #include "runtime.h"
 #include "printf.h"
