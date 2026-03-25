@@ -30,19 +30,22 @@ from gem5.utils.requires import requires
 requires(isa_required=ISA.RISCV)
 
 class RVVCore(BaseCPUCore):
-    def __init__(self, elen, vlen, cpu_id, enable_chaining, vector_timing_throughput, simd_units):
+    def __init__(self, elen, vlen, cpu_id, cpu_type, enable_chaining, vector_timing_throughput, simd_units):
         # Import the selected CPU model
-        from cpu.o3.AraConfig import AraO3CPU
-        
-        # Instantiate the core with Single-Issue Frontend (Calibrated for CVA6)
-        core = AraO3CPU(cpu_id=cpu_id,
-                        fetchWidth=1, decodeWidth=1, renameWidth=1,
-                        dispatchWidth=1, issueWidth=1, wbWidth=1,
-                        commitWidth=1, squashWidth=1,
-                        # Stabilized delays to prevent TimeBuffer assertions
-                        fetchToDecodeDelay=2, decodeToRenameDelay=2,
-                        renameToIEWDelay=2, renameToROBDelay=2,
-                        iewToCommitDelay=2, iewToRenameDelay=2)
+        if cpu_type == "AraO3":
+            from cpu.o3.AraConfig import AraO3CPU as SelectedCPU
+            # Instantiate with Single-Issue Frontend (Calibrated for CVA6)
+            core = SelectedCPU(cpu_id=cpu_id,
+                            fetchWidth=1, decodeWidth=1, renameWidth=1,
+                            dispatchWidth=1, issueWidth=1, wbWidth=1,
+                            commitWidth=1, squashWidth=1,
+                            # Stabilized delays to prevent TimeBuffer assertions
+                            fetchToDecodeDelay=2, decodeToRenameDelay=2,
+                            renameToIEWDelay=2, renameToROBDelay=2,
+                            iewToCommitDelay=2, iewToRenameDelay=2)
+        else:
+            from cpu.minor.AraMinorConfig import AraMinorCPU as SelectedCPU
+            core = SelectedCPU(cpu_id=cpu_id)
             
         core.enable_vector_chaining = enable_chaining
         core.vector_timing_throughput = vector_timing_throughput
@@ -74,6 +77,8 @@ parser.add_argument("-e", "--elen", required=False, type=int, default=64)
 parser.add_argument("-d", "--l1d", required=False, type=str, default="32KiB")
 parser.add_argument("-2", "--l2", required=False, type=str, default="512KiB")
 parser.add_argument("-p", "--parms", required=False, type=str, default='')
+parser.add_argument("--cpu-type", type=str, default="AraO3", choices=["AraO3", "AraMinor"])
+parser.add_argument("--enable-chaining", action="store_true", default=True)
 parser.add_argument("--vector-timing-throughput", type=int, default=4)
 parser.add_argument("--simd-units", type=int, default=2)
 
@@ -85,8 +90,9 @@ cache_hierarchy = PrivateL1PrivateL2CacheHierarchy(
 )
 memory = SingleChannelDDR4_2400(size="8GiB")
 processor = BaseCPUProcessor(
-    cores=[RVVCore(args.elen, args.vlen, 0, True, 
-                   args.vector_timing_throughput, args.simd_units)]
+    cores=[RVVCore(args.elen, args.vlen, 0, args.cpu_type, 
+                   args.enable_chaining, args.vector_timing_throughput, 
+                   args.simd_units)]
 )
 
 board = SimpleBoard(
