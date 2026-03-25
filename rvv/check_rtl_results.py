@@ -84,11 +84,11 @@ def parse_rtl_output(file_path):
     return vlen, lat_results, thru_results
 
 def compare_results(vlen, actual_lat, actual_thru, lanes):
-    print("=" * 75)
+    print("=" * 85)
     print(f" ARA VERIFICATION: VLEN={vlen}, LANES={lanes}")
-    print("-" * 75)
-    print(f"{'Metric':<8} | {'Instruction':<18} | {'SEW':<4} | {'Exp':<6} | {'Act':<6} | {'Stat'}")
-    print("-" * 75)
+    print("-" * 85)
+    print(f"{'Metric':<8} | {'Instruction':<18} | {'SEW':<4} | {'Exp':<6} | {'Act':<6} | {'Diff':<6} | {'Stat'}")
+    print("-" * 85)
     
     passed = 0
     total = 0
@@ -97,28 +97,28 @@ def compare_results(vlen, actual_lat, actual_thru, lanes):
     for name, (act_val, sew) in actual_lat.items():
         total += 1
         exp_val = get_expected_latency(name, sew)
-        delta = abs(act_val - exp_val)
-        stat = "PASS" if delta < 0.15 else "FAIL"
+        diff = act_val - exp_val
+        stat = "PASS" if abs(diff) < 0.15 else "FAIL"
         
         if stat == "PASS": passed += 1
-        print(f"LAT      | {name:<18} | {sew:<4} | {exp_val:<6.1f} | {act_val:<6.2f} | {stat}")
+        print(f"LAT      | {name:<18} | {sew:<4} | {exp_val:<6.1f} | {act_val:<6.2f} | {diff:<+6.2f} | {stat}")
 
     # 2. Check Throughput (Lane counts)
     for name, (act_val, sew) in actual_thru.items():
         total += 1
         exp_val = math.ceil(vlen / (lanes * sew))
-        delta = abs(act_val - exp_val)
-        stat = "PASS" if delta < 0.15 else "FAIL"
+        diff = act_val - exp_val
+        stat = "PASS" if abs(diff) < 0.15 else "FAIL"
         
         if stat == "PASS": passed += 1
-        print(f"THROUGH  | {name:<18} | {sew:<4} | {exp_val:<6.1f} | {act_val:<6.2f} | {stat}")
+        print(f"THROUGH  | {name:<18} | {sew:<4} | {exp_val:<6.1f} | {act_val:<6.2f} | {diff:<+6.2f} | {stat}")
 
-    print("=" * 75)
+    print("=" * 85)
     print(f"SUMMARY: {passed}/{total} Tests Passed")
     if total > 0 and passed == total:
         print("SUCCESS: ARA Hardware matches gem5 configuration.")
     else:
-        print("FAILURE: Discrepancies detected.")
+        print(f"FAILURE: Discrepancies detected. Average Latency Delta: {sum((v[0]-get_expected_latency(k,v[1])) for k,v in actual_lat.items())/max(1,len(actual_lat)):.2f} cycles")
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
