@@ -235,6 +235,12 @@ class VectorMicroInst : public RiscvMicroInst
         }
 
         int res = pipeline_lat + throughput_cycles;
+        const int DISPATCH_FLOOR = 6;
+        
+        // Ensure total latency respects the 6-cycle dispatch bottleneck
+        if (res < DISPATCH_FLOOR) {
+            res = DISPATCH_FLOOR;
+        }
 
         DPRINTF(VectorTiming, "dynamicOpLatency: opClass=%d, microVl=%d, "
                 "sew=%d, throughput=%d, pipe=%d, res=%d\n",
@@ -291,7 +297,15 @@ class VectorMicroInst : public RiscvMicroInst
         }
 
         const int CHAINING_OVERHEAD = 2;
-        Cycles res = Cycles(pipeline_lat + CHAINING_OVERHEAD);
+        const int DISPATCH_FLOOR = 6;
+        int res_cycles = pipeline_lat + CHAINING_OVERHEAD;
+        
+        // Match the 6-cycle dispatch bottleneck measured in ARA hardware
+        if (res_cycles < DISPATCH_FLOOR) {
+            res_cycles = DISPATCH_FLOOR;
+        }
+
+        Cycles res = Cycles(res_cycles);
 
         DPRINTF(VectorTiming, "chainingLatency: opClass=%d, vsew=%d, "
                 "pipe=%d, res=%d\n",
