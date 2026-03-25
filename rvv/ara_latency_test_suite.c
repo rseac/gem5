@@ -132,21 +132,35 @@ TEST_THROUGH_2(vadd_thru_e64, 64, vint64m1_t, INIT_INT64, __riscv_vadd_vv_i64m1)
 int main() {
     HW_CNT_READY;
     enable_vector();
-    printf("VLEN_CHECK: %d\n", VLEN);
+
+    printf("==================================================\n");
+    printf("   ARA HARDWARE LATENCY & LANE TEST SUITE\n");
+    printf("   VLEN: %d bits\n", VLEN);
+    printf("==================================================\n");
     
-    // Core Latency Tests
+    printf("\n[1] Integer Arithmetic (VFU_Alu)...\n");
     lat_vadd_e8();   lat_vadd_e16();  lat_vadd_e32();  lat_vadd_e64();
     lat_vor_e32();
+    
+    printf("\n[2] Integer Multiplication (VFU_Mul)...\n");
     lat_vmul_e8();   lat_vmul_e32();  lat_vmul_e64();
+    
+    printf("\n[3] Integer Division (VFU_Div)...\n");
     lat_vdiv_e32();  lat_vdiv_e64();
+    
+    printf("\n[4] Floating Point Operations (VFU_MFpu)...\n");
     lat_vfadd_e32(); lat_vfadd_e64(); lat_vfmul_e32();
     lat_vfdiv_e32(); lat_vfsqrt_e32();
+    
+    printf("\n[5] Slide Operations (VFU_SlideUnit)...\n");
     lat_vslide_e32();
     
-    // Throughput Tests
+    printf("\n[6] Throughput & Lane Verification...\n");
     thru_vadd_thru_e32();
     thru_vadd_thru_e64();
 
-    printf("ALL_FINISHED\n");
+    printf("\n==================================================\n");
+    printf("   VERIFICATION COMPLETE\n");
+    printf("==================================================\n");
     return 0;
 }
