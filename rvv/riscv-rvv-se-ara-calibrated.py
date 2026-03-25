@@ -58,9 +58,10 @@ class RVVCore(BaseCPUCore):
                 if hasattr(iq, 'fuPool'):
                     for fu in iq.fuPool.FUList:
                         for op in fu.opList:
-                            if op.opClass.startswith('Simd'):
+                            op_name = str(op.opClass)
+                            if op_name.startswith('Simd'):
                                 op.issueLat = 6
-                                if "Div" in op.opClass or "Sqrt" in op.opClass:
+                                if "Div" in op_name or "Sqrt" in op_name:
                                     op.opLat = op.opLat + 2
                                 else:
                                     op.opLat = 3
