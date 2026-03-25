@@ -27,11 +27,8 @@ from m5.objects.FuncUnitConfig import *
 requires(isa_required=ISA.RISCV)
 
 # --- Calibrated Functional Unit Definition ---
+# We keep opLat=6 to model the measured RTL dispatch floor.
 class CalibratedAraSIMD_Unit(FUDesc):
-    """
-    Calibrated ARA SIMD Unit.
-    We set opLat=6 to model the 6-cycle CVA6 dispatch floor.
-    """
     opList = [
         OpDesc(opClass="SimdAdd", opLat=6),
         OpDesc(opClass="SimdAddAcc", opLat=6),
@@ -76,27 +73,17 @@ class CalibratedAraSIMD_Unit(FUDesc):
         OpDesc(opClass="SimdFloatExt", opLat=6),
         OpDesc(opClass="SimdConfig", opLat=6),
     ]
-    # We set count=1 per FUDesc to ensure the unit is busy for the full latency
     count = 1
 
 class RVVCore(BaseCPUCore):
     def __init__(self, elen, vlen, cpu_id, cpu_type, enable_chaining, vector_throughput, simd_units):
         if cpu_type == "AraO3":
             from cpu.o3.AraConfig import AraO3CPU as SelectedCPU
-            # Create core with Lean Frontend (Widths = 1)
-            core = SelectedCPU(cpu_id=cpu_id,
-                            fetchWidth=1, decodeWidth=1, renameWidth=1,
-                            dispatchWidth=1, issueWidth=1, wbWidth=1,
-                            commitWidth=1, squashWidth=1,
-                            fetchToDecodeDelay=2, decodeToRenameDelay=2,
-                            renameToIEWDelay=2, renameToROBDelay=2,
-                            iewToCommitDelay=2, iewToRenameDelay=2)
+            # Use DEFAULT frontend parameters (Stable)
+            core = SelectedCPU(cpu_id=cpu_id)
             
             # Substitute the Functional Unit Pool
-            # We provide 'simd_units' number of our calibrated units
-            # Each unit is count=1, and busy for 6 cycles.
             calibrated_units = [CalibratedAraSIMD_Unit() for _ in range(simd_units)]
-            
             for iq in core.instQueues:
                 iq.fuPool = FUPool(FUList = [
                     IntALU(), IntMultDiv(), FP_ALU(), FP_MultDiv(),
@@ -146,7 +133,7 @@ board.set_se_binary_workload(binary, arguments=args.parms.split())
 
 print("\n" + "="*60)
 print("   ARA HARDWARE-CALIBRATED SIMULATION ACTIVE")
-print("   Config: Single-Issue Frontend, Issue-Floor=6")
+print("   Config: Stable Frontend, Calibrated Vector Latencies")
 print("="*60 + "\n")
 
 simulator = Simulator(board=board, full_system=False)
