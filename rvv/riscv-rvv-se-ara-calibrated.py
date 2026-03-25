@@ -120,6 +120,7 @@ parser.add_argument("-p", "--parms", required=False, type=str, default='')
 parser.add_argument("--cpu-type", type=str, default="AraO3")
 parser.add_argument("--vector-timing-throughput", type=int, default=4)
 parser.add_argument("--simd-units", type=int, default=2)
+parser.add_argument("--enable-chaining", action="store_true", default=True)
 
 args = parser.parse_args()
 
