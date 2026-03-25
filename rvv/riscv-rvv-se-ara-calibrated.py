@@ -102,11 +102,10 @@ class RVVCore(BaseCPUCore):
         
         # --- DEEP INJECTION ---
         # We must set VLEN and Timing parameters directly on the ISA objects
-        # This is where gem5 instructions actually look for these values.
         for isa in self.core.isa:
             isa.vlen = vlen
             isa.elen = elen
-            isa.enable_vector_chaining = enable_chaining
+            isa.enable_chaining = enable_chaining # Correct gem5 parameter name
             isa.vector_timing_throughput = vector_throughput
 
 # --- CLI ---
