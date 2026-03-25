@@ -76,12 +76,26 @@ class RVVCore(BaseCPUCore):
     def __init__(self, elen, vlen, cpu_id, enable_chaining, vector_timing_throughput, simd_units):
         # Use our custom SelectedCPU which handles FUPool configuration automatically
         core = SelectedCPU(cpu_id=cpu_id)
+        
+        # Configure the CPU Core
         core.enable_vector_chaining = enable_chaining
         core.vector_timing_throughput = vector_timing_throughput
         core.simd_units = simd_units
+        
         super().__init__(core=core, isa=ISA.RISCV)
-        self.core.isa[0].elen = elen
-        self.core.isa[0].vlen = vlen
+        
+        # --- CRITICAL FIX: Propagate to ISA ---
+        # The C++ vector timing model looks at the ISA objects, not the CPU.
+        for isa in self.core.isa:
+            isa.elen = elen
+            isa.vlen = vlen
+            # Ensure both possible parameter names are set for compatibility
+            if hasattr(isa, 'vector_timing_throughput'):
+                isa.vector_timing_throughput = vector_timing_throughput
+            if hasattr(isa, 'timing_vector_throughput'):
+                isa.timing_vector_throughput = vector_timing_throughput
+            if hasattr(isa, 'enable_chaining'):
+                isa.enable_chaining = enable_chaining
 
 
 
