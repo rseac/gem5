@@ -100,13 +100,22 @@ class RVVCore(BaseCPUCore):
             
         super().__init__(core=core, isa=ISA.RISCV)
         
-        # --- DEEP INJECTION ---
-        # We must set VLEN and Timing parameters directly on the ISA objects
+        # --- DEEP INJECTION (Robust Version) ---
+        # Map our logic to potential gem5 ISA parameter names
+        param_map = {
+            'vlen': vlen,
+            'elen': elen,
+            'enable_chaining': enable_chaining,
+            'enable_vector_chaining': enable_chaining,
+            'vector_timing_throughput': vector_throughput,
+            'timing_vector_throughput': vector_throughput
+        }
+        
         for isa in self.core.isa:
-            isa.vlen = vlen
-            isa.elen = elen
-            isa.enable_chaining = enable_chaining # Correct gem5 parameter name
-            isa.vector_timing_throughput = vector_throughput
+            for p_name, p_val in param_map.items():
+                if hasattr(isa, p_name):
+                    setattr(isa, p_name, p_val)
+                    print(f"DEBUG: Set ISA {p_name} = {p_val}")
 
 # --- CLI ---
 parser = argparse.ArgumentParser()
