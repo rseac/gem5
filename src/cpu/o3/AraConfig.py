@@ -57,22 +57,28 @@ class AraSIMD_Unit(FUDesc):
         OpDesc(opClass="SimdDiv", opLat=32, pipelined=False),
         
         # --- Float Arithmetic ---
-        OpDesc(opClass="SimdFloatAdd", opLat=5),
-        OpDesc(opClass="SimdFloatAlu", opLat=5),
-        OpDesc(opClass="SimdFloatMult", opLat=5),
-        OpDesc(opClass="SimdFloatMultAcc", opLat=5),
-        OpDesc(opClass="SimdFloatMatMultAcc", opLat=5),
-        
+        # RTL: LatFCompEW64=5, LatFCompEW32=4, LatFCompEW16=3, LatFCompEW8=2
+        # gem5 opClass does not distinguish element width, so opLat=4 is used as
+        # the EW32 (single-precision) representative — the dominant FP width in
+        # practice. EW64 workloads will see 1-cycle optimism; EW16/8 workloads
+        # will see 1-2 cycles pessimism.
+        OpDesc(opClass="SimdFloatAdd", opLat=4),
+        OpDesc(opClass="SimdFloatAlu", opLat=4),
+        OpDesc(opClass="SimdFloatMult", opLat=4),
+        OpDesc(opClass="SimdFloatMultAcc", opLat=4),
+        OpDesc(opClass="SimdFloatMatMultAcc", opLat=4),
+
         # --- Float Misc / Compare ---
         OpDesc(opClass="SimdFloatCmp", opLat=1),
         OpDesc(opClass="SimdFloatMisc", opLat=1),
-        
+
         # --- Float Conversion ---
         OpDesc(opClass="SimdFloatCvt", opLat=2),
-        
+
         # --- Float Divide / Square Root ---
-        OpDesc(opClass="SimdFloatDiv", opLat=10, pipelined=False),
-        OpDesc(opClass="SimdFloatSqrt", opLat=10, pipelined=False),
+        # RTL: LatFDivSqrt=3 (fixed 3-stage pipeline in fpnew PULP unit, ara_pkg.sv:95)
+        OpDesc(opClass="SimdFloatDiv", opLat=3),
+        OpDesc(opClass="SimdFloatSqrt", opLat=3),
         
         # --- Reductions ---
         OpDesc(opClass="SimdReduceAdd", opLat=1),
