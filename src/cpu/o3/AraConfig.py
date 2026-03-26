@@ -76,9 +76,13 @@ class AraSIMD_Unit(FUDesc):
         OpDesc(opClass="SimdFloatCvt", opLat=2),
 
         # --- Float Divide / Square Root ---
-        # RTL: LatFDivSqrt=3 (fixed 3-stage pipeline in fpnew PULP unit, ara_pkg.sv:95)
-        OpDesc(opClass="SimdFloatDiv", opLat=3),
-        OpDesc(opClass="SimdFloatSqrt", opLat=3),
+        # RTL: fpnew's DIVSQRT unit is iterative (non-pipelined): only one
+        # operation can be in-flight per lane at a time.  LatFDivSqrt=3
+        # (ara_pkg.sv:95) is the pipeline-register depth; the unit is marked
+        # pipelined=False so the FU is held until the current op completes
+        # before accepting the next micro-op.
+        OpDesc(opClass="SimdFloatDiv", opLat=3, pipelined=False),
+        OpDesc(opClass="SimdFloatSqrt", opLat=3, pipelined=False),
         
         # --- Reductions ---
         OpDesc(opClass="SimdReduceAdd", opLat=1),

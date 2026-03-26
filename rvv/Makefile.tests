@@ -11,8 +11,9 @@ CFLAGS   = -static $(VECTOR_FLAGS)
 CHAINING_TEST    = rvv_chaining_test
 SCALAR_TEST      = scalar_wakeup_test
 LOAD_CHAIN_TEST  = rvv_load_chain_test
+LATENCY_TEST     = rvv_ara_latency_test
 
-all: $(CHAINING_TEST).bin $(SCALAR_TEST).bin $(LOAD_CHAIN_TEST).bin
+all: $(CHAINING_TEST).bin $(SCALAR_TEST).bin $(LOAD_CHAIN_TEST).bin $(LATENCY_TEST).bin
 
 %.bin: %.c
 	$(CC) $(CFLAGS) -o $@ $<
@@ -21,6 +22,10 @@ all: $(CHAINING_TEST).bin $(SCALAR_TEST).bin $(LOAD_CHAIN_TEST).bin
 $(LOAD_CHAIN_TEST).bin: $(LOAD_CHAIN_TEST).c
 	$(CC) $(CFLAGS) -o $@ $< -lm
 	$(OBJDUMP) -d $@ > $(LOAD_CHAIN_TEST).dump
+
+$(LATENCY_TEST).bin: $(LATENCY_TEST).c
+	$(CC) $(CFLAGS) -o $@ $< -lm
+	$(OBJDUMP) -d $@ > $(LATENCY_TEST).dump
 
 clean:
 	rm -f *.bin *.dump
