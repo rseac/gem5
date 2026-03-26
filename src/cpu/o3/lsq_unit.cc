@@ -87,6 +87,35 @@ LSQUnit::WritebackEvent::description() const
     return "Store writeback";
 }
 
+LSQUnit::VectorLoadChainEvent::VectorLoadChainEvent(
+        const DynInstPtr &_inst, LSQUnit *_lsqUnit)
+    : Event(Default_Pri, AutoDelete), inst(_inst), lsqUnit(_lsqUnit)
+{}
+
+void
+LSQUnit::VectorLoadChainEvent::process()
+{
+    // If the instruction was squashed between data arrival and this event
+    // firing, silently drop it — the LSQ will have already cleaned up.
+    if (!inst->isSquashed()) {
+        DPRINTF(IEW, "VectorLoadChainEvent: committing [sn:%llu] after "
+                "1-cycle chain overhead delay.\n", inst->seqNum);
+        // Wake the CPU first: the CPU may have become idle during the 1-cycle
+        // delay.  Without this, writebackInsts() won't tick and the
+        // instruction would sit in the iewQueue permanently.
+        lsqUnit->iewStage->wakeCPU();
+        lsqUnit->iewStage->instToCommit(inst);
+        lsqUnit->iewStage->activityThisCycle();
+        lsqUnit->iewStage->checkMisprediction(inst);
+    }
+}
+
+const char *
+LSQUnit::VectorLoadChainEvent::description() const
+{
+    return "Vector load chain writeback delay";
+}
+
 bool
 LSQUnit::recvTimingResp(PacketPtr pkt)
 {
@@ -1149,13 +1178,29 @@ LSQUnit::writeback(const DynInstPtr &inst, PacketPtr pkt)
         }
     }
 
-    // Need to insert instruction into queue to commit
-    iewStage->instToCommit(inst);
+    // For vector loads with chaining enabled, defer instToCommit by 1 cycle
+    // to model ARA's CHAINING_OVERHEAD=2:
+    //   - 1 cycle explicit: this delay (VectorLoadChainEvent)
+    //   - 1 cycle implicit: the instToCommit → writebackInsts pipeline stage
+    // Together these give 2 cycles from data-ready to dependent-wakeup,
+    // matching ARA's VRF-write + operand-request handshake overhead.
+    // Because this fires after the real cache response (hit or miss), the
+    // overhead is always measured from the actual data-available time.
+    if (inst->isVector() && inst->isLoad() && cpu->enableVectorChaining) {
+        DPRINTF(IEW, "Vector load [sn:%llu]: scheduling 1-cycle chain "
+                "overhead delay.\n", inst->seqNum);
+        auto *ev = new VectorLoadChainEvent(inst, this);
+        cpu->schedule(ev, cpu->clockEdge(Cycles(1)));
+        iewStage->activityThisCycle();
+    } else {
+        // Need to insert instruction into queue to commit
+        iewStage->instToCommit(inst);
 
-    iewStage->activityThisCycle();
+        iewStage->activityThisCycle();
 
-    // see if this load changed the PC
-    iewStage->checkMisprediction(inst);
+        // see if this load changed the PC
+        iewStage->checkMisprediction(inst);
+    }
 }
 
 void

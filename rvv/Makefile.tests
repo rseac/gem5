@@ -8,14 +8,19 @@ VECTOR_FLAGS = -O3 -march=rv64gcv -mabi=lp64d
 CFLAGS   = -static $(VECTOR_FLAGS)
 
 # --- Files ---
-CHAINING_TEST = rvv_chaining_test
-SCALAR_TEST   = scalar_wakeup_test
+CHAINING_TEST    = rvv_chaining_test
+SCALAR_TEST      = scalar_wakeup_test
+LOAD_CHAIN_TEST  = rvv_load_chain_test
 
-all: $(CHAINING_TEST).bin $(SCALAR_TEST).bin
+all: $(CHAINING_TEST).bin $(SCALAR_TEST).bin $(LOAD_CHAIN_TEST).bin
 
 %.bin: %.c
 	$(CC) $(CFLAGS) -o $@ $<
 	$(OBJDUMP) -d $@ > $*.dump
+
+$(LOAD_CHAIN_TEST).bin: $(LOAD_CHAIN_TEST).c
+	$(CC) $(CFLAGS) -o $@ $< -lm
+	$(OBJDUMP) -d $@ > $(LOAD_CHAIN_TEST).dump
 
 clean:
 	rm -f *.bin *.dump

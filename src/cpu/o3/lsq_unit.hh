@@ -446,6 +446,32 @@ class LSQUnit
         LSQUnit *lsqPtr;
     };
 
+    /**
+     * Delayed commit event for vector loads when vector chaining is enabled.
+     *
+     * ARA hardware has CHAINING_OVERHEAD=2 cycles between when a VFU result
+     * is available and when a consumer can start: 1 cycle for the VRF write
+     * and 1 cycle for the operand-request handshake.  The existing
+     * instToCommit→writebackInsts pipeline already contributes 1 cycle;
+     * this event adds the second cycle by deferring instToCommit by 1 tick.
+     *
+     * Because the event fires after real cache data has returned (whether
+     * from an L1 hit or a DRAM miss), the 2-cycle overhead is always
+     * measured from the actual data-available time, giving correct
+     * load-chaining latency regardless of memory hierarchy depth.
+     */
+    class VectorLoadChainEvent : public Event
+    {
+      public:
+        VectorLoadChainEvent(const DynInstPtr &_inst, LSQUnit *_lsqUnit);
+        void process();
+        const char *description() const;
+
+      private:
+        DynInstPtr inst;
+        LSQUnit *lsqUnit;
+    };
+
   public:
     /**
      * Handles writing back and completing the load or store that has
