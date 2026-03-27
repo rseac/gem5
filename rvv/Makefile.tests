@@ -13,7 +13,7 @@ SCALAR_TEST      = scalar_wakeup_test
 LOAD_CHAIN_TEST  = rvv_load_chain_test
 LATENCY_TEST     = rvv_ara_latency_test
 
-all: $(CHAINING_TEST).bin $(SCALAR_TEST).bin $(LOAD_CHAIN_TEST).bin $(LATENCY_TEST).bin
+all: $(CHAINING_TEST).bin $(SCALAR_TEST).bin $(LOAD_CHAIN_TEST).bin $(LATENCY_TEST).bin 
 
 %.bin: %.c
 	$(CC) $(CFLAGS) -o $@ $<
