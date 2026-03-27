@@ -30,12 +30,16 @@ from m5.objects.FUPool import FUPool
 from m5.params import *
 from m5.SimObject import SimObject
 
-class AraSIMD_Unit(FUDesc):
+class AraSIMD_Pipelined(FUDesc):
     """
-    Custom Vector Functional Unit modeling the ARA processor pipeline.
-    
-    This class defines the specific latencies (opLat) for each vector operation class (opClass).
-    The values are derived from the ARA hardware documentation specifications.
+    Pipelined ARA vector functional units: ALU, Multiply, FP compute, conversions,
+    reductions, and load/store address generation.
+
+    count=simd_units (default 2) provides the two FU slots required by gem5's O3
+    chaining mechanism — one for the producer instruction still occupying the
+    pipeline, one for the consumer that starts early via WakeDependents.  This
+    mirrors the ARA hardware behaviour where a new instruction can enter a
+    pipelined VFU while the previous one is still streaming elements through.
     """
     opList = [
         # --- Integer Arithmetic ---
@@ -47,15 +51,12 @@ class AraSIMD_Unit(FUDesc):
         OpDesc(opClass="SimdMisc", opLat=1),
         OpDesc(opClass="SimdShift", opLat=1),
         OpDesc(opClass="SimdShiftAcc", opLat=1),
-        
+
         # --- Integer Multiply ---
         OpDesc(opClass="SimdMult", opLat=1),
         OpDesc(opClass="SimdMultAcc", opLat=1),
         OpDesc(opClass="SimdMatMultAcc", opLat=1),
-        
-        # --- Integer Divide ---
-        OpDesc(opClass="SimdDiv", opLat=32, pipelined=False),
-        
+
         # --- Float Arithmetic ---
         # RTL: LatFCompEW64=5, LatFCompEW32=4, LatFCompEW16=3, LatFCompEW8=2
         # gem5 opClass does not distinguish element width, so opLat=4 is used as
@@ -75,22 +76,13 @@ class AraSIMD_Unit(FUDesc):
         # --- Float Conversion ---
         OpDesc(opClass="SimdFloatCvt", opLat=2),
 
-        # --- Float Divide / Square Root ---
-        # RTL: fpnew's DIVSQRT unit is iterative (non-pipelined): only one
-        # operation can be in-flight per lane at a time.  LatFDivSqrt=3
-        # (ara_pkg.sv:95) is the pipeline-register depth; the unit is marked
-        # pipelined=False so the FU is held until the current op completes
-        # before accepting the next micro-op.
-        OpDesc(opClass="SimdFloatDiv", opLat=3, pipelined=False),
-        OpDesc(opClass="SimdFloatSqrt", opLat=3, pipelined=False),
-        
         # --- Reductions ---
         OpDesc(opClass="SimdReduceAdd", opLat=1),
         OpDesc(opClass="SimdReduceAlu", opLat=1),
         OpDesc(opClass="SimdReduceCmp", opLat=1),
         OpDesc(opClass="SimdFloatReduceAdd", opLat=1),
         OpDesc(opClass="SimdFloatReduceCmp", opLat=1),
-        
+
         # --- Load / Store Address Generation ---
         OpDesc(opClass="SimdUnitStrideLoad", opLat=1),
         OpDesc(opClass="SimdUnitStrideStore", opLat=1),
@@ -108,8 +100,44 @@ class AraSIMD_Unit(FUDesc):
         OpDesc(opClass="SimdFloatExt", opLat=1),
         OpDesc(opClass="SimdConfig", opLat=1),
     ]
-    
-    count = 4
+
+    count = 2
+
+
+class AraSIMD_IntDiv(FUDesc):
+    """
+    ARA integer divide unit — non-pipelined, count=1.
+
+    ARA has one serial integer divider shared across all lanes.  A second
+    independent vdiv cannot start until the first completes.  count=1 enforces
+    this structural hazard; pipelined=False prevents micro-op overlap within a
+    single instruction.
+    """
+    opList = [
+        # RTL: serial divider, pipeline depth = 4 << vsew (16 for EW32, 32 for EW64).
+        OpDesc(opClass="SimdDiv", opLat=32, pipelined=False),
+    ]
+
+    count = 1
+
+
+class AraSIMD_FPDivSqrt(FUDesc):
+    """
+    ARA FP divide / square-root unit — non-pipelined, count=1.
+
+    fpnew's DIVSQRT unit is iterative: only one FP divide or sqrt can be
+    in-flight per lane at a time, and all lanes share the same issue slot.
+    count=1 models the single-issue constraint; pipelined=False prevents
+    micro-op overlap within one instruction.
+    """
+    opList = [
+        # RTL: LatFDivSqrt=3 (ara_pkg.sv:95) — pipeline-register depth.
+        OpDesc(opClass="SimdFloatDiv",  opLat=3, pipelined=False),
+        OpDesc(opClass="SimdFloatSqrt", opLat=3, pipelined=False),
+    ]
+
+    count = 1
+
 
 try:
     from m5.objects import RiscvO3CPU
@@ -119,16 +147,24 @@ try:
         """
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
-            
-            # CRITICAL: In gem5, SimObject instances (like functional units) must 
+
+            # CRITICAL: In gem5, SimObject instances (like functional units) must
             # have a clear parent-child relationship. We instantiate them inside
             # the constructor so they are immediately attached to their parents.
             for iq in self.instQueues:
                 # We provide a fresh set of functional units for every Instruction Queue (IQ).
                 # This prevents 'multiple parent' and 'orphan node' RuntimeErrors.
+                #
+                # AraSIMD_Pipelined: count=simd_units (default 2) — the two slots
+                #   needed for gem5's WakeDependents chaining mechanism.
+                # AraSIMD_IntDiv / AraSIMD_FPDivSqrt: count=1 — enforces the
+                #   single-issue structural hazard on ARA's serial divide units.
                 iq.fuPool = FUPool(FUList = [
                     IntALU(), IntMultDiv(), FP_ALU(), FP_MultDiv(),
-                    ReadPort(), AraSIMD_Unit(count=self.simd_units),
+                    ReadPort(),
+                    AraSIMD_Pipelined(count=self.simd_units),
+                    AraSIMD_IntDiv(),
+                    AraSIMD_FPDivSqrt(),
                     Matrix_Unit(), System_Unit(), PredALU(),
                     WritePort(), RdWrPort()
                 ])
