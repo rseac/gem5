@@ -1,53 +1,93 @@
 # The gem5 Simulator (ARA Vector Timing Model Extension)
 
-This repository is a modified fork of [gem5](https://www.gem5.org/) that incorporates dynamic operation latency bounds mimicking the **ARA RISC-V Vector Architecture**.
+This repository is a modified fork of [gem5](https://www.gem5.org/) that models the **ARA RISC-V Vector Architecture** timing behaviour, including dynamic operation latency, vector chaining, and accurate load-chaining through the memory hierarchy.
 
-## Vanilla gem5 vs. ARA Timing Model
+## ARA Timing Model
 
-In the default gem5 repository, functional unit latencies (`opLat`) are strictly static. When creating a CPU model config (like `O3CPU` or `MinorCPU`), functional units are assigned a generic, unchanging latency for classes of operations (e.g. `SimdFloatAdd` = 5 cycles) regardless of how much work that operation actually performs.
+The model replaces gem5's default 1-cycle vector latencies with values derived from the ARA RTL (`ara_pkg.sv`). Three capabilities not present in upstream gem5 are added:
 
-**The ARA Modification:**
-Pipelined Vector Hardware processors process a finite amount of data per clock tick (e.g. one 64-bit element per lane per cycle). That means the time it takes an instruction to leave a functional pipeline depends *entirely* on the size of the elements passing through it. 
+1. **Dynamic operation latency** — FU occupancy scales with `VLEN`, element width (`SEW`), and lane count (`NrLanes`).
+2. **Compute chaining** — a consumer instruction issues as soon as the producer's first result element is available (`WakeDependents` at `chainingLatency` cycles), without waiting for the full vector to complete.
+3. **Cache-miss-accurate load chaining** — vector loads participate in chaining based on actual memory latency via a 1-cycle `VectorLoadChainEvent` fired after `completeAcc()`.
 
-To model this, we introduced the `dynamicOpLatency` interface directly into gem5's `StaticInst` layer and hooked it into the Vector (`vtype`) CSRs.
+### Key Source Files
 
-### How it Works
-When the O3 or Minor CPU schedulers fetch an instruction, they intercept the standard latency fetch and instead dynamically evaluate:
-1.  **SEW (Standard Element Width):** Floating point calculations scale latency dynamically according to the element size requested (`vsew + 2`). Unpipelined elements like `__rvv_f64` divisions (`SimdDivOp`) take significantly longer (`4 << vsew`) than 16-bit half-precision calculations.
-2.  **LMUL (Length Multiplier):** We rely on gem5's decoder which automatically splits `LMUL > 1` macro instructions into `num_microops` based on the grouping limits. These micro-ops individually pass through the functional units incurring the `dynamicOpLatency`, scaling the structural hazards and pipeline throughput completely organically.
+| File | Purpose |
+|------|---------|
+| `src/cpu/static_inst.hh` | `dynamicOpLatency` virtual dispatch interface |
+| `src/arch/riscv/insts/vector.hh` | `dynamicOpLatency()`, `chainingLatency()`, `DISPATCH_FLOOR` |
+| `src/cpu/o3/inst_queue.cc` | O3 issue-stage hook for `dynamicOpLatency` and `WakeDependents` |
+| `src/cpu/o3/lsq_unit.hh/.cc` | `VectorLoadChainEvent` — 1-cycle VRF-write delay for load chaining |
+| `src/cpu/o3/AraConfig.py` | Split FU pool; calibrated `opLat` values; `pipelined=False` on serial dividers |
+| `src/cpu/minor/execute.cc` | MinorCPU issue-stage hook for `dynamicOpLatency` |
+| `src/cpu/minor/AraMinorConfig.py` | ARA in-order CPU configuration |
 
-### Codebase Changes
-If you wish to examine the core modifications that enable this dynamic vector latency, see the following files:
-*   `src/cpu/static_inst.hh`: The `dynamicOpLatency` virtual dispatch interface.
-*   `src/arch/riscv/insts/vector.hh`: The RISC-V overriding logic evaluating the `ThreadContext->PCState` for SEW bounds.
-*   `src/cpu/minor/execute.cc`: MinorCPU issue-stage intersection.
-*   `src/cpu/o3/inst_queue.cc`: O3CPU dependency calculation intersection.
+### Latency Formulae
 
-In addition to dynamic execution latency logic, ARA-specific hardware configuration models have been built in Python to parameterize the O3 and Minor simulators:
-*   `src/cpu/o3/AraConfig.py`: Defines the execution units and default latency mappings for the ARA Out-of-Order model (`AraO3CPU`). It configures an `AraFUPool` allocating multiple specialized subunits natively handling the `issueLat` and structural limits. For example, it assigns `count=4` to general `AraSIMD_Unit` blocks to mimic the 4-lane hardware boundaries.
-*   `src/cpu/minor/AraMinorConfig.py`: Defines the execution units and default latency mappings for the ARA In-Order model (`AraMinorCPU`). It instantiates localized `MinorOpClassSet` groups representing logical functions (like `AraMinorIntDivVectorFU` which strictly processes `SimdDiv` Operations), allocating their baseline latency parameter structures.
-
-## Running ARA Benchmarks
-You can execute RISC-V vector binaries under these ARA-modeled processors using the provided testing configuration scripts inside the `rvv/` folder.
-
-**Simulation Script (`rvv/riscv-rvv-se-ara.py`) Arguments:**
-The execution script supports several configuration parameters for tailoring the simulated ARA environment:
-*   `resource`: (Positional) The compiled RISC-V binary to execute.
-*   `--cpu-type`: System CPU model to use (`AraO3` or `AraMinor`). Defaults to `AraO3`.
-*   `-v, --vlen`: Vector Length (VLEN) in bits. Defaults to `256`.
-*   `-e, --elen`: Vector Extension Length (ELEN) in bits. Defaults to `64`.
-*   `-c, --cores`: Number of cores to simulate. Defaults to `1`.
-*   `-d, --l1d`: Size of the Level 1 Data Cache. Defaults to `32KiB`.
-*   `-2, --l2`: Size of the Level 2 Cache. Defaults to `512KiB`.
-*   `-p, --parms`: Execution arguments to pass to the running binary (e.g., matrix elements). Defaults to `2048`.
-
-
-Example:
-```bash
-./build/RISCV/gem5.opt rvv/riscv-rvv-se-ara.py rvv/rvv_arith_latency_64.bin --cpu-type AraMinor
+**FU occupancy** (`dynamicOpLatency`):
+```
+dynamicOpLatency = max(pipeline_depth + ceil(vl / (NrLanes × ELEN/sew)), DISPATCH_FLOOR)
 ```
 
-For more details on crafting and verifying tests that empirically highlight the pipeline depths scaling natively with Element Widths (SEW), see the testing documentation at [rvv/README.md](rvv/README.md).
+**Chaining latency** (when consumer can issue):
+```
+chainingLatency = max(pipeline_depth + 2, DISPATCH_FLOOR)
+```
+
+`DISPATCH_FLOOR = 6` — minimum enforced by ARA's scoreboard.
+
+### Functional Unit Pool (`AraConfig.py`)
+
+The FU pool is split into three classes to correctly model ARA's structural hazards:
+
+| Class | `count` | `pipelined` | Covers |
+|-------|---------|-------------|--------|
+| `AraSIMD_Pipelined` | `simd_units` (default 2) | True | ALU, Mul, FP compute/compare/convert/reduce, LSU-AGU |
+| `AraSIMD_IntDiv` | 1 | False | `SimdDiv` only — ARA's one serial integer divider |
+| `AraSIMD_FPDivSqrt` | 1 | False | `SimdFloatDiv`, `SimdFloatSqrt` — fpnew DIVSQRT is iterative |
+
+`AraSIMD_Pipelined` uses `count=2` (not the lane count) because gem5's `WakeDependents` chaining requires one FU slot for the producer and one for the consumer. `AraSIMD_IntDiv` and `AraSIMD_FPDivSqrt` use `count=1` to enforce that two independent divide instructions cannot execute simultaneously.
+
+## Running ARA Simulations
+
+Use `rvv/riscv-rvv-se-ara.py` as the simulation script:
+
+```bash
+build/RISCV/gem5.opt rvv/riscv-rvv-se-ara.py \
+    --enable-chaining \
+    --vlen 512 \
+    --vector-timing-throughput 4 \
+    --simd-units 2 \
+    /path/to/riscv-binary
+```
+
+### Key Parameters
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `--enable-chaining` | off | Enable vector chaining (WakeDependents + load chain event) |
+| `--vlen` | 512 | Vector register length in bits |
+| `--vector-timing-throughput` | 4 | **Number of ARA lanes** — scales `NrLanes` in the throughput formula |
+| `--simd-units` | 2 | FU pool slots for `AraSIMD_Pipelined` — always keep at 2 |
+
+`--vector-timing-throughput` should match the ARA hardware lane count (2, 4, 8, or 16). `--simd-units` should always be 2 regardless of lane count — see `README_ARA_sim.md` for a full explanation.
+
+## Test Suite
+
+Tests are in `rvv/` and built with `Makefile.tests`:
+
+```bash
+cd rvv/
+make -f Makefile.tests
+```
+
+| Binary | Checker script | What it tests |
+|--------|---------------|---------------|
+| `rvv_ara_latency_test.bin` | `check_ara_latencies.py` | Per-instruction chaining latency for all ARA VFU categories |
+| `rvv_load_chain_test.bin` | `run_load_chain_test.py` | Load-to-compute chaining with and without `--enable-chaining` |
+| `rvv_chaining_test.bin` | — | Compute-to-compute chaining smoke test |
+
+For full parameter documentation, latency tables, and chaining activation thresholds, see [README_ARA_sim.md](README_ARA_sim.md).
 
 ---
 
