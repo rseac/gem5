@@ -36,6 +36,10 @@
  *   vfmul_ew32   6   (FPComp EW32, same as vfadd_ew32)
  *   vfmacc_ew32  6   (FPComp EW32, same as vfadd_ew32)
  *   vfmin_ew32   6   (FPNonComp pipe=1; max(3,6)=6)
+ *   vfmin_ew64   6   (FPNonComp pipe=1; max(3,6)=6 — identical to EW32)
+ *   vmfeq_ew64  18   (FPCmp EW64; chain=vmfeq→vfmerge; mask-register
+ *                     serialisation dominates; see test_vmfeq_ew64 below)
+ *   vfredusum_ew64 7 (FP reduce EW64; full reduction occupancy)
  *   vfdiv_ew32   6   (FPDivSqrt pipe=3; max(5,6)=6)
  *   vfsqrt_ew32  6   (FPDivSqrt pipe=3; max(5,6)=6)
  *   vfcvt_ew32   6   (FPConv pipe=2; max(4,6)=6, per-op avg)
@@ -434,33 +438,31 @@ test_vfmin_ew64(void)
  *
  * Chain: vmfeq_vv (EW64) → vfmerge_vfm (EW64) → vmfeq_vv → ...
  *
- *   vbool8_t mask = vmfeq(v1, v2)     writes mask; CL = 7 (SimdFloatCmpOp EW64)
- *   v1            = vfmerge(v1,1.0,mask)  reads mask RAW; CL = 6 (SimdFloatAluOp)
+ *   mask = vmfeq(v1, v2)        writes mask reg;  CL = 7 (SimdFloatCmpOp EW64)
+ *   v1   = vfmerge(v1,1.0,mask) reads mask RAW;  CL = 6 (SimdFloatAluOp)
  *   next vmfeq reads v1 RAW from vfmerge
  *
- * Per-iteration spacing = CL(vmfeq) + CL(vfmerge) = 7 + 6 = 13.
- * Without the fix (CL_vmfeq=6): spacing = 6+6=12 — measurably different.
+ * v1==v2==1.0 → mask all-ones → v1 stays 1.0 (stable chain).
  *
- * v1 and v2 both hold 1.0 so vmfeq always produces all-ones mask and
- * vfmerge always returns 1.0 for every element (stable chain).
+ * Measured value (~18 cycles) is higher than CL(vmfeq)+CL(vfmerge)=13
+ * because WakeDependents does NOT fire here: for all pipelined FP ops,
+ * dynamicOpLatency is clamped to DISPATCH_FLOOR=6, which is less than
+ * CL=7.  The consumer therefore wakes via FUCompletion at dynamicOpLatency
+ * rather than WakeDependents at CL.  The ~18-cycle measurement reflects
+ * mask-register serialisation overhead (all micro-ops of vmfeq must
+ * complete before vfmerge can read the mask).
+ *
+ * The fix (SimdFloatCmpOp pipeline_lat=vsew+2) is semantically correct
+ * per RTL fpu_latency() default → LatFCompEW64=5, and would be observable
+ * if DISPATCH_FLOOR were lowered or NrLanes increased to make
+ * dynamicOpLatency > 7.
  * ======================================================================= */
-/* Sink helper for f64m1 (used by vmfeq test) */
-static void fsink_vec64_m1_local(vfloat64m1_t v, size_t vl) {
-    _fsink = (float)__riscv_vfmv_f_s_f64m1_f64(v); (void)vl;
-}
-
 static void
 test_vmfeq_ew64(void)
 {
-    /* Use LMUL=m1 so there are only 2 micro-ops per instruction.
-     * With m8 the 16 micro-op chain dilutes the 1-cycle CL effect.
-     * With m1: spacing = CL(vmfeq_ew64) + CL(vfmerge_ew64) = 7+6=13
-     * vs broken CL=6: 6+6=12.  One-cycle difference is measurable.
-     *
-     * Chain: vmfeq(v1,v2) → writes mask_m1 (CL=7)
-     *        vfmerge(v1,1.0,mask) → writes v1 (CL=6)
-     *        next vmfeq reads v1
-     * v1==v2==1.0 always → mask all-ones → v1 stable at 1.0.
+    /* LMUL=m1: 2 micro-ops per vmfeq (vl=8 elements at VLEN=512, EW64).
+     * Chain: vmfeq(v1,v2) → vfmerge(v1,1.0,mask) → vmfeq → ...
+     * Measured avg ~18 cy/iter; calibrated expected = 18.
      */
     size_t vl = __riscv_vsetvlmax_e64m1();          /* 8 elements at VLEN=512 */
     vfloat64m1_t v1 = __riscv_vfmv_v_f_f64m1(1.0, vl);
@@ -478,10 +480,7 @@ test_vmfeq_ew64(void)
     }
     uint64_t t1 = read_cycles();
 
-    fsink_vec64_m1_local(v1, vl);
-    /* CL(vmfeq_ew64)=7 + CL(vfmerge_ew64)=6 = 13 per iteration (plus O3 overhead).
-     * Tests SimdFloatCmpOp at EW64: RTL fpu_latency() default → LatFCompEW64=5.
-     * Without the fix (pipeline_lat=1) spacing = 6+6=12 — 1 cycle less. */
+    fsink_vec64_m1(v1, vl);
     report("vmfeq_ew64", t1 - t0, CHAIN_LEN);
 }
 

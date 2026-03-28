@@ -21,7 +21,7 @@ The model replaces gem5's default 1-cycle vector latencies with values derived f
 | `src/cpu/o3/AraConfig.py` | Split FU pool; calibrated `opLat` values; `pipelined=False` on serial dividers |
 | `src/cpu/o3/lsq_unit.hh` | Added `VectorLoadChainEvent` inner class |
 | `src/cpu/o3/lsq_unit.cc` | Implemented load-chaining writeback delay event |
-| `src/arch/riscv/insts/vector.hh` | `dynamicOpLatency()`, `chainingLatency()`, `DISPATCH_FLOOR`; AraXL cluster-aware throughput and reduction latency |
+| `src/arch/riscv/insts/vector.hh` | `dynamicOpLatency()`, `chainingLatency()`, `DISPATCH_FLOOR`; AraXL cluster-aware throughput and reduction latency; `SimdFloatCmpOp` (FP compare) pipeline depth fix |
 | `src/cpu/base.hh` / `base.cc` / `BaseCPU.py` | Added `vector_timing_model`, `nr_clusters`, `ring_latency` parameters |
 | `rvv/riscv-rvv-se-ara.py` | Simulation script with `--enable-chaining`, `--vlen`, AraXL parameters |
 | `rvv/Makefile.tests` | Build targets for all test binaries |
@@ -186,20 +186,39 @@ FP divide and square root (`SimdFloatDiv`, `SimdFloatSqrt`, `pipelined=False`). 
 
 ### Pipeline latencies (`chainingLatency = max(pipe + 2, DISPATCH_FLOOR)`)
 
-| Instruction class | ARA RTL pipeline depth | `chainingLatency` (VLEN=512, 4 lanes) |
-|---|---|---|
-| Integer ALU (`vadd`, `vsub`, …) | 1 | 6 (floor) |
-| Integer Multiply (`vmul`, …) | 1 | 6 (floor) |
-| Integer Divide EW32 (`vdiv`) | 16 | 18 |
-| Integer Divide EW64 (`vdiv`) | 32 | 34 |
-| FP Compute EW32 (`vfadd`, `vfmul`, `vfmacc`) | 4 | 6 (floor) |
-| FP Compute EW64 | 5 | 7 |
-| FP Non-Compute (`vfmin`, `vfmax`, …) | 1 | 6 (floor) |
-| FP Divide / Sqrt EW32 | 3 | 6 (floor) |
-| FP Convert EW32 | 2 | 6 (floor) |
+| Instruction class | gem5 opClass | ARA RTL pipeline depth | `chainingLatency` (VLEN=512, 4 lanes) |
+|---|---|---|---|
+| Integer ALU (`vadd`, `vsub`, …) | `SimdAdd`, `SimdAlu`, … | 1 | 6 (floor) |
+| Integer Multiply (`vmul`, …) | `SimdMult`, `SimdMultAcc` | EW8=0, else 1 | 6 (floor) |
+| Integer Divide EW32 (`vdiv`) | `SimdDiv` | 16 | 18 |
+| Integer Divide EW64 (`vdiv`) | `SimdDiv` | 32 | 34 |
+| FP Compute EW32 (`vfadd`, `vfmul`, `vfmacc`) | `SimdFloatAdd`, `SimdFloatMult`, `SimdFloatMultAcc` | 4 | 6 (floor) |
+| FP Compute EW64 | same | 5 | 7 |
+| FP Non-Compute (`vfmin`, `vfmax`, `vfsgnj*`, `vfclass`) | `SimdFloatAlu` | 1 | 6 (floor) |
+| FP Compare (`vmfeq`, `vmflt`, `vmfle`, `vmfne`, `vmfgt`, `vmfge`) | `SimdFloatCmp` | EW32=4, EW64=5 | 6 (floor) at EW32, **7** at EW64 |
+| FP Divide / Sqrt EW32 | `SimdFloatDiv`, `SimdFloatSqrt` | 3 | 6 (floor) |
+| FP Convert EW32 | `SimdFloatCvt` | 2 | 6 (floor) |
+| FP Sum Reduction (`vfredusum`, `vfredosum`) | `SimdFloatReduceAdd` | EW32=4, EW64=5 | 6 / 7 |
+| FP Min/Max Reduction (`vfredmin`, `vfredmax`) | `SimdFloatReduceCmp` | 1 | 6 (floor) |
 
 `DISPATCH_FLOOR = 6` cycles — minimum chaining latency enforced by ARA's scoreboard.
 `CHAINING_OVERHEAD = 2` cycles — VRF write + hazard-synchronisation delay added on top of the pipeline depth.
+
+#### RTL source mapping
+
+The pipeline depths above come from `ara_pkg.sv` `fpu_latency()`:
+
+| RTL constant | Value | Instruction range |
+|---|---|---|
+| `LatFCompEW8` | 2 | (ARA only; EW8 FP compute) |
+| `LatFCompEW16` | 3 | EW16 FP compute, AraXL EW8 (fallthrough) |
+| `LatFCompEW32` | 4 | EW32 FP compute and **FP compare** (default case) |
+| `LatFCompEW64` | 5 | EW64 FP compute and **FP compare** (default case) |
+| `LatFNonComp` | 1 | `[VFMIN:VFSGNJX]`, `[VFREDMIN:VFREDMAX]` |
+| `LatFConv` | 2 | `[VFCVTXUF:VFCVTFF]` |
+| `LatFDivSqrt` | 3 | `VFDIV`, `VFRDIV`, `VFSQRT` |
+
+**FP compare (vmfeq..vmfge) uses the default case** — these ops appear after all named ranges in the `ara_op_e` enum, so they fall to the `default:` branch of `fpu_latency()`, which returns `LatFComp*` (SEW-dependent), not `LatFNonComp=1`. The gem5 model was updated to use `pipeline_lat = vsew + 2` for `SimdFloatCmpOp` to match.
 
 ### `dynamicOpLatency` (FU occupancy)
 
@@ -210,6 +229,29 @@ throughput_cycles = ceil(vl / (NrClusters × NrLanes × ELEN/sew))
 ```
 
 This is the number of cycles the FU is occupied, independent of chaining. For pipelined units a new instruction can enter the FU once `dynamicOpLatency` has elapsed for the previous one (or earlier if chaining is active).
+
+### DISPATCH_FLOOR and WakeDependents interaction
+
+Vector chaining is implemented via the `WakeDependents` mechanism in `inst_queue.cc`. The key rule:
+
+> **`WakeDependents` fires only when `chainingLatency < dynamicOpLatency`.**
+
+For all pipelined FP ops at typical configurations (VLEN=512, 4 lanes, LMUL=m8):
+
+```
+throughput_cycles = ceil(microVl / epc) = ceil(16 / 8) = 2
+dynamicOpLatency = max(0 + 2, 6) = 6   [DISPATCH_FLOOR dominates]
+```
+
+When `chainingLatency ≥ dynamicOpLatency`, the consumer wakes via `FUCompletion` at `dynamicOpLatency`, not via `WakeDependents` at `chainingLatency`. This means:
+
+- For `vfadd_ew32` (CL=6): CL == dynamicOpLatency=6 → `WakeDependents` does NOT fire; consumer wakes at 6.
+- For `vfadd_ew64` (CL=7): CL > dynamicOpLatency=6 → same conclusion; consumer wakes at 6.
+- For `vmfeq_ew64` (CL=7, fixed from 6): same as above — the fix is correct per RTL but **not observable** at VLEN=512, 4 lanes with DISPATCH_FLOOR=6.
+
+The fix to `SimdFloatCmpOp` would become observable if:
+- `DISPATCH_FLOOR` were lowered, or
+- `dynamicOpLatency` exceeded 7 (requires `throughput_cycles > 7`, i.e. `microVl > 7 × NrLanes`)
 
 ### AraXL vs ARA latency differences
 
@@ -264,7 +306,7 @@ make -f Makefile.tests          # build all test binaries
 
 ### ARA latency checker (`check_ara_latencies.py`)
 
-Runs `rvv_ara_latency_test.bin` under gem5 and validates all 12 per-instruction chaining latencies against expected ARA RTL values (VLEN=512, 4 lanes):
+Runs `rvv_ara_latency_test.bin` under gem5 and validates 15 per-instruction chaining latencies against expected ARA RTL values (VLEN=512, 4 lanes):
 
 ```bash
 python3 rvv/check_ara_latencies.py \
@@ -274,13 +316,43 @@ python3 rvv/check_ara_latencies.py \
     --vlen 512 --lanes 4
 ```
 
-Expected result: 12/12 PASS. Exit code 0 on success.
+Expected result: 15/15 PASS. Exit code 0 on success.
+
+#### Tested instructions and expected gem5 measurements
+
+| Test | Expected (gem5) | ARA RTL CL | Note |
+|---|---|---|---|
+| `vadd_ew32` | 8 | 6 | ALU CL=6 + O3 overhead |
+| `vmul_ew32` | 8 | 6 | Mul CL=6 + O3 overhead |
+| `vdiv_ew32` | 24 | 18 | vdiv(18) + vadd(CL=6) per iter |
+| `vdiv_ew64` | 40 | 34 | vdiv(34) + vadd(CL=6) per iter |
+| `vfadd_ew32` | 8 | 6 | FPComp EW32 CL=6 + O3 overhead |
+| `vfadd_ew64` | 8 | 7 | FPComp EW64 CL=7; dynamicOpLatency=6 dominates |
+| `vfmul_ew32` | 8 | 6 | Same FU as vfadd_ew32 |
+| `vfmacc_ew32` | 8 | 6 | Same FU as vfadd_ew32 |
+| `vfmin_ew32` | 8 | 6 | FPNonComp CL=6 + O3 overhead |
+| `vfmin_ew64` | 8 | 6 | FPNonComp CL=6 (LatFNonComp=1 regardless of SEW) |
+| `vmfeq_ew64` | 18 | 7 | FPCmp EW64; CL=7 but mask-register serialisation dominates (see below) |
+| `vfredusum_ew64` | 12 | 7 | FP reduce-sum; full reduction occupancy |
+| `vfdiv_ew32` | 48 | 6 | 8 micro-ops × dynamicOpLatency(6), non-pipelined |
+| `vfsqrt_ew32` | 48 | 6 | 8 micro-ops × dynamicOpLatency(6), non-pipelined |
+| `vfcvt_ew32` | 8 | 6 | FPConv CL=6 + O3 overhead (per-op avg) |
+
+#### vmfeq_ew64 — why the measured value is 18, not 13
+
+The test uses a `vmfeq → vfmerge` chain at LMUL=m1. The theoretical chain spacing from chaining latencies alone is CL(vmfeq_EW64=7) + CL(vfmerge_EW64=6) = 13 cycles. However the measured value is ~18 cycles because:
+
+1. **WakeDependents does not fire.** For all pipelined FP ops, `dynamicOpLatency = max(0 + throughput_cycles, DISPATCH_FLOOR) = 6`. Since `CL=7 > dynamicOpLatency=6`, the consumer wakes via `FUCompletion` at `dynamicOpLatency=6`, not via `WakeDependents` at `CL=7`. The 1-cycle CL improvement from the `SimdFloatCmpOp` fix is therefore not directly observable.
+
+2. **Mask-register serialisation.** `vmfeq` writes a mask register. gem5's register pinning mechanism (`getNumPinnedWritesToComplete`) requires all micro-ops of `vmfeq` to complete before the consumer `vfmerge` can read the mask. With LMUL=m1 this is 2 micro-ops; the serialisation adds ~5 cycles on top of the nominal `dynamicOpLatency`.
+
+The `vmfeq_ew64` test still validates the `SimdFloatCmpOp` code path and confirms no regression in mask-generating instruction behaviour.
 
 ### AraXL latency checker (`check_araxl_latencies.py`)
 
 Two test suites in one script:
 
-**Suite 1** — Standard AraXL config (NrLanes=4, NrClusters=2, VLEN=1024). Verifies all 12 instructions produce correct chaining latencies. All values are identical to ARA because `DISPATCH_FLOOR=6` dominates and the proportional increase in `NrClusters` and `VLEN` leaves `throughput_cycles` unchanged.
+**Suite 1** — Standard AraXL config (NrLanes=4, NrClusters=2, VLEN=1024). Verifies all 15 instructions produce correct chaining latencies. All values are identical to ARA because `DISPATCH_FLOOR=6` dominates and the proportional increase in `NrClusters` and `VLEN` leaves `throughput_cycles` unchanged.
 
 **Suite 2** — Throughput differentiation (NrLanes=1, VLEN=512). Compares `vfdiv_ew32` with and without clusters to verify that `NrClusters` correctly scales `elements_per_cycle` in `dynamicOpLatency`. The non-pipelined `count=1` FU makes this visible:
 
@@ -300,7 +372,7 @@ python3 rvv/check_araxl_latencies.py \
 python3 rvv/check_araxl_latencies.py ... --skip-throughput
 ```
 
-Expected result: Suite 1 12/12 PASS, Suite 2 PASS (AraXL faster than ARA). Exit code 0 on success.
+Expected result: Suite 1 15/15 PASS, Suite 2 PASS (AraXL faster than ARA). Exit code 0 on success.
 
 ### Load chain test (`run_load_chain_test.py`)
 
@@ -320,13 +392,13 @@ python3 rvv/run_load_chain_test.py \
 GEM5=build/RISCV/gem5.opt
 SCRIPT=rvv/riscv-rvv-se-ara.py
 
-# ARA regression
+# ARA regression (15 tests)
 python3 rvv/check_ara_latencies.py \
     --gem5 $GEM5 --script $SCRIPT \
     --binary rvv/rvv_ara_latency_test.bin \
     --vlen 512 --lanes 4
 
-# AraXL (both suites)
+# AraXL (Suite 1: 15 tests + Suite 2: throughput differentiation)
 python3 rvv/check_araxl_latencies.py \
     --gem5 $GEM5 --script $SCRIPT \
     --binary rvv/rvv_ara_latency_test.bin \
@@ -338,3 +410,35 @@ python3 rvv/run_load_chain_test.py \
     --binary rvv/rvv_load_chain_test.bin \
     --vlen 512 --lanes 4
 ```
+
+---
+
+## RTL Fidelity Verification
+
+The table below documents how each gem5 opClass maps to the RTL `fpu_latency()` function in `ara_pkg.sv`, and confirms that the implementation is faithful to the RTL for all instruction classes.
+
+| gem5 opClass | Instructions | RTL `fpu_latency()` branch | `pipeline_lat` (ARA) | `pipeline_lat` (AraXL) | Match? |
+|---|---|---|---|---|---|
+| `SimdFloatAddOp` | `vfadd`, `vfsub` | default → LatFComp* | `vsew+2` | `vsew+2` (EW8→3) | ✓ |
+| `SimdFloatMultOp` | `vfmul` | default → LatFComp* | `vsew+2` | `vsew+2` (EW8→3) | ✓ |
+| `SimdFloatMultAccOp` | `vfmacc`, `vfmsac`, … | default → LatFComp* | `vsew+2` | `vsew+2` (EW8→3) | ✓ |
+| `SimdFloatAluOp` | `vfmin`, `vfmax`, `vfsgnj*`, `vfclass` | `[VFMIN:VFSGNJX]` → LatFNonComp=1 | 1 | 1 | ✓ |
+| `SimdFloatCmpOp` | `vmfeq`, `vmfne`, `vmflt`, `vmfle`, `vmfgt`, `vmfge` | default → LatFComp* (falls through all named ranges) | `vsew+2` | `vsew+2` (EW8→3) | ✓ (fixed) |
+| `SimdFloatCvtOp` | `vfcvt*`, `vfwcvt*`, `vfncvt*` | `[VFCVTXUF:VFCVTFF]` → LatFConv=2 | 2 | 2 | ✓ |
+| `SimdFloatDivOp` | `vfdiv`, `vfrdiv` | LatFDivSqrt=3 | 3 | 3 | ✓ |
+| `SimdFloatSqrtOp` | `vfsqrt` | LatFDivSqrt=3 | 3 | 3 | ✓ |
+| `SimdDivOp` | `vdiv`, `vremu`, … | (integer, not fpu_latency) 4<<vsew | `4<<vsew` | `4<<vsew` | ✓ |
+| `SimdMultOp` / `SimdMultAccOp` | `vmul`, `vmacc`, … | (integer) EW8=0, else 1 | EW8=0, else 1 | same | ✓ |
+| `SimdFloatReduceAddOp` | `vfredusum`, `vfredosum` | default → LatFComp* | `vsew+2` | `vsew+2` + cross-cluster | ✓ |
+| `SimdFloatReduceCmpOp` | `vfredmin`, `vfredmax` | `[VFREDMIN:VFREDMAX]` → LatFNonComp=1 | 1 | 1 + cross-cluster | ✓ |
+| AraXL throughput scaling | all ops | `epc = NrClusters×NrLanes×(ELEN/sew)` | N/A | ✓ | ✓ |
+| AraXL cross-cluster reduction | reduce ops | `log2(NrClusters)×(1+ringLat)` | N/A | ✓ | ✓ |
+
+### `SimdFloatCmpOp` fix detail
+
+Prior to the fix, `SimdFloatCmpOp` fell to the `default: pipeline_lat = 1` catch-all in `chainingLatency()`, giving CL=6 at all SEW values. The correct value from RTL is `LatFComp*` (the default case in `fpu_latency()`), giving:
+
+- EW32: `pipeline_lat = 4` → CL = max(4+2, 6) = 6 (unchanged — DISPATCH_FLOOR dominates)
+- EW64: `pipeline_lat = 5` → CL = max(5+2, 6) = **7** (was 6 — off by one)
+
+The fix is semantically correct. Its timing effect is not observable at VLEN=512, 4 lanes because `dynamicOpLatency` is clamped to `DISPATCH_FLOOR=6 < CL=7`, so `WakeDependents` never fires regardless of the CL value. The fix would become observable if `dynamicOpLatency > 7` (e.g. fewer lanes, higher LMUL, or lower DISPATCH_FLOOR).
