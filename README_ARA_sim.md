@@ -21,8 +21,9 @@ The model replaces gem5's default 1-cycle vector latencies with values derived f
 | `src/cpu/o3/AraConfig.py` | Split FU pool; calibrated `opLat` values; `pipelined=False` on serial dividers |
 | `src/cpu/o3/lsq_unit.hh` | Added `VectorLoadChainEvent` inner class |
 | `src/cpu/o3/lsq_unit.cc` | Implemented load-chaining writeback delay event |
-| `src/arch/riscv/insts/vector.hh` | `dynamicOpLatency()`, `chainingLatency()`, `DISPATCH_FLOOR` |
-| `rvv/riscv-rvv-se-ara.py` | Simulation script with `--enable-chaining`, `--vlen`, `--lanes` flags |
+| `src/arch/riscv/insts/vector.hh` | `dynamicOpLatency()`, `chainingLatency()`, `DISPATCH_FLOOR`; AraXL cluster-aware throughput and reduction latency |
+| `src/cpu/base.hh` / `base.cc` / `BaseCPU.py` | Added `vector_timing_model`, `nr_clusters`, `ring_latency` parameters |
+| `rvv/riscv-rvv-se-ara.py` | Simulation script with `--enable-chaining`, `--vlen`, AraXL parameters |
 | `rvv/Makefile.tests` | Build targets for all test binaries |
 
 ---
@@ -38,7 +39,9 @@ scons build/RISCV/gem5.opt -j$(nproc)
 
 ## Running a Simulation
 
-Use `rvv/riscv-rvv-se-ara.py` as the simulation script:
+Use `rvv/riscv-rvv-se-ara.py` as the simulation script.
+
+### ARA (single-cluster)
 
 ```bash
 build/RISCV/gem5.opt rvv/riscv-rvv-se-ara.py \
@@ -49,54 +52,113 @@ build/RISCV/gem5.opt rvv/riscv-rvv-se-ara.py \
     /path/to/riscv-binary
 ```
 
-### Key Parameters
+### AraXL (multi-cluster)
 
-| Parameter | Default | Meaning |
-|-----------|---------|---------|
-| `--enable-chaining` | off | Enable vector chaining (WakeDependents + load chain event) |
-| `--vlen` | 512 | Vector register length in bits |
-| `--vector-timing-throughput` | 4 | **Number of ARA lanes** — sets `NrLanes` in the throughput formula |
-| `--simd-units` | 2 | FU pool slots for pipelined units (see below) |
+```bash
+# Explicit parameters
+build/RISCV/gem5.opt rvv/riscv-rvv-se-ara.py \
+    --enable-chaining \
+    --vector-timing-model araxl \
+    --vlen 1024 \
+    --vector-timing-throughput 4 \
+    --nr-clusters 2 \
+    --simd-units 4 \
+    /path/to/riscv-binary
+
+# Shorthand flag (equivalent to above with default lane/cluster counts)
+build/RISCV/gem5.opt rvv/riscv-rvv-se-ara.py \
+    --enable-chaining --araxl --vlen 1024 \
+    /path/to/riscv-binary
+```
+
+### All Parameters
+
+| Parameter | Default | ARA | AraXL | Meaning |
+|-----------|---------|-----|-------|---------|
+| `--enable-chaining` | off | ✓ | ✓ | Enable vector chaining |
+| `--disable-chaining` | — | ✓ | ✓ | Disable vector chaining |
+| `--vlen` | 256 | ✓ | ✓ | Vector register length in bits |
+| `--vector-timing-throughput` | 4 | ✓ | ✓ | **Number of lanes** (`NrLanes`) |
+| `--simd-units` | 2 | ✓ | ✓ | Pipelined FU slots (see below) |
+| `--vector-timing-model` | `ara` | ✓ | ✓ | `"ara"` or `"araxl"` |
+| `--nr-clusters` | 1 | — | ✓ | Number of AraXL clusters |
+| `--ring-latency` | 0 | — | ✓ | Inter-cluster ring pipeline stages |
+| `--araxl` | — | — | ✓ | Shorthand: sets model=araxl, clusters=2, simd-units=4 |
 
 ---
 
-## Parameter Guide: `--vector-timing-throughput` and `--simd-units`
+## Parameter Guide
 
-These two parameters serve distinct purposes and should not be confused.
+### `--vector-timing-throughput` = number of lanes (`NrLanes`)
 
-### `--vector-timing-throughput` = number of ARA lanes
-
-This directly controls how many elements the simulated hardware processes per cycle. The throughput formula in `vector.hh` is:
+Controls how many elements the simulated hardware processes per cycle:
 
 ```
-elements_per_cycle = NrLanes × (ELEN / sew)
+elements_per_cycle = NrLanes × NrClusters × (ELEN / sew)
 throughput_cycles  = ceil(vl / elements_per_cycle)
 ```
 
-Set this to match the lane count of the ARA configuration you are modelling:
+Set this to the lane count of the hardware configuration being modelled:
 
-| ARA Hardware | `--vector-timing-throughput` |
+| Hardware | `--vector-timing-throughput` |
 |---|---|
 | 2 lanes | `2` |
 | 4 lanes | `4` |
 | 8 lanes | `8` |
 | 16 lanes | `16` |
 
-### `--simd-units` = FU slots for the pipelined unit (keep at 2)
+### `--simd-units` = pipelined FU slots
 
-This controls the `count` on `AraSIMD_Pipelined` — the number of independent FU instances gem5 can dispatch pipelined vector instructions to simultaneously.
+Controls the `count` on `AraSIMD_Pipelined`.
 
-**Always use `--simd-units 2` regardless of lane count.** Here is why:
+**For ARA: always use `--simd-units 2`.** The O3 chaining mechanism requires one FU slot for the producer and one for the consumer. Setting it to 1 prevents chaining; setting it above 2 incorrectly allows multiple independent vector ops in parallel.
 
-gem5's O3 chaining mechanism works by firing `WakeDependents` early (at `chainingLatency` cycles) and allowing the consumer instruction to *issue* while the producer still occupies one FU slot. This requires at least two FU slots — one for the producer, one for the consumer. Setting `simd_units=1` prevents chaining from activating even when the hardware would allow it.
+**For AraXL: use `--simd-units 4`.** AraXL's larger MFPU result queue (4 vs 2 in ARA) means more in-flight FP results can compete for VRF write ports. A value of 4 models this increased concurrency.
 
-Setting it higher than 2 (e.g. matching the lane count) would allow gem5 to dispatch many independent vector instructions simultaneously, incorrectly modelling ARA as a wide-issue superscalar vector engine.
+| `--simd-units` | ARA | AraXL |
+|---|---|---|
+| `1` | Chaining broken | Chaining broken |
+| `2` | **Correct** | Understates result queue |
+| `4` | Overstates issue width | **Correct** |
 
-| `--simd-units` | Effect |
-|---|---|
-| `1` | Chaining disabled (consumer can't issue while producer runs) |
-| `2` | Correct: one slot for producer, one for consumer — matches ARA's single-issue-per-VFU model with chaining |
-| `> 2` | Incorrect: multiple independent vector ops in parallel, overstates ARA's issue width |
+### `--vector-timing-model` = `ara` or `araxl`
+
+Selects the timing model variant:
+
+- **`ara`** (default): single-cluster flat topology. `NrClusters` is ignored.
+- **`araxl`**: multi-cluster ring topology. Enables two AraXL-specific behaviours:
+  1. **EW8 FP latency fix**: `chainingLatency` for 8-bit FP ops returns 3 cycles (AraXL's `fpu_latency()` has no EW8 case, falling through to `LatFCompEW16=3`) rather than ARA's 2 cycles. Both hit `DISPATCH_FLOOR=6` at typical configurations but the distinction is preserved for future lower-floor work.
+  2. **Cross-cluster reduction overhead**: for reduction instructions, `chainingLatency` adds `log2(NrClusters) × (1 + ring_latency)` extra cycles for the inter-cluster accumulation stages.
+
+### `--nr-clusters` = number of AraXL clusters
+
+Scales the throughput formula and the reduction latency:
+
+```
+elements_per_cycle = NrClusters × NrLanes × (ELEN / sew)
+reduction_overhead = log2(NrClusters) × (1 + ring_latency)   [AraXL only]
+```
+
+| AraXL Hardware | `--nr-clusters` | `--vlen` (typical) |
+|---|---|---|
+| 2 clusters × 4 lanes | `2` | `1024` |
+| 4 clusters × 4 lanes | `4` | `2048` |
+| 2 clusters × 8 lanes | `2` | `2048` |
+
+Set `--vlen = NrClusters × NrLanes × 1024` to match the full AraXL register file size.
+
+### `--ring-latency` = inter-cluster ring pipeline stages
+
+Number of pipeline registers on the AraXL inter-cluster ring (default 0). Only affects `chainingLatency` for reduction instructions when `--vector-timing-model araxl` is active.
+
+Example — 2 clusters, 1 ring stage:
+```
+reduction chainingLatency = base + log2(2) × (1 + 1) = base + 2
+```
+
+### `--araxl` shorthand
+
+Equivalent to `--vector-timing-model araxl --nr-clusters 2 --simd-units 4` without overriding any value already set explicitly on the command line.
 
 ---
 
@@ -143,11 +205,23 @@ FP divide and square root (`SimdFloatDiv`, `SimdFloatSqrt`, `pipelined=False`). 
 
 ```
 dynamicOpLatency = max(pipeline_depth + throughput_cycles, DISPATCH_FLOOR)
+
+throughput_cycles = ceil(vl / (NrClusters × NrLanes × ELEN/sew))
 ```
 
-`throughput_cycles = ceil(vl / (NrLanes × ELEN/sew))`
-
 This is the number of cycles the FU is occupied, independent of chaining. For pipelined units a new instruction can enter the FU once `dynamicOpLatency` has elapsed for the previous one (or earlier if chaining is active).
+
+### AraXL vs ARA latency differences
+
+All pipeline-depth constants (`LatFComp*`, `LatFDivSqrt`, etc.) are **identical** between ARA and AraXL. The only differences visible in `chainingLatency` are:
+
+| Scenario | ARA | AraXL |
+|---|---|---|
+| FP FMA/Add/Mul at EW8 | `pipeline_lat = 2` | `pipeline_lat = 3` (no EW8 case in RTL, falls to EW16) |
+| Reduction instructions | no cross-cluster stages | `+log2(NrClusters) × (1+ring_latency)` cycles |
+| Throughput (`elements_per_cycle`) | `NrLanes × (ELEN/sew)` | `NrClusters × NrLanes × (ELEN/sew)` |
+
+At typical configurations (4 lanes, `DISPATCH_FLOOR=6`) the EW8 FP difference is invisible because both 2 and 3 cycles produce `chainingLatency = max(4,6) = 6`.
 
 ---
 
@@ -181,22 +255,16 @@ The total load-chain overhead is 2 cycles (1 explicit delay + 1 IEW pipeline sta
 
 ## Test Suite
 
-All tests are in `rvv/` and built with `Makefile.tests`:
+All test binaries are in `rvv/` and built with `Makefile.tests`:
 
 ```bash
 cd rvv/
 make -f Makefile.tests          # build all test binaries
 ```
 
-### Latency tests (`rvv_ara_latency_test.c`)
+### ARA latency checker (`check_ara_latencies.py`)
 
-Measures per-instruction chaining latency for each ARA VFU category using RAW dependency chains. Output format: `LATENCY <name>: avg=<X.XX>`.
-
-This binary contains no gem5-specific APIs — it uses only `rdcycle` (standard RISC-V) and `printf`. It can be run directly on ARA RTL hardware.
-
-### Latency checker (`check_ara_latencies.py`)
-
-Runs `rvv_ara_latency_test.bin` under gem5 and validates measured latencies against expected values:
+Runs `rvv_ara_latency_test.bin` under gem5 and validates all 12 per-instruction chaining latencies against expected ARA RTL values (VLEN=512, 4 lanes):
 
 ```bash
 python3 rvv/check_ara_latencies.py \
@@ -206,14 +274,67 @@ python3 rvv/check_ara_latencies.py \
     --vlen 512 --lanes 4
 ```
 
-### Load chain test (`rvv_load_chain_test.c` + `run_load_chain_test.py`)
+Expected result: 12/12 PASS. Exit code 0 on success.
 
-Tests that vector loads correctly chain with dependent compute instructions, with and without chaining enabled:
+### AraXL latency checker (`check_araxl_latencies.py`)
+
+Two test suites in one script:
+
+**Suite 1** — Standard AraXL config (NrLanes=4, NrClusters=2, VLEN=1024). Verifies all 12 instructions produce correct chaining latencies. All values are identical to ARA because `DISPATCH_FLOOR=6` dominates and the proportional increase in `NrClusters` and `VLEN` leaves `throughput_cycles` unchanged.
+
+**Suite 2** — Throughput differentiation (NrLanes=1, VLEN=512). Compares `vfdiv_ew32` with and without clusters to verify that `NrClusters` correctly scales `elements_per_cycle` in `dynamicOpLatency`. The non-pipelined `count=1` FU makes this visible:
+
+| Config | `vfdiv_ew32` | Formula |
+|---|---|---|
+| ARA (1L/1C) | ~88 cy | 8 micro-ops × max(3+8, 6) = 8×11 |
+| AraXL (1L/2C) | ~56 cy | 8 micro-ops × max(3+4, 6) = 8×7 |
+
+```bash
+python3 rvv/check_araxl_latencies.py \
+    --gem5     build/RISCV/gem5.opt \
+    --script   rvv/riscv-rvv-se-ara.py \
+    --binary   rvv/rvv_ara_latency_test.bin \
+    --vlen 1024 --lanes 4 --clusters 2
+
+# Skip the throughput suite (faster, latency-only check):
+python3 rvv/check_araxl_latencies.py ... --skip-throughput
+```
+
+Expected result: Suite 1 12/12 PASS, Suite 2 PASS (AraXL faster than ARA). Exit code 0 on success.
+
+### Load chain test (`run_load_chain_test.py`)
+
+Tests that vector loads correctly chain with dependent compute instructions:
 
 ```bash
 python3 rvv/run_load_chain_test.py \
     --gem5   build/RISCV/gem5.opt \
     --script rvv/riscv-rvv-se-ara.py \
+    --binary rvv/rvv_load_chain_test.bin \
+    --vlen 512 --lanes 4
+```
+
+### Running all tests
+
+```bash
+GEM5=build/RISCV/gem5.opt
+SCRIPT=rvv/riscv-rvv-se-ara.py
+
+# ARA regression
+python3 rvv/check_ara_latencies.py \
+    --gem5 $GEM5 --script $SCRIPT \
+    --binary rvv/rvv_ara_latency_test.bin \
+    --vlen 512 --lanes 4
+
+# AraXL (both suites)
+python3 rvv/check_araxl_latencies.py \
+    --gem5 $GEM5 --script $SCRIPT \
+    --binary rvv/rvv_ara_latency_test.bin \
+    --vlen 1024 --lanes 4 --clusters 2
+
+# Load chaining
+python3 rvv/run_load_chain_test.py \
+    --gem5 $GEM5 --script $SCRIPT \
     --binary rvv/rvv_load_chain_test.bin \
     --vlen 512 --lanes 4
 ```
