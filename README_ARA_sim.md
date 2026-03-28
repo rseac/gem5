@@ -2,6 +2,8 @@
 
 This guide describes the custom ARA timing model implemented in this gem5 fork, including vector chaining, the functional unit pool, and how to run and validate simulations.
 
+For a step-by-step explanation of every code change — including worked examples and the reasoning behind each decision — see **[IMPLEMENTATION_TUTORIAL.md](IMPLEMENTATION_TUTORIAL.md)**.
+
 ---
 
 ## Overview
