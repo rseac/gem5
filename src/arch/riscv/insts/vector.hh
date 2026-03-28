@@ -267,46 +267,86 @@ class VectorMicroInst : public RiscvMicroInst
 
         int pipeline_lat = 1;
         switch (opClass()) {
+          // -------------------------------------------------------------------
+          // FP compute (Add/Sub/Mul/FMA): LatFComp* — SEW-dependent.
+          // RTL fpu_latency() default case: EW64=5, EW32=4, EW16=3.
+          // AraXL fpu_latency() has no EW8 case → falls to LatFCompEW16=3.
+          // ARA fpu_latency() has explicit EW8 case → LatFCompEW8=2.
+          // -------------------------------------------------------------------
           case SimdFloatAddOp:
-          case SimdFloatAluOp:
           case SimdFloatMultOp:
           case SimdFloatMultAccOp:
           case SimdFloatMatMultAccOp:
-            // Hardware MFpu latencies are SEW dependent:
-            // ARA:   EW64=5, EW32=4, EW16=3, EW8=2 (pipeline_lat = vsew + 2)
-            // AraXL: EW8 has no separate case in fpu_latency() — falls through
-            //        to LatFCompEW16=3. All other widths identical to ARA.
             if (isAraXL && vsew == 0) {
-                pipeline_lat = 3; // AraXL EW8: treated as EW16 (LatFCompEW16)
+                pipeline_lat = 3; // AraXL EW8: no dedicated case → LatFCompEW16
             } else {
-                pipeline_lat = vsew + 2; // ARA: 2/3/4/5 for EW8→EW64
+                pipeline_lat = vsew + 2; // EW8=2, EW16=3, EW32=4, EW64=5
             }
             break;
-          case SimdFloatCvtOp:
-            pipeline_lat = 2; // Conversion logic is 2 cycles.
+          // -------------------------------------------------------------------
+          // FP non-compute (min/max/sgnj/sgnjn/sgnjx/class/compare):
+          // RTL: [VFMIN:VFSGNJX] → LatFNonComp=1.
+          // SimdFloatAluOp covers vfmin, vfmax, vfsgnj*, vfclass.
+          // SimdFloatCmpOp covers vmfeq, vmfne, vmflt, vmfle, vmfgt, vmfge.
+          // Both use LatFNonComp=1 per RTL.
+          // -------------------------------------------------------------------
+          case SimdFloatAluOp:
+            pipeline_lat = 1; // LatFNonComp
             break;
+          // -------------------------------------------------------------------
+          // FP conversion: LatFConv=2.
+          // -------------------------------------------------------------------
+          case SimdFloatCvtOp:
+            pipeline_lat = 2;
+            break;
+          // -------------------------------------------------------------------
+          // FP div / sqrt: LatFDivSqrt=3 (MERGED iterative unit).
+          // -------------------------------------------------------------------
           case SimdFloatDivOp:
           case SimdFloatSqrtOp:
-            pipeline_lat = 3; // Div/Sqrt pipe is 3 cycles.
+            pipeline_lat = 3;
             break;
+          // -------------------------------------------------------------------
+          // Integer division: serial, pipeline depth scales as 4 << vsew.
+          // -------------------------------------------------------------------
           case SimdDivOp:
-            // Integer Division: EW64: 32, EW32: 16, EW16: 8, EW8: 4.
-            // (Scales as 4 << vsew)
             pipeline_lat = 4 << vsew;
             break;
+          // -------------------------------------------------------------------
+          // Integer multiply: LatMultiplier* (EW8=0 combinatorial, else 1).
+          // -------------------------------------------------------------------
           case SimdMultOp:
           case SimdMultAccOp:
-            // EW8 Mult is 0 cycles (purely combinational). Others are 1.
             pipeline_lat = (sew == 8) ? 0 : 1;
             break;
+          // -------------------------------------------------------------------
+          // FP sum reductions (vfredusum, vfredosum): use FP compute pipeline.
+          // RTL fpu_latency() default case applies — same as vfadd for that SEW.
+          // Cross-cluster overhead added for AraXL.
+          // -------------------------------------------------------------------
+          case SimdFloatReduceAddOp: {
+            if (isAraXL && vsew == 0) {
+                pipeline_lat = 3;
+            } else {
+                pipeline_lat = vsew + 2;
+            }
+            if (isAraXL && NrClustersChain > 1) {
+                int c = NrClustersChain;
+                int cross_stages = 0;
+                while (c > 1) { c >>= 1; cross_stages++; }
+                pipeline_lat += cross_stages * (1 + ringLat);
+            }
+            break;
+          }
+          // -------------------------------------------------------------------
+          // All other reductions (integer and FP min/max reduce):
+          // RTL: [VFREDMIN:VFREDMAX] → LatFNonComp=1; integer reductions also 1.
+          // AraXL adds cross-cluster accumulation stages.
+          // -------------------------------------------------------------------
           case SimdReduceAddOp:
           case SimdReduceAluOp:
           case SimdReduceCmpOp:
-          case SimdFloatReduceAddOp:
           case SimdFloatReduceCmpOp:
-            // Base reduction latency = 1 cycle per element.
-            // AraXL adds log2(NrClusters) cross-cluster accumulation stages,
-            // each costing (1 + ring_latency) cycles.
             pipeline_lat = 1;
             if (isAraXL && NrClustersChain > 1) {
                 int c = NrClustersChain;

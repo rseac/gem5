@@ -80,6 +80,10 @@ static void fsink_vec64(vfloat64m8_t v, size_t vl) {
     _fsink = (float)__riscv_vfmv_f_s_f64m8_f64(v);
     (void)vl;
 }
+static void fsink_vec64_m1(vfloat64m1_t v, size_t vl) {
+    _fsink = (float)__riscv_vfmv_f_s_f64m1_f64(v);
+    (void)vl;
+}
 static void isink_vec(vint32m8_t v, size_t vl) {
     _isink = __riscv_vmv_x_s_i32m8_i32(v);
     (void)vl;
@@ -401,6 +405,54 @@ test_vfcvt_ew32(void)
 }
 
 /* =========================================================================
+ * FP Non-Compute EW64 — vfmin, LatFNonComp=1, chainingLatency=max(3,6)=6
+ * Exercises SimdFloatAluOp at EW64 where the bug was masked by DISPATCH_FLOOR
+ * at EW32 but gives chainingLatency=7 (wrong) vs 6 (correct) at EW64.
+ * ======================================================================= */
+static void
+test_vfmin_ew64(void)
+{
+    size_t vl = __riscv_vsetvlmax_e64m8();
+    vfloat64m8_t v1 = __riscv_vfmv_v_f_f64m8(1.0, vl);
+    vfloat64m8_t v2 = __riscv_vfmv_v_f_f64m8(2.0, vl);  /* min(v1,v2)=v1: stable */
+
+    for (int i = 0; i < WARMUP; i++)
+        v1 = __riscv_vfmin_vv_f64m8(v1, v2, vl);
+
+    uint64_t t0 = read_cycles();
+    for (int i = 0; i < CHAIN_LEN; i++)
+        v1 = __riscv_vfmin_vv_f64m8(v1, v2, vl);
+    uint64_t t1 = read_cycles();
+
+    fsink_vec64(v1, vl);
+    report("vfmin_ew64", t1 - t0, CHAIN_LEN);
+}
+
+/* =========================================================================
+ * FP Sum Reduction EW64 — vfredusum, uses FP compute pipeline (LatFCompEW64=5)
+ * chainingLatency = max(5+2, 6) = 7
+ * Chain: sum reduce into scalar, broadcast back, reduce again.
+ * ======================================================================= */
+static void
+test_vfredusum_ew64(void)
+{
+    size_t vl = __riscv_vsetvlmax_e64m1();
+    vfloat64m1_t v1  = __riscv_vfmv_v_f_f64m1(1.0, vl);
+    vfloat64m1_t acc = __riscv_vfmv_v_f_f64m1(0.0, vl);
+
+    for (int i = 0; i < WARMUP; i++)
+        acc = __riscv_vfredusum_vs_f64m1_f64m1(v1, acc, vl);
+
+    uint64_t t0 = read_cycles();
+    for (int i = 0; i < CHAIN_LEN; i++)
+        acc = __riscv_vfredusum_vs_f64m1_f64m1(v1, acc, vl);
+    uint64_t t1 = read_cycles();
+
+    fsink_vec64_m1(acc, vl);
+    report("vfredusum_ew64", t1 - t0, CHAIN_LEN);
+}
+
+/* =========================================================================
  * main
  * ======================================================================= */
 int
@@ -418,6 +470,8 @@ main(void)
     test_vfmul_ew32();
     test_vfmacc_ew32();
     test_vfmin_ew32();
+    test_vfmin_ew64();
+    test_vfredusum_ew64();
     test_vfdiv_ew32();
     test_vfsqrt_ew32();
     test_vfcvt_ew32();

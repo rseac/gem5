@@ -70,6 +70,8 @@ EXPECTED_STANDARD = {
     "vfmul_ew32":    (8,            6,       "FPComp EW32 chainingLatency=6 + O3 overhead"),
     "vfmacc_ew32":   (8,            6,       "FPComp EW32 chainingLatency=6 + O3 overhead"),
     "vfmin_ew32":    (8,            6,       "FPNonComp EW32 chainingLatency=6 + O3 overhead"),
+    "vfmin_ew64":    (8,            6,       "FPNonComp EW64 LatFNonComp=1; chainingLatency=max(3,6)=6 + O3 overhead"),
+    "vfredusum_ew64":(12,           7,       "FP reduce-sum EW64: full reduction occupancy (all vl elements must complete); RTL LatFCompEW64=5"),
     "vfdiv_ew32":    (48,           6,       "FPDivSqrt EW32: 8 micro-ops × dynamicOpLatency(6) pipelined=False"),
     "vfsqrt_ew32":   (48,           6,       "FPDivSqrt EW32: 8 micro-ops × dynamicOpLatency(6) pipelined=False"),
     "vfcvt_ew32":    (8,            6,       "FPConv EW32 chainingLatency=6 + O3 overhead (per-op avg)"),
