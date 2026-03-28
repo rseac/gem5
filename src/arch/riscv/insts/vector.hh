@@ -284,14 +284,26 @@ class VectorMicroInst : public RiscvMicroInst
             }
             break;
           // -------------------------------------------------------------------
-          // FP non-compute (min/max/sgnj/sgnjn/sgnjx/class/compare):
+          // FP non-compute (min/max/sgnj/sgnjn/sgnjx/class):
           // RTL: [VFMIN:VFSGNJX] → LatFNonComp=1.
           // SimdFloatAluOp covers vfmin, vfmax, vfsgnj*, vfclass.
-          // SimdFloatCmpOp covers vmfeq, vmfne, vmflt, vmfle, vmfgt, vmfge.
-          // Both use LatFNonComp=1 per RTL.
           // -------------------------------------------------------------------
           case SimdFloatAluOp:
             pipeline_lat = 1; // LatFNonComp
+            break;
+          // -------------------------------------------------------------------
+          // FP comparisons (vmfeq, vmfne, vmflt, vmfle, vmfgt, vmfge):
+          // RTL: VMFEQ..VMFGE come after [VFCVTXUF:VFCVTFF] in the enum,
+          // falling to fpu_latency() default → LatFComp* (SEW-dependent).
+          // At EW32 DISPATCH_FLOOR=6 masks the difference; at EW64 this
+          // gives chainingLatency=7 (vs 6 from the default catch-all).
+          // -------------------------------------------------------------------
+          case SimdFloatCmpOp:
+            if (isAraXL && vsew == 0) {
+                pipeline_lat = 3; // AraXL EW8: falls to LatFCompEW16
+            } else {
+                pipeline_lat = vsew + 2; // EW8=2, EW16=3, EW32=4, EW64=5
+            }
             break;
           // -------------------------------------------------------------------
           // FP conversion: LatFConv=2.

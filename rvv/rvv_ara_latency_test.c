@@ -429,6 +429,63 @@ test_vfmin_ew64(void)
 }
 
 /* =========================================================================
+ * FP Compare EW64 — vmfeq, SimdFloatCmpOp, LatFComp*=5 at EW64
+ * chainingLatency = max(5+2, 6) = 7
+ *
+ * Chain: vmfeq_vv (EW64) → vfmerge_vfm (EW64) → vmfeq_vv → ...
+ *
+ *   vbool8_t mask = vmfeq(v1, v2)     writes mask; CL = 7 (SimdFloatCmpOp EW64)
+ *   v1            = vfmerge(v1,1.0,mask)  reads mask RAW; CL = 6 (SimdFloatAluOp)
+ *   next vmfeq reads v1 RAW from vfmerge
+ *
+ * Per-iteration spacing = CL(vmfeq) + CL(vfmerge) = 7 + 6 = 13.
+ * Without the fix (CL_vmfeq=6): spacing = 6+6=12 — measurably different.
+ *
+ * v1 and v2 both hold 1.0 so vmfeq always produces all-ones mask and
+ * vfmerge always returns 1.0 for every element (stable chain).
+ * ======================================================================= */
+/* Sink helper for f64m1 (used by vmfeq test) */
+static void fsink_vec64_m1_local(vfloat64m1_t v, size_t vl) {
+    _fsink = (float)__riscv_vfmv_f_s_f64m1_f64(v); (void)vl;
+}
+
+static void
+test_vmfeq_ew64(void)
+{
+    /* Use LMUL=m1 so there are only 2 micro-ops per instruction.
+     * With m8 the 16 micro-op chain dilutes the 1-cycle CL effect.
+     * With m1: spacing = CL(vmfeq_ew64) + CL(vfmerge_ew64) = 7+6=13
+     * vs broken CL=6: 6+6=12.  One-cycle difference is measurable.
+     *
+     * Chain: vmfeq(v1,v2) → writes mask_m1 (CL=7)
+     *        vfmerge(v1,1.0,mask) → writes v1 (CL=6)
+     *        next vmfeq reads v1
+     * v1==v2==1.0 always → mask all-ones → v1 stable at 1.0.
+     */
+    size_t vl = __riscv_vsetvlmax_e64m1();          /* 8 elements at VLEN=512 */
+    vfloat64m1_t v1 = __riscv_vfmv_v_f_f64m1(1.0, vl);
+    vfloat64m1_t v2 = __riscv_vfmv_v_f_f64m1(1.0, vl);
+
+    for (int i = 0; i < WARMUP; i++) {
+        vbool64_t mask = __riscv_vmfeq_vv_f64m1_b64(v1, v2, vl);
+        v1 = __riscv_vfmerge_vfm_f64m1(v1, 1.0, mask, vl);
+    }
+
+    uint64_t t0 = read_cycles();
+    for (int i = 0; i < CHAIN_LEN; i++) {
+        vbool64_t mask = __riscv_vmfeq_vv_f64m1_b64(v1, v2, vl);
+        v1 = __riscv_vfmerge_vfm_f64m1(v1, 1.0, mask, vl);
+    }
+    uint64_t t1 = read_cycles();
+
+    fsink_vec64_m1_local(v1, vl);
+    /* CL(vmfeq_ew64)=7 + CL(vfmerge_ew64)=6 = 13 per iteration (plus O3 overhead).
+     * Tests SimdFloatCmpOp at EW64: RTL fpu_latency() default → LatFCompEW64=5.
+     * Without the fix (pipeline_lat=1) spacing = 6+6=12 — 1 cycle less. */
+    report("vmfeq_ew64", t1 - t0, CHAIN_LEN);
+}
+
+/* =========================================================================
  * FP Sum Reduction EW64 — vfredusum, uses FP compute pipeline (LatFCompEW64=5)
  * chainingLatency = max(5+2, 6) = 7
  * Chain: sum reduce into scalar, broadcast back, reduce again.
@@ -471,6 +528,7 @@ main(void)
     test_vfmacc_ew32();
     test_vfmin_ew32();
     test_vfmin_ew64();
+    test_vmfeq_ew64();
     test_vfredusum_ew64();
     test_vfdiv_ew32();
     test_vfsqrt_ew32();
