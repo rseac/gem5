@@ -32,17 +32,17 @@ make KERNELS="s000 s111 va"  # multiple kernels
 
 | Flag | Effect |
 |---|---|
-| `USE_M5OPS=1` | Add gem5 `m5_reset_stats`/`m5_dump_reset_stats` ROI markers around each kernel (requires `libm5.a` — see below) |
+| `NO_M5OPS=1` | Disable gem5 `m5_reset_stats`/`m5_dump_reset_stats` ROI markers (enabled by default, requires `libm5.a` — see below) |
 | `VEC_REPORT=1` | Print compiler vectorisation diagnostics |
 | `FAST_MATH=1` | Enable `-ffast-math` |
 
-#### Building libm5 (needed for `USE_M5OPS=1`)
+#### Building libm5 (required — ROI is on by default)
 
 ```bash
 cd /gem5/util/m5
 scons build/riscv/out/m5
 cd -
-make USE_M5OPS=1
+make
 ```
 
 ## Running under gem5 with the ARA timing model
