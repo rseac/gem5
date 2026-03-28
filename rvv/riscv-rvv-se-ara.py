@@ -73,15 +73,20 @@ from gem5.utils.requires import requires
 # from cpu.o3.AraConfig import AraFUPool # Removed
 
 class RVVCore(BaseCPUCore):
-    def __init__(self, elen, vlen, cpu_id, enable_chaining, vector_timing_throughput, simd_units):
+    def __init__(self, elen, vlen, cpu_id, enable_chaining,
+                 vector_timing_throughput, simd_units,
+                 vector_timing_model="ara", nr_clusters=1, ring_latency=0):
         # Use our custom SelectedCPU which handles FUPool configuration automatically
         core = SelectedCPU(cpu_id=cpu_id)
-        
+
         # Configure the CPU Core
         core.enable_vector_chaining = enable_chaining
         core.vector_timing_throughput = vector_timing_throughput
         core.simd_units = simd_units
-        
+        core.vector_timing_model = vector_timing_model
+        core.nr_clusters = nr_clusters
+        core.ring_latency = ring_latency
+
         super().__init__(core=core, isa=ISA.RISCV)
         
         # --- CRITICAL FIX: Propagate to ISA ---
@@ -129,10 +134,27 @@ parser.add_argument("--cpu-type", type=str, default="AraO3", choices=["AraO3", "
                     help="CPU model to use: AraO3 (O3CPU) or AraMinor (MinorCPU)")
 parser.add_argument("--enable-chaining", action="store_true", default=True, help="Enable vector chaining")
 parser.add_argument("--disable-chaining", action="store_false", dest="enable_chaining", help="Disable vector chaining")
-parser.add_argument("--vector-timing-throughput", type=int, default=4, help="Number of elements per cycle for timing model")
-parser.add_argument("--simd-units", type=int, default=2, help="Number of physical SIMD lanes")
+parser.add_argument("--vector-timing-throughput", type=int, default=4, help="Number of lanes (NrLanes) for timing model")
+parser.add_argument("--simd-units", type=int, default=2, help="Number of SIMD FU slots (always 2 for chaining; 4 for AraXL)")
+parser.add_argument("--vector-timing-model", type=str, default="ara", choices=["ara", "araxl"],
+                    help="Vector timing model: 'ara' (single cluster) or 'araxl' (multi-cluster)")
+parser.add_argument("--nr-clusters", type=int, default=1,
+                    help="Number of AraXL clusters; scales throughput and reduction latency (1 = ARA)")
+parser.add_argument("--ring-latency", type=int, default=0,
+                    help="AraXL inter-cluster ring pipeline latency in cycles (default 0)")
+parser.add_argument("--araxl", action="store_true",
+                    help="AraXL shorthand: sets model=araxl, clusters=2, lanes=4, simd-units=4")
 
 args = parser.parse_args()
+
+# --araxl shorthand: apply defaults only if not explicitly overridden
+if args.araxl:
+    if args.vector_timing_model == "ara":
+        args.vector_timing_model = "araxl"
+    if args.nr_clusters == 1:
+        args.nr_clusters = 2
+    if args.simd_units == 2:
+        args.simd_units = 4
 
 # Import the selected CPU model
 if args.cpu_type == "AraO3":
@@ -152,7 +174,10 @@ cache_hierarchy = PrivateL1PrivateL2CacheHierarchy(
 memory = SingleChannelDDR4_2400(size="8GiB")
 
 processor = BaseCPUProcessor(
-    cores=[RVVCore(args.elen, args.vlen, i, args.enable_chaining, args.vector_timing_throughput, args.simd_units) for i in range(args.cores)]
+    cores=[RVVCore(args.elen, args.vlen, i, args.enable_chaining,
+                   args.vector_timing_throughput, args.simd_units,
+                   args.vector_timing_model, args.nr_clusters, args.ring_latency)
+           for i in range(args.cores)]
 )
 
 # --- VITAL: ASSIGN ARA FU POOL ---
@@ -172,16 +197,19 @@ else:
 
 # --- Formatted Parameter Summary ---
 print("=" * 50)
-print("       ARA RISC-V VECTOR SIMUATION CONFIG")
+print("       ARA RISC-V VECTOR SIMULATION CONFIG")
 print("-" * 50)
 print(f"  Binary Resource:  {args.resource}")
 print(f"  Program Args:     {args.parms}")
 print(f"  CPU Model:        {args.cpu_type}")
+print(f"  Timing Model:     {args.vector_timing_model.upper()}")
 print(f"  Cores:            {args.cores}")
 print(f"  VLEN:             {args.vlen} bits")
 print(f"  ELEN:             {args.elen} bits")
 print(f"  Vector Chaining:  {'ENABLED' if args.enable_chaining else 'DISABLED'}")
-print(f"  Throughput:       {args.vector_timing_throughput} elements/cycle")
+print(f"  NrLanes:          {args.vector_timing_throughput}")
+print(f"  NrClusters:       {args.nr_clusters}")
+print(f"  Ring Latency:     {args.ring_latency} cycles")
 print(f"  SIMD Units:       {args.simd_units} parallel units")
 print(f"  L1D Cache:        {args.l1d}")
 print(f"  L2 Cache:         {args.l2}")

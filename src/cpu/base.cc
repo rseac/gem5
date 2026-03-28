@@ -136,7 +136,11 @@ BaseCPU::BaseCPU(const Params &p, bool is_checker)
       interrupts(p.interrupts), numThreads(p.numThreads),
       enableVectorChaining(p.enable_vector_chaining),
       vectorTimingThroughput(p.vector_timing_throughput),
-      simdUnits(p.simd_units), system(p.system),
+      simdUnits(p.simd_units),
+      vectorTimingModel(p.vector_timing_model == "araxl" ? 1 : 0),
+      nrClusters(p.nr_clusters),
+      ringLatency(p.ring_latency),
+      system(p.system),
       previousCycle(0), previousState(CPU_STATE_SLEEP),
       functionTraceStream(nullptr), currentFunctionStart(0),
       currentFunctionEnd(0), functionEntryTick(0),
@@ -147,9 +151,11 @@ BaseCPU::BaseCPU(const Params &p, bool is_checker)
       powerGatingOnIdle(p.power_gating_on_idle),
       enterPwrGatingEvent([this]{ enterPwrGating(); }, name())
 {
-    inform("CPU %s: Vector Chaining %s, Throughput %d, SIMD Units %d\n",
-           name(), enableVectorChaining ? "ENABLED" : "DISABLED",
-           vectorTimingThroughput, simdUnits);
+    inform("CPU %s: Model %s, Chaining %s, Throughput %d, "
+           "SIMD Units %d, Clusters %d, RingLat %d\n",
+           name(), vectorTimingModel ? "AraXL" : "ARA",
+           enableVectorChaining ? "ENABLED" : "DISABLED",
+           vectorTimingThroughput, simdUnits, nrClusters, ringLatency);
 
     // if Python did not provide a valid ID, do it here
     if (_cpuId == -1 ) {

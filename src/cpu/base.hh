@@ -422,6 +422,15 @@ class BaseCPU : public ClockedObject
     /** Number of SIMD functional units */
     unsigned simdUnits;
 
+    /** Vector timing model: 0 = ARA, 1 = AraXL */
+    unsigned vectorTimingModel;
+
+    /** Number of AraXL clusters (1 = ARA flat topology) */
+    unsigned nrClusters;
+
+    /** AraXL inter-cluster ring pipeline latency in cycles */
+    unsigned ringLatency;
+
     System *system;
 
     /**

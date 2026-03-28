@@ -101,6 +101,9 @@ class BaseCPU(ClockedObject):
     enable_vector_chaining = Param.Bool(True, "Enable RISC-V Vector Chaining")
     vector_timing_throughput = Param.Unsigned(2, "Number of vector elements processed per cycle (timing model throughput)")
     simd_units = Param.Unsigned(1, "Number of SIMD functional units (physical lane count)")
+    vector_timing_model = Param.String("ara", "Vector timing model: 'ara' or 'araxl'")
+    nr_clusters = Param.Unsigned(1, "Number of AraXL clusters (1 = ARA flat topology)")
+    ring_latency = Param.Unsigned(0, "AraXL inter-cluster ring pipeline latency in cycles")
     socket_id = Param.Unsigned(0, "Physical Socket identifier")
     numThreads = Param.Unsigned(1, "number of HW thread contexts")
     pwr_gating_latency = Param.Cycles(

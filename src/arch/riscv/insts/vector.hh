@@ -203,11 +203,11 @@ class VectorMicroInst : public RiscvMicroInst
         // For VectorMicroInst, the latency depends on the number of elements
         // processed by this micro-op and the available lanes.
         const int NrLanes = tc->getCpuPtr()->vectorTimingThroughput;
+        const int NrClusters = (int)tc->getCpuPtr()->nrClusters;
         const int ELEN = 64;
 
-        // Number of elements processed per cycle per lane is (ELEN / sew)
-        // Total elements per cycle = NrLanes * (ELEN / sew)
-        int elements_per_cycle = NrLanes * (ELEN / sew);
+        // AraXL scales throughput by NrClusters (all clusters process in parallel)
+        int elements_per_cycle = NrLanes * (ELEN / sew) * NrClusters;
         if (elements_per_cycle == 0) elements_per_cycle = 1;
 
         // Cycles for throughput = ceil(microVl / elements_per_cycle)
@@ -261,6 +261,10 @@ class VectorMicroInst : public RiscvMicroInst
         // producer's pipeline stages are complete (first element ready).
         // We add a small constant overhead (2 cycles) to model VRF write
         // and hazard synchronization delays seen in hardware.
+        const bool isAraXL = (tc->getCpuPtr()->vectorTimingModel == 1);
+        const int NrClustersChain = (int)tc->getCpuPtr()->nrClusters;
+        const int ringLat = (int)tc->getCpuPtr()->ringLatency;
+
         int pipeline_lat = 1;
         switch (opClass()) {
           case SimdFloatAddOp:
@@ -269,10 +273,14 @@ class VectorMicroInst : public RiscvMicroInst
           case SimdFloatMultAccOp:
           case SimdFloatMatMultAccOp:
             // Hardware MFpu latencies are SEW dependent:
-            // EW64=5, EW32=4, EW16=3, EW8=2. 
-            // In RiscvISA, vsew: 0->8b, 1->16b, 2->32b, 3->64b.
-            // So pipeline_lat = vsew + 2.
-            pipeline_lat = vsew + 2;
+            // ARA:   EW64=5, EW32=4, EW16=3, EW8=2 (pipeline_lat = vsew + 2)
+            // AraXL: EW8 has no separate case in fpu_latency() — falls through
+            //        to LatFCompEW16=3. All other widths identical to ARA.
+            if (isAraXL && vsew == 0) {
+                pipeline_lat = 3; // AraXL EW8: treated as EW16 (LatFCompEW16)
+            } else {
+                pipeline_lat = vsew + 2; // ARA: 2/3/4/5 for EW8→EW64
+            }
             break;
           case SimdFloatCvtOp:
             pipeline_lat = 2; // Conversion logic is 2 cycles.
@@ -290,6 +298,22 @@ class VectorMicroInst : public RiscvMicroInst
           case SimdMultAccOp:
             // EW8 Mult is 0 cycles (purely combinational). Others are 1.
             pipeline_lat = (sew == 8) ? 0 : 1;
+            break;
+          case SimdReduceAddOp:
+          case SimdReduceAluOp:
+          case SimdReduceCmpOp:
+          case SimdFloatReduceAddOp:
+          case SimdFloatReduceCmpOp:
+            // Base reduction latency = 1 cycle per element.
+            // AraXL adds log2(NrClusters) cross-cluster accumulation stages,
+            // each costing (1 + ring_latency) cycles.
+            pipeline_lat = 1;
+            if (isAraXL && NrClustersChain > 1) {
+                int c = NrClustersChain;
+                int cross_stages = 0;
+                while (c > 1) { c >>= 1; cross_stages++; }
+                pipeline_lat += cross_stages * (1 + ringLat);
+            }
             break;
           default:
             pipeline_lat = 1;
