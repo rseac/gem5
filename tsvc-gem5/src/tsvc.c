@@ -3978,8 +3978,6 @@ void time_function(const char *name, test_function_t vector_func, void * arg_inf
     do { if (should_run(#func)) time_function(#func, &func, __VA_ARGS__); } while (0)
 
 int main(int argc, char ** argv){
-    (void)argc; (void)argv;
-
     /* Newlib buffers stdout when not connected to a terminal (e.g. gem5 SE
      * mode).  Disable buffering so every printf is immediately visible. */
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -3999,6 +3997,13 @@ int main(int argc, char ** argv){
         }
         g_num_filters = n;
         g_filters = kernel_tokens;
+    }
+#else
+    /* Runtime fallback: argv[1], argv[2], ... are kernel names to run.
+     * Used by run-tsvc.sh, which passes the kernel name via gem5's --parms. */
+    if (argc > 1) {
+        g_num_filters = argc - 1;
+        g_filters = argv + 1;
     }
 #endif
 
