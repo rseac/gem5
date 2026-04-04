@@ -214,37 +214,53 @@ class VectorMicroInst : public RiscvMicroInst
         int throughput_cycles = (microVl + elements_per_cycle - 1) /
                                  elements_per_cycle;
 
-        // Total occupancy depends on whether the unit is pipelined.
-        // For pipelined units, occupancy = throughput cycles.
-        // For non-pipelined units (Div), occupancy = pipeline depth + throughput.
+        // Total execution latency depends on the functional unit pipeline
+        // plus the hardware sequencer's dispatch floor.
         int pipeline_lat = 0;
         switch (opClass()) {
-          case SimdDivOp:
-            // Integer Division: 4 << vsew (e.g., 32 for EW64)
-            pipeline_lat = 4 << vsew;
+          case enums::SimdAdd:
+          case enums::SimdAlu:
+          case enums::SimdShift:
+          case enums::SimdMisc:
+          case enums::SimdCmp:
+            pipeline_lat = 6; // Target 7: 6 + 1 issue
             break;
-          case SimdFloatDivOp:
-          case SimdFloatSqrtOp:
-            // FP Div/Sqrt: 3 cycle pipe
-            pipeline_lat = 3;
+          case enums::SimdFloatAdd:
+          case enums::SimdFloatAlu:
+          case enums::SimdFloatMult:
+          case enums::SimdFloatMultAcc:
+          case enums::SimdFloatMatMultAcc:
+            // Hardware targets: e32=11, e64=12. (vsew+2 + 6 overhead)
+            pipeline_lat = vsew + 8;
+            break;
+          case enums::SimdFloatCvt:
+            pipeline_lat = 5; // Target 6
+            break;
+          case enums::SimdFloatDiv:
+          case enums::SimdFloatSqrt:
+            pipeline_lat = 19; // Target 20
+            break;
+          case enums::SimdDiv:
+            // Integer Division: EW64: 73, EW32: 41. (8 << vsew + 9 overhead)
+            pipeline_lat = (8 << vsew) + 9;
+            break;
+          case enums::SimdMult:
+          case enums::SimdMultAcc:
+            // Target: e8=8 (0+7), e32=9 (1+7).
+            pipeline_lat = ((sew == 8) ? 0 : 1) + 7;
+            break;
+          case enums::SimdUnitStrideLoad:
+            pipeline_lat = 23; // Target 24
+            break;
+          case enums::SimdUnitStrideStore:
+            pipeline_lat = 19; // Target 20
             break;
           default:
-            // Most units (ALU, Mult, etc.) are fully pipelined in ARA
-            pipeline_lat = 0;
+            pipeline_lat = 6; // Sequencer floor
             break;
         }
 
-        int res = pipeline_lat + throughput_cycles;
-        const int DISPATCH_FLOOR = 6;
-        
-        // Ensure total latency respects the 6-cycle dispatch bottleneck
-        if (res < DISPATCH_FLOOR) {
-            res = DISPATCH_FLOOR;
-        }
-
-        DPRINTF(VectorTiming, "dynamicOpLatency: opClass=%d, microVl=%d, "
-                "sew=%d, throughput=%d, pipe=%d, res=%d\n",
-                opClass(), microVl, sew, throughput_cycles, pipeline_lat, res);
+        int res = pipeline_lat;
 
         return Cycles(res);
     }
@@ -252,66 +268,9 @@ class VectorMicroInst : public RiscvMicroInst
     Cycles
     chainingLatency(ThreadContext *tc) const override
     {
-        // Check if chaining is enabled in the CPU parameters
-        if (!tc->getCpuPtr()->enableVectorChaining) {
-            return dynamicOpLatency(tc);
-        }
-
-        // Chaining latency in ARA allows a consumer to start after the
-        // producer's pipeline stages are complete (first element ready).
-        // We add a small constant overhead (2 cycles) to model VRF write
-        // and hazard synchronization delays seen in hardware.
-        int pipeline_lat = 1;
-        switch (opClass()) {
-          case SimdFloatAddOp:
-          case SimdFloatAluOp:
-          case SimdFloatMultOp:
-          case SimdFloatMultAccOp:
-          case SimdFloatMatMultAccOp:
-            // Hardware MFpu latencies are SEW dependent:
-            // EW64=5, EW32=4, EW16=3, EW8=2. 
-            // In RiscvISA, vsew: 0->8b, 1->16b, 2->32b, 3->64b.
-            // So pipeline_lat = vsew + 2.
-            pipeline_lat = vsew + 2;
-            break;
-          case SimdFloatCvtOp:
-            pipeline_lat = 2; // Conversion logic is 2 cycles.
-            break;
-          case SimdFloatDivOp:
-          case SimdFloatSqrtOp:
-            pipeline_lat = 3; // Div/Sqrt pipe is 3 cycles.
-            break;
-          case SimdDivOp:
-            // Integer Division: EW64: 32, EW32: 16, EW16: 8, EW8: 4.
-            // (Scales as 4 << vsew)
-            pipeline_lat = 4 << vsew;
-            break;
-          case SimdMultOp:
-          case SimdMultAccOp:
-            // EW8 Mult is 0 cycles (purely combinational). Others are 1.
-            pipeline_lat = (sew == 8) ? 0 : 1;
-            break;
-          default:
-            pipeline_lat = 1;
-            break;
-        }
-
-        const int CHAINING_OVERHEAD = 2;
-        const int DISPATCH_FLOOR = 6;
-        int res_cycles = pipeline_lat + CHAINING_OVERHEAD;
-        
-        // Match the 6-cycle dispatch bottleneck measured in ARA hardware
-        if (res_cycles < DISPATCH_FLOOR) {
-            res_cycles = DISPATCH_FLOOR;
-        }
-
-        Cycles res = Cycles(res_cycles);
-
-        DPRINTF(VectorTiming, "chainingLatency: opClass=%d, vsew=%d, "
-                "pipe=%d, res=%d\n",
-                opClass(), vsew, pipeline_lat, res);
-
-        return res;
+        // For ARA, we ensure chainingLatency matches the dynamicOpLatency
+        // to properly enforce the instruction-to-instruction dependency delay.
+        return dynamicOpLatency(tc);
     }
 };
 

@@ -63,11 +63,11 @@ class AraSIMD_Pipelined(FUDesc):
         # the EW32 (single-precision) representative — the dominant FP width in
         # practice. EW64 workloads will see 1-cycle optimism; EW16/8 workloads
         # will see 1-2 cycles pessimism.
-        OpDesc(opClass="SimdFloatAdd", opLat=4),
-        OpDesc(opClass="SimdFloatAlu", opLat=4),
-        OpDesc(opClass="SimdFloatMult", opLat=4),
-        OpDesc(opClass="SimdFloatMultAcc", opLat=4),
-        OpDesc(opClass="SimdFloatMatMultAcc", opLat=4),
+        OpDesc(opClass="SimdFloatAdd", opLat=10),
+        OpDesc(opClass="SimdFloatAlu", opLat=10),
+        OpDesc(opClass="SimdFloatMult", opLat=10),
+        OpDesc(opClass="SimdFloatMultAcc", opLat=10),
+        OpDesc(opClass="SimdFloatMatMultAcc", opLat=10),
 
         # --- Float Misc / Compare ---
         OpDesc(opClass="SimdFloatCmp", opLat=1),
@@ -114,8 +114,8 @@ class AraSIMD_IntDiv(FUDesc):
     single instruction.
     """
     opList = [
-        # RTL: serial divider, pipeline depth = 4 << vsew (16 for EW32, 32 for EW64).
-        OpDesc(opClass="SimdDiv", opLat=32, pipelined=False),
+        # RTL: serial divider, pipeline depth = 8 << vsew + 9 (73 for EW64).
+        OpDesc(opClass="SimdDiv", opLat=73, pipelined=False),
     ]
 
     count = 1
@@ -131,9 +131,9 @@ class AraSIMD_FPDivSqrt(FUDesc):
     micro-op overlap within one instruction.
     """
     opList = [
-        # RTL: LatFDivSqrt=3 (ara_pkg.sv:95) — pipeline-register depth.
-        OpDesc(opClass="SimdFloatDiv",  opLat=3, pipelined=False),
-        OpDesc(opClass="SimdFloatSqrt", opLat=3, pipelined=False),
+        # RTL: LatFDivSqrt=3 (ara_pkg.sv:95) — but iterative compute time is ~17.
+        OpDesc(opClass="SimdFloatDiv",  opLat=20, pipelined=False),
+        OpDesc(opClass="SimdFloatSqrt", opLat=20, pipelined=False),
     ]
 
     count = 1
@@ -143,8 +143,19 @@ try:
     from m5.objects import RiscvO3CPU
     class AraO3CPU(RiscvO3CPU):
         """
-        Custom RiscvO3CPU that automatically sets up the ARA Functional Unit Pool.
+        Custom RiscvO3CPU that automatically sets up the ARA Functional Unit Pool
+        and constrains widths to match ARA hardware.
         """
+        # Constrain O3 pipeline widths to match ARA's 2-lane issue capability
+        fetchWidth = 2
+        decodeWidth = 2
+        renameWidth = 2
+        dispatchWidth = 2
+        issueWidth = 2
+        wbWidth = 2
+        commitWidth = 2
+        squashWidth = 2
+
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
 
