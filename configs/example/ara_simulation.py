@@ -11,7 +11,7 @@ import sys
 # Add src to path to import AraConfig
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../src'))
 
-from cpu.o3.AraConfig import AraFUPool
+from cpu.o3.AraConfig import AraO3CPU
 
 # Defines the system
 system = System()
@@ -25,12 +25,8 @@ system.clk_domain.voltage_domain = VoltageDomain()
 system.mem_mode = 'timing'
 system.mem_ranges = [AddrRange('512MB')]
 
-# Use the O3 CPU
-system.cpu = RiscvO3CPU()
-
-# --- VITAL: ASSIGN ARA FU POOL ---
-system.cpu.fuPool = AraFUPool()
-# ---------------------------------
+# Use the AraO3 CPU (automatically sets up ARA Functional Units)
+system.cpu = AraO3CPU()
 
 # Create the interconnect
 system.membus = SystemXBar()
@@ -74,7 +70,12 @@ root = Root(full_system=False, system=system)
 m5.instantiate()
 
 print(f"Beginning simulation with ARA Latencies configuration!")
-print(f"CPU FUPool Class: {type(system.cpu.fuPool).__name__}")
+# Access fuPool from the first IQ (as set up in AraO3CPU constructor)
+if hasattr(system.cpu, 'instQueues') and len(system.cpu.instQueues) > 0:
+    pool_name = type(system.cpu.instQueues[0].fuPool).__name__
+    print(f"CPU IQ[0] FUPool Class: {pool_name}")
+else:
+    print(f"CPU Type: {type(system.cpu).__name__}")
 exit_event = m5.simulate()
 
 print('Exiting @ tick {} because {}'.format(
