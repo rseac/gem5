@@ -96,6 +96,7 @@ if env['CONF']['HAVE_PROTOBUF']:
     Source('inst_pb_trace.cc', tags=['protobuf'])
 
 SimObject('BaseCPU.py', sim_objects=['BaseCPU'])
+SimObject('LatencyModel.py', sim_objects=['LatencyModel'])
 SimObject('CpuCluster.py', sim_objects=['CpuCluster'])
 SimObject('CPUTracers.py', sim_objects=[
     'ExeTracer', 'IntelTrace', 'NativeTrace'])
@@ -106,6 +107,7 @@ SimObject('TimingExpr.py', sim_objects=[
 
 Source('activity.cc')
 Source('base.cc')
+Source('latency_model.cc')
 Source('exetrace.cc')
 Source('inteltrace.cc')
 Source('nativetrace.cc')

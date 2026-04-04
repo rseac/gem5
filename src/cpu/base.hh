@@ -68,6 +68,7 @@ struct BaseCPUParams;
 class CheckerCPU;
 class ThreadContext;
 class System;
+class LatencyModel;
 
 struct AddressMonitor
 {
@@ -423,6 +424,8 @@ class BaseCPU : public ClockedObject
     unsigned simdUnits;
 
     System *system;
+
+    LatencyModel *latencyModel;
 
     /**
      * Get the cache line size of the system.

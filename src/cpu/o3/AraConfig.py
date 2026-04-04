@@ -139,6 +139,68 @@ class AraSIMD_FPDivSqrt(FUDesc):
     count = 1
 
 
+from m5.objects.LatencyModel import LatencyModel
+from m5.objects.FuncUnit import OpClass
+
+class AraLatencyModel(LatencyModel):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        # Global Floor: 7 cycles (6 floor + 1 issue)
+        self.dispatchFloor = 7
+
+        def get_lats(vsew):
+            # Pre-populate with 0 (falls back to standard FU opLat if not defined here)
+            # OpClass indices are stable in a given build.
+            lats = [0] * 128 
+            m = OpClass.map
+            
+            # Integer ALU (Target 7)
+            lats[m['SimdAdd']]   = 6
+            lats[m['SimdAlu']]   = 6
+            lats[m['SimdShift']] = 6
+            lats[m['SimdMisc']]  = 6
+            lats[m['SimdCmp']]   = 6
+            
+            # Floating Point Arithmetic (vsew+8 -> Target vsew+2+6)
+            fp_lat = vsew + 8
+            lats[m['SimdFloatAdd']] = fp_lat
+            lats[m['SimdFloatAlu']] = fp_lat
+            lats[m['SimdFloatMult']] = fp_lat
+            lats[m['SimdFloatMultAcc']] = fp_lat
+            lats[m['SimdFloatMatMultAcc']] = fp_lat
+            
+            # Floating Point Misc / Compare (Target 7)
+            lats[m['SimdFloatCmp']] = 6
+            lats[m['SimdFloatMisc']] = 6
+
+            # Floating Point Conversion (Target 6)
+            lats[m['SimdFloatCvt']] = 5
+
+            # Division (Iterative)
+            lats[m['SimdFloatDiv']] = 19  # Target 20
+            lats[m['SimdFloatSqrt']] = 19 # Target 20
+            lats[m['SimdDiv']] = (8 << vsew) + 9 # e32=41, e64=73
+            
+            # Integer Multiply (e8=8, others=9)
+            lats[m['SimdMult']] = (0 if vsew == 0 else 1) + 7
+            lats[m['SimdMultAcc']] = (0 if vsew == 0 else 1) + 7
+            
+            # Memory (AGU depth + Sync)
+            lats[m['SimdUnitStrideLoad']] = 23 # Target 24
+            lats[m['SimdUnitStrideStore']] = 19 # Target 20
+
+            # Permute / Reduction (Floor 7+)
+            lats[m['SimdReduceAdd']] = 6
+            lats[m['SimdFloatReduceAdd']] = 6
+            
+            return lats
+
+        self.latenciesEW8  = get_lats(0)
+        self.latenciesEW16 = get_lats(1)
+        self.latenciesEW32 = get_lats(2)
+        self.latenciesEW64 = get_lats(3)
+
 try:
     from m5.objects import RiscvO3CPU
     class AraO3CPU(RiscvO3CPU):
@@ -155,6 +217,9 @@ try:
         wbWidth = 2
         commitWidth = 2
         squashWidth = 2
+
+        # Assign the ARA Latency Model
+        latency_model = AraLatencyModel()
 
         def __init__(self, **kwargs):
             super().__init__(**kwargs)

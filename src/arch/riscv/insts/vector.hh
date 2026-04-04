@@ -39,6 +39,8 @@
 #include "arch/riscv/utility.hh"
 #include "cpu/exec_context.hh"
 #include "cpu/static_inst.hh"
+#include "cpu/base.hh"
+#include "cpu/latency_model.hh"
 #include "debug/VectorTiming.hh"
 
 namespace gem5
@@ -200,20 +202,12 @@ class VectorMicroInst : public RiscvMicroInst
     Cycles
     dynamicOpLatency(ThreadContext *tc) const override
     {
-        // For VectorMicroInst, the latency depends on the number of elements
-        // processed by this micro-op and the available lanes.
-        const int NrLanes = tc->getCpuPtr()->vectorTimingThroughput;
-        const int ELEN = 64;
+        auto cpu = tc->getCpuPtr();
+        if (cpu->latencyModel) {
+            return cpu->latencyModel->getLatency(opClass(), vsew, microVl);
+        }
 
-        // Number of elements processed per cycle per lane is (ELEN / sew)
-        // Total elements per cycle = NrLanes * (ELEN / sew)
-        int elements_per_cycle = NrLanes * (ELEN / sew);
-        if (elements_per_cycle == 0) elements_per_cycle = 1;
-
-        // Cycles for throughput = ceil(microVl / elements_per_cycle)
-        int throughput_cycles = (microVl + elements_per_cycle - 1) /
-                                 elements_per_cycle;
-
+        // Legacy Fallback: Hardcoded reconciled ARA values
         // Total execution latency depends on the functional unit pipeline
         // plus the hardware sequencer's dispatch floor.
         int pipeline_lat = 0;
