@@ -223,11 +223,11 @@ try:
         backComSize = 100
         forwardComSize = 100
 
-        # Assign the ARA Latency Model
-        latency_model = AraLatencyModel()
-
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
+
+            # Assign the ARA Latency Model
+            self.latency_model = AraLatencyModel()
 
             # CRITICAL: In gem5, SimObject instances (like functional units) must
             # have a clear parent-child relationship. We instantiate them inside
