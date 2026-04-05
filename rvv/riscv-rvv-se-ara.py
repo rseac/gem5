@@ -82,6 +82,12 @@ class RVVCore(BaseCPUCore):
         core.vector_timing_throughput = vector_timing_throughput
         core.simd_units = simd_units
         
+        # --- MODULAR LATENCY MODEL ---
+        # The AraO3CPU constructor automatically sets up the AraLatencyModel.
+        # This provides a hook for researchers to swap in different timing models
+        # without recompiling gem5.
+        # -----------------------------
+
         super().__init__(core=core, isa=ISA.RISCV)
         
         # --- CRITICAL FIX: Propagate to ISA ---
