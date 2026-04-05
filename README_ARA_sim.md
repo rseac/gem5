@@ -18,12 +18,12 @@ The model replaces gem5's default 1-cycle vector latencies with values derived f
 
 | File | What changed |
 |------|-------------|
-| `src/cpu/o3/AraConfig.py` | Split FU pool; calibrated `opLat` values; `pipelined=False` on serial dividers |
-| `src/cpu/o3/lsq_unit.hh` | Added `VectorLoadChainEvent` inner class |
-| `src/cpu/o3/lsq_unit.cc` | Implemented load-chaining writeback delay event |
-| `src/arch/riscv/insts/vector.hh` | `dynamicOpLatency()`, `chainingLatency()`, `DISPATCH_FLOOR` |
-| `rvv/riscv-rvv-se-ara.py` | Simulation script with `--enable-chaining`, `--vlen`, `--lanes` flags |
-| `rvv/Makefile.tests` | Build targets for all test binaries |
+| `src/cpu/LatencyModel.py` | New: Modular latency SimObject interface |
+| `src/cpu/latency_model.hh/.cc` | New: Implementation of the latency model strategy |
+| `src/cpu/o3/AraConfig.py` | Implements `AraLatencyModel`; calibrated reconciled latencies |
+| `src/cpu/o3/lsq_unit.hh/.cc` | Implemented load-chaining writeback delay event |
+| `src/arch/riscv/insts/vector.hh` | `dynamicOpLatency()` refactored to query modular model |
+| `rvv/riscv-rvv-se-ara.py` | Simulation script with `--cpu-type AraO3` support |
 
 ---
 
@@ -122,32 +122,30 @@ FP divide and square root (`SimdFloatDiv`, `SimdFloatSqrt`, `pipelined=False`). 
 
 ## Latency Model
 
-### Pipeline latencies (`chainingLatency = max(pipe + 2, DISPATCH_FLOOR)`)
+The timing model is **modular**. The core ISA code in `vector.hh` is generic and queries a `LatencyModel` SimObject assigned to the CPU. The ARA-specific implementation is defined in Python within `AraConfig.py`.
 
-| Instruction class | ARA RTL pipeline depth | `chainingLatency` (VLEN=512, 4 lanes) |
-|---|---|---|
-| Integer ALU (`vadd`, `vsub`, …) | 1 | 6 (floor) |
-| Integer Multiply (`vmul`, …) | 1 | 6 (floor) |
-| Integer Divide EW32 (`vdiv`) | 16 | 18 |
-| Integer Divide EW64 (`vdiv`) | 32 | 34 |
-| FP Compute EW32 (`vfadd`, `vfmul`, `vfmacc`) | 4 | 6 (floor) |
-| FP Compute EW64 | 5 | 7 |
-| FP Non-Compute (`vfmin`, `vfmax`, …) | 1 | 6 (floor) |
-| FP Divide / Sqrt EW32 | 3 | 6 (floor) |
-| FP Convert EW32 | 2 | 6 (floor) |
+### Reconciled Pipeline Latencies (RTL-Accurate)
 
-`DISPATCH_FLOOR = 6` cycles — minimum chaining latency enforced by ARA's scoreboard.
-`CHAINING_OVERHEAD = 2` cycles — VRF write + hazard-synchronisation delay added on top of the pipeline depth.
+The following values represent the **Instruction-to-Instruction (Iss-to-Iss)** dependency delay. They are implemented in `AraLatencyModel` and reconcile gem5 with measurements from the ARA RTL Verilator simulation.
 
-### `dynamicOpLatency` (FU occupancy)
+| Instruction Category | RTL Meas. (Iss-to-Iss) | gem5 `op_latency` | Total (1+Lat) | Logic |
+| :--- | :---: | :---: | :---: | :--- |
+| **Integer ALU** (`vadd`) | 7 | 6 | 7 | Sequencer floor |
+| **FP Add/Mul (EW32)** | 11 | 10 | 11 | `vsew + 8` |
+| **FP Add/Mul (EW64)** | 12 | 11 | 12 | `vsew + 8` |
+| **FP Div/Sqrt (EW32)**| 20 | 19 | 20 | Iterative SRT |
+| **Integer Div (EW32)** | 42 | 41 | 42 | `(8 << vsew) + 9`|
+| **Memory Load (Hit)** | 24 | 23 | 24 | AGU + Sync |
 
-```
-dynamicOpLatency = max(pipeline_depth + throughput_cycles, DISPATCH_FLOOR)
-```
+### Time Buffer Depth
 
-`throughput_cycles = ceil(vl / (NrLanes × ELEN/sew))`
+To support long-latency operations (like the 74-cycle 64-bit division) without triggering gem5 assertions, the `AraO3CPU` increases the depth of its internal communication buffers:
+* **`backComSize = 100`**
+* **`forwardComSize = 100`**
 
-This is the number of cycles the FU is occupied, independent of chaining. For pipelined units a new instruction can enter the FU once `dynamicOpLatency` has elapsed for the previous one (or earlier if chaining is active).
+### Modular extensibility
+
+To implement a different architecture, define a new subclass of `LatencyModel` in Python and assign it to the CPU's `latency_model` parameter. No C++ changes are required to add new instruction-class timing tables.
 
 ---
 

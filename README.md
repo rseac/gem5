@@ -14,27 +14,24 @@ The model replaces gem5's default 1-cycle vector latencies with values derived f
 
 | File | Purpose |
 |------|---------|
+| `src/cpu/LatencyModel.py` | Modular latency provider base class |
+| `src/cpu/latency_model.hh/.cc` | C++ implementation of the latency model strategy |
 | `src/cpu/static_inst.hh` | `dynamicOpLatency` virtual dispatch interface |
-| `src/arch/riscv/insts/vector.hh` | `dynamicOpLatency()`, `chainingLatency()`, `DISPATCH_FLOOR` |
+| `src/arch/riscv/insts/vector.hh` | RISC-V Vector ISA: queries the CPU's `latencyModel` |
 | `src/cpu/o3/inst_queue.cc` | O3 issue-stage hook for `dynamicOpLatency` and `WakeDependents` |
+| `src/cpu/o3/AraConfig.py` | ARA-specific `AraLatencyModel` definition and FU configuration |
 | `src/cpu/o3/lsq_unit.hh/.cc` | `VectorLoadChainEvent` — 1-cycle VRF-write delay for load chaining |
-| `src/cpu/o3/AraConfig.py` | Split FU pool; calibrated `opLat` values; `pipelined=False` on serial dividers |
-| `src/cpu/minor/execute.cc` | MinorCPU issue-stage hook for `dynamicOpLatency` |
-| `src/cpu/minor/AraMinorConfig.py` | ARA in-order CPU configuration |
 
-### Latency Formulae
+### ARA Timing Model (Reconciled & Modular)
 
-**FU occupancy** (`dynamicOpLatency`):
-```
-dynamicOpLatency = max(pipeline_depth + ceil(vl / (NrLanes × ELEN/sew)), DISPATCH_FLOOR)
-```
+The model is now **modular**, allowing architecture-specific latencies to be defined in Python without modifying C++ code. The ARA-specific model reconciles gem5 simulation with RTL measurements by accounting for the **7-cycle sequencer dispatch floor** and **iterative compute times**.
 
-**Chaining latency** (when consumer can issue):
+**Total Dependency Delay** (Instruction-to-Instruction):
 ```
-chainingLatency = max(pipeline_depth + 2, DISPATCH_FLOOR)
+Total Cycles = 1 (Issue Cycle) + model->getLatency(opClass, vsew)
 ```
 
-`DISPATCH_FLOOR = 6` — minimum enforced by ARA's scoreboard.
+For the ARA hardware configuration, these values are pre-configured in `AraLatencyModel` within `AraConfig.py`.
 
 ### Functional Unit Pool (`AraConfig.py`)
 
