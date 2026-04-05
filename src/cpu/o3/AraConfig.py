@@ -218,6 +218,11 @@ try:
         commitWidth = 2
         squashWidth = 2
 
+        # Increase TimeBuffer sizes to ensure they are deep enough
+        # for long ARA RTL latencies (e.g., 74-cycle division).
+        backComSize = 100
+        forwardComSize = 100
+
         # Assign the ARA Latency Model
         latency_model = AraLatencyModel()
 
