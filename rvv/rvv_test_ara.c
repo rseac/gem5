@@ -1,9 +1,18 @@
 // rvv_test.c
 #include <stdint.h>
-#include <stdio.h>
+#include <string.h>
 
 #include "runtime.h"
 #include "util.h"
+
+#include "../kernel/dotproduct.h"
+
+#ifndef SPIKE
+#include "printf.h"
+#else
+#include <stdio.h>
+#endif
+
 
 // Use attribute to encourage vectorization
 __attribute__((optimize("tree-vectorize")))
