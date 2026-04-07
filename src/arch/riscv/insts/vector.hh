@@ -203,13 +203,19 @@ class VectorMicroInst : public RiscvMicroInst
     dynamicOpLatency(ThreadContext *tc) const override
     {
         auto cpu = tc->getCpuPtr();
+        unsigned throughput = cpu->vectorTimingThroughput;
+        
+        // Calculate occupancy: how many cycles the lanes are busy.
+        // Formula: ceil(microVl / throughput)
+        int occupancy = (microVl + throughput - 1) / throughput;
+
         if (cpu->latencyModel) {
-            return cpu->latencyModel->getLatency(opClass(), vsew, microVl);
+            Cycles pipe_depth = cpu->latencyModel->getLatency(opClass(), vsew, microVl);
+            return Cycles(pipe_depth + occupancy);
         }
 
         // Legacy Fallback: Hardcoded reconciled ARA values
-        // Total execution latency depends on the functional unit pipeline
-        // plus the hardware sequencer's dispatch floor.
+        // Total execution latency = pipeline depth + occupancy
         int pipeline_lat = 0;
         switch (opClass()) {
           case enums::SimdAdd:
@@ -217,46 +223,41 @@ class VectorMicroInst : public RiscvMicroInst
           case enums::SimdShift:
           case enums::SimdMisc:
           case enums::SimdCmp:
-            pipeline_lat = 6; // Target 7: 6 + 1 issue
+            pipeline_lat = 6;
             break;
           case enums::SimdFloatAdd:
           case enums::SimdFloatAlu:
           case enums::SimdFloatMult:
           case enums::SimdFloatMultAcc:
           case enums::SimdFloatMatMultAcc:
-            // Hardware targets: e32=11, e64=12. (vsew+2 + 6 overhead)
             pipeline_lat = vsew + 8;
             break;
           case enums::SimdFloatCvt:
-            pipeline_lat = 5; // Target 6
+            pipeline_lat = 5;
             break;
           case enums::SimdFloatDiv:
           case enums::SimdFloatSqrt:
-            pipeline_lat = 19; // Target 20
+            pipeline_lat = 19;
             break;
           case enums::SimdDiv:
-            // Integer Division: EW64: 73, EW32: 41. (8 << vsew + 9 overhead)
             pipeline_lat = (8 << vsew) + 9;
             break;
           case enums::SimdMult:
           case enums::SimdMultAcc:
-            // Target: e8=8 (0+7), e32=9 (1+7).
             pipeline_lat = ((sew == 8) ? 0 : 1) + 7;
             break;
           case enums::SimdUnitStrideLoad:
-            pipeline_lat = 23; // Target 24
+            pipeline_lat = 23;
             break;
           case enums::SimdUnitStrideStore:
-            pipeline_lat = 19; // Target 20
+            pipeline_lat = 19;
             break;
           default:
-            pipeline_lat = 6; // Sequencer floor
+            pipeline_lat = 6;
             break;
         }
 
-        int res = pipeline_lat;
-
-        return Cycles(res);
+        return Cycles(pipeline_lat + occupancy);
     }
 
     Cycles
