@@ -22,8 +22,9 @@ The model replaces gem5's default 1-cycle vector latencies with values derived f
 | `src/cpu/latency_model.hh/.cc` | New: Implementation of the latency model strategy |
 | `src/cpu/o3/AraConfig.py` | Implements `AraLatencyModel`; calibrated reconciled latencies |
 | `src/cpu/o3/lsq_unit.hh/.cc` | Implemented load-chaining writeback delay event |
-| `src/arch/riscv/insts/vector.hh` | `dynamicOpLatency()` refactored to query modular model |
+| `src/arch/riscv/insts/vector.hh` | **Fixed**: `dynamicOpLatency()` now calculates occupancy dynamically using `microVl` and CPU throughput. |
 | `rvv/riscv-rvv-se-ara.py` | Simulation script with `--cpu-type AraO3` support |
+| `rvv/rvv_test.cpp` | **Updated**: Switched to `uint8_t` to maximize vector occupancy for lane verification. |
 
 ---
 
@@ -69,8 +70,8 @@ These two parameters serve distinct purposes and should not be confused.
 This directly controls how many elements the simulated hardware processes per cycle. The throughput formula in `vector.hh` is:
 
 ```
-elements_per_cycle = NrLanes × (ELEN / sew)
-throughput_cycles  = ceil(vl / elements_per_cycle)
+occupancy_cycles = ceil(microVl / vectorTimingThroughput)
+total_latency    = pipeline_depth + occupancy_cycles
 ```
 
 Set this to match the lane count of the ARA configuration you are modelling:
@@ -81,6 +82,8 @@ Set this to match the lane count of the ARA configuration you are modelling:
 | 4 lanes | `4` |
 | 8 lanes | `8` |
 | 16 lanes | `16` |
+
+**Note**: As of the latest update, gem5 is sensitive to this parameter. Changing throughput will scale the execution cycles of vector instructions.
 
 ### `--simd-units` = FU slots for the pipelined unit (keep at 2)
 
@@ -122,30 +125,30 @@ FP divide and square root (`SimdFloatDiv`, `SimdFloatSqrt`, `pipelined=False`). 
 
 ## Latency Model
 
-The timing model is **modular**. The core ISA code in `vector.hh` is generic and queries a `LatencyModel` SimObject assigned to the CPU. The ARA-specific implementation is defined in Python within `AraConfig.py`.
+The timing model is **modular and dynamic**. The core ISA code in `vector.hh` calculates instruction occupancy based on the vector length and lane count, then adds it to the pipeline depth queried from a `LatencyModel` SimObject.
 
 ### Reconciled Pipeline Latencies (RTL-Accurate)
 
-The following values represent the **Instruction-to-Instruction (Iss-to-Iss)** dependency delay. They are implemented in `AraLatencyModel` and reconcile gem5 with measurements from the ARA RTL Verilator simulation.
+The following values represent the **fixed pipeline depth** (Instruction-to-Instruction dependency delay for a single element). They are implemented in `AraLatencyModel` within `AraConfig.py`.
 
-| Instruction Category | RTL Meas. (Iss-to-Iss) | gem5 `op_latency` | Total (1+Lat) | Logic |
+| Instruction Category | RTL Meas. (Iss-to-Iss) | gem5 `pipe_depth` | Total Latency (Pipe + Occ) | Logic |
 | :--- | :---: | :---: | :---: | :--- |
-| **Integer ALU** (`vadd`) | 7 | 6 | 7 | Sequencer floor |
-| **FP Add/Mul (EW32)** | 11 | 10 | 11 | `vsew + 8` |
-| **FP Add/Mul (EW64)** | 12 | 11 | 12 | `vsew + 8` |
-| **FP Div/Sqrt (EW32)**| 20 | 19 | 20 | Iterative SRT |
-| **Integer Div (EW32)** | 42 | 41 | 42 | `(8 << vsew) + 9`|
-| **Memory Load (Hit)** | 24 | 23 | 24 | AGU + Sync |
+| **Integer ALU** (`vadd`) | 7 | 6 | $6 + \lceil vl/thru \rceil$ | Sequencer floor |
+| **FP Add/Mul (EW32)** | 11 | 10 | $10 + \lceil vl/thru \rceil$ | `vsew + 8` |
+| **FP Add/Mul (EW64)** | 12 | 11 | $11 + \lceil vl/thru \rceil$ | `vsew + 8` |
+| **FP Div/Sqrt (EW32)**| 20 | 19 | $19 + \lceil vl/thru \rceil$ | Iterative SRT |
+| **Integer Div (EW32)** | 42 | 41 | $41 + \lceil vl/thru \rceil$ | `(8 << vsew) + 9`|
+| **Memory Load (Hit)** | 24 | 23 | $23 + \lceil vl/thru \rceil$ | AGU + Sync |
 
-### Time Buffer Depth
+### Dynamic Throughput Scaling
 
-To support long-latency operations (like the 74-cycle 64-bit division) without triggering gem5 assertions, the `AraO3CPU` increases the depth of its internal communication buffers:
-* **`backComSize = 100`**
-* **`forwardComSize = 100`**
+Total execution latency is now calculated as:
+$$\text{Latency} = \text{Pipeline Depth} + \lceil \text{microVl} / \text{vectorTimingThroughput} \rceil$$
 
-### Modular extensibility
-
-To implement a different architecture, define a new subclass of `LatencyModel` in Python and assign it to the CPU's `latency_model` parameter. No C++ changes are required to add new instruction-class timing tables.
+This ensures that:
+1. Large vectors correctly occupy the functional units for more cycles.
+2. Increasing the `--vector-timing-throughput` (adding lanes) correctly reduces the execution time of long instructions.
+3. The "Vanishing Chaining" effect is accurately modeled: if $\lceil vl/thru \rceil \le \text{chainingLatency}$, chaining is automatically disabled as the instruction finishes before the first result is ready.
 
 ---
 
@@ -155,63 +158,17 @@ To implement a different architecture, define a new subclass of `LatencyModel` i
 
 When chaining is enabled and `chainingLatency < dynamicOpLatency` (i.e. the vector is long enough that the FU will still be busy when the first result element is ready), gem5 schedules a `WakeDependents` event at `chainingLatency` cycles after issue. The consumer instruction is placed back in the issue queue and can start as soon as a free FU slot is available.
 
-The minimum vector length required to activate chaining for FP EW64 (the tightest case, `chainingLatency = 7`):
-
-```
-throughput_cycles > 7  →  vl > 7 × NrLanes
-```
-
-| Lanes | Min `vl` (EW64, LMUL=m1) | Min `VLEN` |
-|---|---|---|
-| 2 | > 14 elements | > 896 bits |
-| 4 | > 28 elements | > 1792 bits |
-| 8 | > 56 elements | > 3584 bits |
-
-For LMUL=m8 the effective `vl` is 8× larger, so VLEN=512 activates chaining at 4 lanes for all instruction classes.
-
 ### Load chaining (`VectorLoadChainEvent`)
 
-Vector loads cannot use `WakeDependents` because the data arrives from the cache, not from a fixed-latency FU. Instead, `LSQUnit::writeback()` is hooked: after `completeAcc()` makes the loaded data available, a 1-cycle `VectorLoadChainEvent` fires before the instruction is committed. This models the 1-cycle VRF-write overhead seen in ARA hardware, and works correctly for both L1 hits and cache misses.
-
-The total load-chain overhead is 2 cycles (1 explicit delay + 1 IEW pipeline stage).
+Vector loads cannot use `WakeDependents` because the data arrives from the cache, not from a fixed-latency FU. Instead, `LSQUnit::writeback()` is hooked: after `completeAcc()` makes the loaded data available, a 1-cycle `VectorLoadChainEvent` fires before the instruction is committed. 
 
 ---
 
 ## Test Suite
 
-All tests are in `rvv/` and built with `Makefile.tests`:
+### Dynamic Throughput Verification (`rvv/rvv_test.cpp`)
 
-```bash
-cd rvv/
-make -f Makefile.tests          # build all test binaries
-```
-
-### Latency tests (`rvv_ara_latency_test.c`)
-
-Measures per-instruction chaining latency for each ARA VFU category using RAW dependency chains. Output format: `LATENCY <name>: avg=<X.XX>`.
-
-This binary contains no gem5-specific APIs — it uses only `rdcycle` (standard RISC-V) and `printf`. It can be run directly on ARA RTL hardware.
-
-### Latency checker (`check_ara_latencies.py`)
-
-Runs `rvv_ara_latency_test.bin` under gem5 and validates measured latencies against expected values:
-
-```bash
-python3 rvv/check_ara_latencies.py \
-    --gem5   build/RISCV/gem5.opt \
-    --script rvv/riscv-rvv-se-ara.py \
-    --binary rvv/rvv_ara_latency_test.bin \
-    --vlen 512 --lanes 4
-```
-
-### Load chain test (`rvv_load_chain_test.c` + `run_load_chain_test.py`)
-
-Tests that vector loads correctly chain with dependent compute instructions, with and without chaining enabled:
-
-```bash
-python3 rvv/run_load_chain_test.py \
-    --gem5   build/RISCV/gem5.opt \
-    --script rvv/riscv-rvv-se-ara.py \
-    --binary rvv/rvv_load_chain_test.bin \
-    --vlen 512 --lanes 4
-```
+A benchmark designed to verify lane scaling. It uses `uint8_t` (SEW=8) to maximize element count per vector.
+*   **VLEN=4096, Throughput=4**: Occupancy = 128 cycles.
+*   **VLEN=4096, Throughput=6**: Occupancy = 86 cycles.
+*   **VLEN=256, Throughput=6**: Demonstrates "Vanishing Chaining" (6 cycles occupancy < 7 cycles chaining latency).

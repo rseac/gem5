@@ -203,15 +203,33 @@ class VectorMicroInst : public RiscvMicroInst
     dynamicOpLatency(ThreadContext *tc) const override
     {
         auto cpu = tc->getCpuPtr();
-        unsigned throughput = cpu->vectorTimingThroughput;
+        unsigned NrLanes = cpu->vectorTimingThroughput;
         
         // Calculate occupancy: how many cycles the lanes are busy.
-        // Formula: ceil(microVl / throughput)
-        int occupancy = (microVl + throughput - 1) / throughput;
+        // ARA processes ELEN (64) bits per cycle per lane.
+        int epc = NrLanes * (64 / sew);
+        if (epc == 0) epc = 1;
+
+        int occupancy = (microVl + epc - 1) / epc;
 
         if (cpu->latencyModel) {
             Cycles pipe_depth = cpu->latencyModel->getLatency(opClass(), vsew, microVl);
-            return Cycles(pipe_depth + occupancy);
+            int floor = cpu->latencyModel->getDispatchFloor();
+            
+            // Special Case: Iterative units (Div/Sqrt) are serial.
+            // The occupancy is (cycles_per_element * microVl).
+            // We handle this by returning the full iterative time from getLatency
+            // and using 0 for the "pipelined" occupancy here.
+            int unit_occupancy = occupancy;
+            if (opClass() == enums::SimdDiv || opClass() == enums::SimdFloatDiv || 
+                opClass() == enums::SimdFloatSqrt) {
+                unit_occupancy = 0;
+            }
+
+            int total = (int)pipe_depth + unit_occupancy;
+            if (total < floor) total = floor;
+            
+            return Cycles(total);
         }
 
         // Legacy Fallback: Hardcoded reconciled ARA values
@@ -263,8 +281,21 @@ class VectorMicroInst : public RiscvMicroInst
     Cycles
     chainingLatency(ThreadContext *tc) const override
     {
-        // For ARA, we ensure chainingLatency matches the dynamicOpLatency
-        // to properly enforce the instruction-to-instruction dependency delay.
+        auto cpu = tc->getCpuPtr();
+        if (cpu->latencyModel) {
+            // For chaining, we only care about when the FIRST element is ready.
+            // This is the functional unit pipeline depth + 1 cycle for issue.
+            Cycles pipe_depth = cpu->latencyModel->getLatency(opClass(), vsew, microVl);
+            int floor = cpu->latencyModel->getDispatchFloor();
+            
+            // Readiness = max(Pipe + 1, Floor)
+            int readiness = (int)pipe_depth + 1;
+            if (readiness < floor) readiness = floor;
+            
+            return Cycles(readiness);
+        }
+
+        // Fallback for legacy hardcoded model
         return dynamicOpLatency(tc);
     }
 };

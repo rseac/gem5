@@ -25,6 +25,8 @@ class LatencyModel : public SimObject
     LatencyModel(const Params &p);
 
     virtual Cycles getLatency(OpClass op_class, int vsew, int microVl) const;
+
+    int getDispatchFloor() const { return dispatchFloor; }
 };
 
 } // namespace gem5

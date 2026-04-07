@@ -146,8 +146,9 @@ class AraLatencyModel(LatencyModel):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        # Global Floor: 7 cycles (6 floor + 1 issue)
-        self.dispatchFloor = 7
+        # Global Floor: 6 cycles (RTL lane sequencer bottleneck)
+        # Total latency will be max(Pipe + Throughput, Floor) + 1 issue
+        self.dispatchFloor = 6
 
         def get_lats(vsew):
             # Pre-populate with 0 (falls back to standard FU opLat if not defined here)
@@ -155,44 +156,47 @@ class AraLatencyModel(LatencyModel):
             lats = [0] * 128 
             m = OpClass.map
             
-            # Integer ALU (Target 7)
-            lats[m['SimdAdd']]   = 6
-            lats[m['SimdAlu']]   = 6
-            lats[m['SimdShift']] = 6
-            lats[m['SimdMisc']]  = 6
-            lats[m['SimdCmp']]   = 6
+            # Integer ALU (RTL Pipeline Depth = 1)
+            lats[m['SimdAdd']]   = 1
+            lats[m['SimdAlu']]   = 1
+            lats[m['SimdShift']] = 1
+            lats[m['SimdMisc']]  = 1
+            lats[m['SimdCmp']]   = 1
             
-            # Floating Point Arithmetic (vsew+8 -> Target vsew+2+6)
-            fp_lat = vsew + 8
-            lats[m['SimdFloatAdd']] = fp_lat
-            lats[m['SimdFloatAlu']] = fp_lat
-            lats[m['SimdFloatMult']] = fp_lat
-            lats[m['SimdFloatMultAcc']] = fp_lat
-            lats[m['SimdFloatMatMultAcc']] = fp_lat
+            # Floating Point Arithmetic (RTL Pipeline Depths)
+            # Hardware: e64=5, e32=4, e16=3, e8=2. 
+            fp_pipe = vsew + 2
+            lats[m['SimdFloatAdd']] = fp_pipe
+            lats[m['SimdFloatAlu']] = fp_pipe
+            lats[m['SimdFloatMult']] = fp_pipe
+            lats[m['SimdFloatMultAcc']] = fp_pipe
+            lats[m['SimdFloatMatMultAcc']] = fp_pipe
             
-            # Floating Point Misc / Compare (Target 7)
-            lats[m['SimdFloatCmp']] = 6
-            lats[m['SimdFloatMisc']] = 6
+            # Floating Point Misc / Compare (RTL = 1)
+            lats[m['SimdFloatCmp']] = 1
+            lats[m['SimdFloatMisc']] = 1
 
-            # Floating Point Conversion (Target 6)
-            lats[m['SimdFloatCvt']] = 5
+            # Floating Point Conversion (RTL=2)
+            lats[m['SimdFloatCvt']] = 2
 
-            # Division (Iterative)
-            lats[m['SimdFloatDiv']] = 19  # Target 20
-            lats[m['SimdFloatSqrt']] = 19 # Target 20
-            lats[m['SimdDiv']] = (8 << vsew) + 9 # e32=41, e64=73
-            
-            # Integer Multiply (e8=8, others=9)
-            lats[m['SimdMult']] = (0 if vsew == 0 else 1) + 7
-            lats[m['SimdMultAcc']] = (0 if vsew == 0 else 1) + 7
-            
-            # Memory (AGU depth + Sync)
-            lats[m['SimdUnitStrideLoad']] = 23 # Target 24
-            lats[m['SimdUnitStrideStore']] = 19 # Target 20
+            # Division / Sqrt (Iterative base cycles per element)
+            # These values are multiplied by microVl in latency_model.cc
+            lats[m['SimdFloatDiv']] = 17  # ~17 cycles iterative SRT
+            lats[m['SimdFloatSqrt']] = 17 # ~17 cycles iterative SRT
+            lats[m['SimdDiv']] = 8 << vsew # Bit-serial: ~8 cycles per bit of width
 
-            # Permute / Reduction (Floor 7+)
-            lats[m['SimdReduceAdd']] = 6
-            lats[m['SimdFloatReduceAdd']] = 6
+            # Integer Multiply (e8=0, others=1)
+
+            lats[m['SimdMult']] = (0 if vsew == 0 else 1)
+            lats[m['SimdMultAcc']] = (0 if vsew == 0 else 1)
+            
+            # Memory (AGU depth = 1)
+            lats[m['SimdUnitStrideLoad']] = 1
+            lats[m['SimdUnitStrideStore']] = 1
+
+            # Permute / Reduction
+            lats[m['SimdReduceAdd']] = 1
+            lats[m['SimdFloatReduceAdd']] = 1
             
             return lats
 
