@@ -53,6 +53,9 @@ from m5.proxy import *
 from m5.SimObject import *
 from m5.util.fdthelper import *
 
+from m5.objects.LatencyModel import LatencyModel
+from m5.objects.VectorSequencer import VectorSequencer
+
 default_tracer = ExeTracer()
 
 
@@ -169,6 +172,7 @@ class BaseCPU(ClockedObject):
     icache_port = RequestPort("Instruction Port")
     dcache_port = RequestPort("Data Port")
     latency_model = Param.LatencyModel(NULL, "Optional vector latency provider")
+    vector_sequencer = Param.VectorSequencer(NULL, "Optional vector instruction sequencer")
     _cached_ports = ["icache_port", "dcache_port"]
 
     _uncached_interrupt_response_ports = []

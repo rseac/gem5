@@ -140,6 +140,7 @@ class AraSIMD_FPDivSqrt(FUDesc):
 
 
 from m5.objects.LatencyModel import LatencyModel
+from m5.objects.VectorSequencer import VectorSequencer
 from m5.objects.FuncUnit import OpClass
 
 class AraLatencyModel(LatencyModel):
@@ -205,6 +206,12 @@ class AraLatencyModel(LatencyModel):
         self.latenciesEW32 = get_lats(2)
         self.latenciesEW64 = get_lats(3)
 
+class AraSequencer(VectorSequencer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Default ARA sequencer has a 4-entry instruction queue
+        self.insnQueueSize = 4
+
 try:
     from m5.objects import RiscvO3CPU
     class AraO3CPU(RiscvO3CPU):
@@ -232,6 +239,9 @@ try:
 
             # Assign the ARA Latency Model
             self.latency_model = AraLatencyModel()
+            
+            # Assign the ARA Vector Sequencer
+            self.vector_sequencer = AraSequencer()
 
             # CRITICAL: In gem5, SimObject instances (like functional units) must
             # have a clear parent-child relationship. We instantiate them inside

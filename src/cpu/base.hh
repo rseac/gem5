@@ -69,6 +69,7 @@ class CheckerCPU;
 class ThreadContext;
 class System;
 class LatencyModel;
+class VectorSequencer;
 
 struct AddressMonitor
 {
@@ -426,6 +427,7 @@ class BaseCPU : public ClockedObject
     System *system;
 
     LatencyModel *latencyModel;
+    VectorSequencer *vectorSequencer;
 
     /**
      * Get the cache line size of the system.

@@ -48,6 +48,7 @@
 #include "cpu/o3/dyn_inst.hh"
 #include "cpu/o3/fu_pool.hh"
 #include "cpu/o3/limits.hh"
+#include "cpu/vector_sequencer.hh"
 #include "debug/IQ.hh"
 #include "enums/OpClass.hh"
 #include "params/BaseO3CPU.hh"
@@ -922,7 +923,36 @@ InstructionQueue::scheduleReadyInsts()
         IQUnit *iq = issuing_inst->iq;
         assert(iq);
         auto fu_pool = iq->fuPool();
-        if (op_class != No_OpClass) {
+
+        // --- ARA SEQUENCER INTERCEPT ---
+        if (issuing_inst->isVector() && cpu->vectorSequencer) {
+            if (!cpu->vectorSequencer->canIssue()) {
+                idx = FUPool::NoFreeFU;
+            } else {
+                // Dispatch to sequencer
+                cpu->vectorSequencer->dispatchInsn(op_class, 0, 0, issuing_inst->seqNum);
+                
+                // From scalar core's perspective, this micro-op completes its "issue"
+                // phase in 1 cycle. The sequencer handles the internal vector timing.
+                i2e_info->size++;
+                instsToExecute.push_back(issuing_inst);
+                
+                DPRINTF(IQ, "Dispatching vector instruction [sn:%llu] to sequencer\n",
+                        issuing_inst->seqNum);
+                
+                // Skip standard FU allocation logic
+                readyInsts[op_class].pop();
+                if (!readyInsts[op_class].empty()) {
+                    moveToYoungerInst(order_it);
+                } else {
+                    readyIt[op_class] = listOrder.end();
+                    queueOnList[op_class] = false;
+                }
+                listOrder.erase(order_it++);
+                iqStats.issuedInstType[tid][op_class]++;
+                continue;
+            }
+        } else if (op_class != No_OpClass) {
             idx = fu_pool->getUnit(op_class);
             if (issuing_inst->isFloating()) {
                 iqIOStats.fpAluAccesses++;
@@ -988,8 +1018,9 @@ InstructionQueue::scheduleReadyInsts()
                 // in the LSQ.
                 if (chaining_latency < op_latency && !issuing_inst->isMemRef()) {
                     auto wakeup = new WakeDependents(issuing_inst, this);
-                    cpu->schedule(wakeup,
-                                  cpu->clockEdge(Cycles(chaining_latency - 1)));
+                    Cycles wake_delay = (chaining_latency > Cycles(1)) ? 
+                                       Cycles(uint64_t(chaining_latency) - 1) : Cycles(1);
+                    cpu->schedule(wakeup, cpu->clockEdge(wake_delay));
                 }
 
                 // Generate completion event for the FU release and final cleanup.
@@ -997,8 +1028,10 @@ InstructionQueue::scheduleReadyInsts()
                 auto execution =
                     new FUCompletion(issuing_inst, fu_pool, idx, this);
 
-                cpu->schedule(execution,
-                              cpu->clockEdge(Cycles(op_latency - 1)));
+                Cycles exec_delay = (op_latency > Cycles(0)) ?
+                                   op_latency : Cycles(1);
+                cpu->schedule(execution, cpu->clockEdge(exec_delay));
+
 
                 if (!pipelined) {
                     // If FU isn't pipelined, then it must be freed

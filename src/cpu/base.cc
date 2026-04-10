@@ -138,6 +138,7 @@ BaseCPU::BaseCPU(const Params &p, bool is_checker)
       vectorTimingThroughput(p.vector_timing_throughput),
       simdUnits(p.simd_units), system(p.system),
       latencyModel(p.latency_model),
+      vectorSequencer(p.vector_sequencer),
       previousCycle(0), previousState(CPU_STATE_SLEEP),
       functionTraceStream(nullptr), currentFunctionStart(0),
       currentFunctionEnd(0), functionEntryTick(0),
