@@ -57,6 +57,7 @@
 #include "base/trace.hh"
 #include "cpu/checker/cpu.hh"
 #include "cpu/thread_context.hh"
+#include "cpu/vector_sequencer.hh"
 #include "debug/Mwait.hh"
 #include "debug/SyscallVerbose.hh"
 #include "debug/Thread.hh"
@@ -149,6 +150,9 @@ BaseCPU::BaseCPU(const Params &p, bool is_checker)
       powerGatingOnIdle(p.power_gating_on_idle),
       enterPwrGatingEvent([this]{ enterPwrGating(); }, name())
 {
+    if (vectorSequencer) {
+        vectorSequencer->setCPU(this);
+    }
     inform("CPU %s: Vector Chaining %s, Throughput %d, SIMD Units %d\n",
            name(), enableVectorChaining ? "ENABLED" : "DISABLED",
            vectorTimingThroughput, simdUnits);

@@ -930,7 +930,11 @@ InstructionQueue::scheduleReadyInsts()
                 idx = FUPool::NoFreeFU;
             } else {
                 // Dispatch to sequencer
-                cpu->vectorSequencer->dispatchInsn(op_class, 0, 0, issuing_inst->seqNum);
+                // We use dynamicOpLatency to know when the instruction finishes 
+                // inside the sequencer.
+                op_latency = issuing_inst->staticInst->dynamicOpLatency(issuing_inst->tcBase());
+                
+                cpu->vectorSequencer->dispatchInsn(issuing_inst, op_latency);
                 
                 // From scalar core's perspective, this micro-op completes its "issue"
                 // phase in 1 cycle. The sequencer handles the internal vector timing.
@@ -950,6 +954,7 @@ InstructionQueue::scheduleReadyInsts()
                 }
                 listOrder.erase(order_it++);
                 iqStats.issuedInstType[tid][op_class]++;
+                total_issued++;
                 continue;
             }
         } else if (op_class != No_OpClass) {

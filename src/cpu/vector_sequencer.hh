@@ -1,19 +1,13 @@
 #ifndef __CPU_VECTOR_SEQUENCER_HH__
 #define __CPU_VECTOR_SEQUENCER_HH__
 
-#include <deque>
-#include <vector>
-
-#include "base/types.hh"
+#include "cpu/o3/dyn_inst.hh"
 #include "params/VectorSequencer.hh"
+#include "sim/eventq.hh"
 #include "sim/sim_object.hh"
-#include "base/types.hh"
-#include "cpu/op_class.hh"
 
 namespace gem5
 {
-
-class BaseCPU;
 
 class VectorSequencer : public SimObject
 {
@@ -21,24 +15,25 @@ class VectorSequencer : public SimObject
     int insnQueueSize;
     int numLanes;
     
-    // Simple scoreboard for vector registers v0-v31
-    // Stores the sequence number of the instruction writing to the register.
-    std::vector<uint64_t> scoreboard;
+    // Pointer back to the CPU to signal completion
+    BaseCPU* cpu;
 
-    // Internal instruction queue
-    // In a real implementation, this would hold pointers to DynInst
-    int inFlightCount;
+    // Internal instruction queue holding instructions in flight
+    std::deque<o3::DynInstPtr> pendingInsts;
+
+    // Event to handle the completion of a vector instruction
+    void completeInsn();
+    EventFunctionWrapper completeEvent;
 
   public:
     typedef VectorSequencerParams Params;
     VectorSequencer(const Params &p);
 
+    void setCPU(BaseCPU* _cpu) { cpu = _cpu; }
+
     // Handshake with the O3 CPU
     bool canIssue() const;
-    void dispatchInsn(OpClass op_class, int vsew, int vl, uint64_t seq_num);
-    
-    // Mark an instruction as retired (release scoreboard)
-    void retireInsn(uint64_t seq_num);
+    void dispatchInsn(o3::DynInstPtr inst, Cycles latency);
 };
 
 } // namespace gem5
