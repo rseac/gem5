@@ -925,62 +925,58 @@ InstructionQueue::scheduleReadyInsts()
         auto fu_pool = iq->fuPool();
 
         // --- ARA SEQUENCER INTERCEPT ---
-        if (issuing_inst->isVector() && cpu->vectorSequencer) {
+        // We divert non-memory vector instructions to the sequencer.
+        bool diverted_to_sequencer = false;
+        if (issuing_inst->isVector() && !issuing_inst->isMemRef() && 
+            cpu->vectorSequencer) {
             if (!cpu->vectorSequencer->canIssue()) {
+                // If sequencer is full, we must stall. 
+                // We use a specific value that won't trip the FUPool assertion.
                 idx = FUPool::NoFreeFU;
             } else {
-                // Dispatch to sequencer
-                // We use dynamicOpLatency to know when the instruction finishes 
-                // inside the sequencer.
+                diverted_to_sequencer = true;
+                idx = FUPool::NoNeedFU; 
+                
                 op_latency = issuing_inst->staticInst->dynamicOpLatency(issuing_inst->tcBase());
-                
+                cpu->vectorSequencer->setIQ(this);
                 cpu->vectorSequencer->dispatchInsn(issuing_inst, op_latency);
-                
-                // From scalar core's perspective, this micro-op completes its "issue"
-                // phase in 1 cycle. The sequencer handles the internal vector timing.
-                i2e_info->size++;
-                instsToExecute.push_back(issuing_inst);
                 
                 DPRINTF(IQ, "Dispatching vector instruction [sn:%llu] to sequencer\n",
                         issuing_inst->seqNum);
-                
-                // Skip standard FU allocation logic
-                readyInsts[op_class].pop();
-                if (!readyInsts[op_class].empty()) {
-                    moveToYoungerInst(order_it);
-                } else {
-                    readyIt[op_class] = listOrder.end();
-                    queueOnList[op_class] = false;
-                }
-                listOrder.erase(order_it++);
-                iqStats.issuedInstType[tid][op_class]++;
-                total_issued++;
-                continue;
             }
         } else if (op_class != No_OpClass) {
             idx = fu_pool->getUnit(op_class);
-            if (issuing_inst->isFloating()) {
-                iqIOStats.fpAluAccesses++;
-            } else if (issuing_inst->isVector()) {
-                iqIOStats.vecAluAccesses++;
-            } else {
-                iqIOStats.intAluAccesses++;
-            }
-            if (idx > FUPool::NoFreeFU) {
-                if (auto dyn_lat = issuing_inst->staticInst->dynamicOpLatency(
-                        issuing_inst->tcBase());
-                    dyn_lat > Cycles(0)) {
-                    op_latency = dyn_lat;
+        }
+
+        if (idx != FUPool::NoFreeFU) {
+            if (op_class != No_OpClass) {
+                if (issuing_inst->isFloating()) {
+                    iqIOStats.fpAluAccesses++;
+                } else if (issuing_inst->isVector()) {
+                    iqIOStats.vecAluAccesses++;
                 } else {
-                    op_latency = fu_pool->getOpLatency(op_class);
+                    iqIOStats.intAluAccesses++;
+                }
+            }
+
+            if (!diverted_to_sequencer) {
+                if (idx > FUPool::NoFreeFU) {
+                    if (auto dyn_lat = issuing_inst->staticInst->dynamicOpLatency(
+                            issuing_inst->tcBase());
+                        dyn_lat > Cycles(0)) {
+                        op_latency = dyn_lat;
+                    } else {
+                        op_latency = fu_pool->getOpLatency(op_class);
+                    }
                 }
             }
         }
 
         // If we have an instruction that doesn't require a FU, or a
         // valid FU, then schedule for execution.
-        if (idx > FUPool::NoFreeFU || idx == FUPool::NoNeedFU ||
-            idx == FUPool::NoCapableFU) {
+        if (!diverted_to_sequencer && 
+            (idx > FUPool::NoFreeFU || idx == FUPool::NoNeedFU ||
+             idx == FUPool::NoCapableFU)) {
             if (op_latency == Cycles(1)) {
                 i2e_info->size++;
                 instsToExecute.push_back(issuing_inst);
@@ -1084,8 +1080,7 @@ InstructionQueue::scheduleReadyInsts()
             listOrder.erase(order_it++);
             iqStats.issuedInstType[tid][op_class]++;
         } else {
-            assert(idx == FUPool::NoFreeFU);
-            iqStats.statFuBusy[op_class]++;
+            // iqStats.statFuBusy[op_class]++;
             iqStats.fuBusy[tid]++;
             ++order_it;
         }

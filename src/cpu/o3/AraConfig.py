@@ -209,8 +209,8 @@ class AraLatencyModel(LatencyModel):
 class AraSequencer(VectorSequencer):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # Default ARA sequencer has a 4-entry instruction queue
-        self.insnQueueSize = 4
+        # Increase queue size to prevent scalar core stalls
+        self.insnQueueSize = 16
 
 try:
     from m5.objects import RiscvO3CPU

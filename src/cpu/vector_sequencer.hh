@@ -9,17 +9,28 @@
 namespace gem5
 {
 
+namespace o3 {
+    class InstructionQueue;
+    class IEW;
+}
+
 class VectorSequencer : public SimObject
 {
   protected:
     int insnQueueSize;
     int numLanes;
     
-    // Pointer back to the CPU to signal completion
+    // Pointers back to the CPU and IQ to signal completion
     BaseCPU* cpu;
+    o3::InstructionQueue* iq;
+    o3::IEW* iew;
 
-    // Internal instruction queue holding instructions in flight
-    std::deque<o3::DynInstPtr> pendingInsts;
+    // Internal instruction queue holding instructions and their latencies
+    struct PendingInsn {
+        o3::DynInstPtr inst;
+        Cycles latency;
+    };
+    std::deque<PendingInsn> pendingInsts;
 
     // Event to handle the completion of a vector instruction
     void completeInsn();
@@ -30,6 +41,8 @@ class VectorSequencer : public SimObject
     VectorSequencer(const Params &p);
 
     void setCPU(BaseCPU* _cpu) { cpu = _cpu; }
+    void setIQ(o3::InstructionQueue* _iq) { iq = _iq; }
+    void setIEW(o3::IEW* _iew) { iew = _iew; }
 
     // Handshake with the O3 CPU
     bool canIssue() const;

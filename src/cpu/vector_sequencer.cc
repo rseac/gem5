@@ -1,6 +1,8 @@
 #include "cpu/vector_sequencer.hh"
 
 #include "cpu/base.hh"
+#include "cpu/o3/iew.hh"
+#include "cpu/o3/inst_queue.hh"
 #include "debug/IQ.hh"
 
 namespace gem5
@@ -11,6 +13,8 @@ VectorSequencer::VectorSequencer(const Params &p)
       insnQueueSize(p.insnQueueSize),
       numLanes(p.numLanes),
       cpu(nullptr),
+      iq(nullptr),
+      iew(nullptr),
       completeEvent([this]{ completeInsn(); }, name() + ".completeEvent")
 {
 }
@@ -24,9 +28,7 @@ VectorSequencer::canIssue() const
 void
 VectorSequencer::dispatchInsn(o3::DynInstPtr inst, Cycles latency)
 {
-    // Record when this instruction should finish
-    // (In a real hardware sequencer, this would be an iterative process)
-    pendingInsts.push_back(inst);
+    pendingInsts.push_back({inst, latency});
 
     if (!completeEvent.scheduled()) {
         schedule(completeEvent, cpu->clockEdge(latency));
@@ -38,25 +40,43 @@ VectorSequencer::completeInsn()
 {
     assert(!pendingInsts.empty());
     
-    o3::DynInstPtr finished_inst = pendingInsts.front();
+    PendingInsn finished = pendingInsts.front();
     pendingInsts.pop_front();
+    o3::DynInstPtr finished_inst = finished.inst;
 
-    // Notify the scalar core that the vector instruction is done.
-    // In gem5 O3, instructions are typically marked as completed 
-    // by the FUCompletion event, which we are simulating here.
-    finished_inst->setCompleted();
-    
-    // In a more complex model, we would signal IEW to move this 
-    // instruction to the commit queue. 
-    
-    DPRINTF(IQ, "Vector instruction [sn:%llu] completed in sequencer\n",
-            finished_inst->seqNum);
+    if (finished_inst->isSquashed()) {
+        DPRINTF(IQ, "Vector instruction [sn:%llu] was squashed, ignoring completion\n",
+                finished_inst->seqNum);
+    } else {
+        // 1. Functional execution (non-memory only)
+        if (!finished_inst->isMemRef()) {
+            if (!finished_inst->isExecuted() && finished_inst->getFault() == NoFault) {
+                finished_inst->execute();
+            }
+            finished_inst->setExecuted();
+        }
 
-    // If there are more instructions, schedule the next one.
-    // (Simplification: assuming next one starts immediately)
+        // 2. Wake dependents
+        if (iq) {
+            iq->wakeDependents(finished_inst);
+        } else {
+            finished_inst->setCompleted();
+        }
+
+        // 3. Retirement Handshake
+        if (iew) {
+            iew->instToCommit(finished_inst);
+            iew->activityThisCycle();
+        }
+        
+        DPRINTF(IQ, "Vector instruction [sn:%llu] completed in sequencer\n",
+                finished_inst->seqNum);
+    }
+
+    // 4. Sequential Modeling: Start the next instruction in the queue
     if (!pendingInsts.empty()) {
-        // Here we would ideally recalculate the next instruction's latency
-        schedule(completeEvent, cpu->nextCycle());
+        // Schedule the next completion based on the next instruction's latency
+        schedule(completeEvent, cpu->clockEdge(pendingInsts.front().latency));
     }
 }
 

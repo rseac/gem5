@@ -49,6 +49,7 @@
 #include "cpu/o3/dyn_inst.hh"
 #include "cpu/o3/limits.hh"
 #include "cpu/o3/thread_context.hh"
+#include "cpu/vector_sequencer.hh"
 #include "cpu/simple_thread.hh"
 #include "cpu/thread_context.hh"
 #include "debug/Activity.hh"
@@ -148,6 +149,9 @@ CPU::CPU(const BaseO3CPUParams &params)
 
     // Set up Pointers to the activeThreads list for each stage
     bac.setActiveThreads(&activeThreads);
+    if (vectorSequencer) {
+        vectorSequencer->setIEW(&iew);
+    }
     fetch.setActiveThreads(&activeThreads);
     decode.setActiveThreads(&activeThreads);
     rename.setActiveThreads(&activeThreads);
