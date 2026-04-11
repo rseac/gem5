@@ -38,7 +38,7 @@ VectorSequencer::dispatchInsn(o3::DynInstPtr inst, Cycles occupancy, Cycles read
     
     // The sequencer will be busy for 7 cycles (floor) before it can 
     // take the NEXT instruction.
-    nextIdAvailableTick = start_tick + cpu->clockEdge(Cycles(7)) - curTick();
+    nextIdAvailableTick = start_tick + cpu->clockEdge(Cycles(7));
 
     // 1. Schedule WakeDependents (Chaining)
     // This allows consumer instructions to start streaming elements early.
