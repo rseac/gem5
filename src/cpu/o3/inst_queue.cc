@@ -924,32 +924,7 @@ InstructionQueue::scheduleReadyInsts()
         assert(iq);
         auto fu_pool = iq->fuPool();
 
-        // --- ARA SEQUENCER INTERCEPT ---
-        // We divert non-memory vector instructions to the sequencer.
-        bool diverted_to_sequencer = false;
-        if (issuing_inst->isVector() && !issuing_inst->isMemRef() && 
-            cpu->vectorSequencer) {
-            if (!cpu->vectorSequencer->canIssue()) {
-                // If sequencer is full, we must stall. 
-                // We use a specific value that won't trip the FUPool assertion.
-                idx = FUPool::NoFreeFU;
-            } else {
-                diverted_to_sequencer = true;
-                idx = FUPool::NoNeedFU; 
-                
-                op_latency = issuing_inst->staticInst->dynamicOpLatency(issuing_inst->tcBase());
-                Cycles readiness = issuing_inst->staticInst->chainingLatency(issuing_inst->tcBase());
-                
-                cpu->vectorSequencer->setIQ(this);
-                cpu->vectorSequencer->dispatchInsn(issuing_inst, op_latency, readiness);
-                
-                issuing_inst->setIssued();
-
-                DPRINTF(IQ, "Dispatching vector instruction [sn:%llu] to sequencer "
-                        "(lat:%d, ready:%d)\n",
-                        issuing_inst->seqNum, op_latency, readiness);
-            }
-        } else if (op_class != No_OpClass) {
+        if (op_class != No_OpClass) {
             idx = fu_pool->getUnit(op_class);
         }
 
@@ -964,24 +939,21 @@ InstructionQueue::scheduleReadyInsts()
                 }
             }
 
-            if (!diverted_to_sequencer) {
-                if (idx > FUPool::NoFreeFU) {
-                    if (auto dyn_lat = issuing_inst->staticInst->dynamicOpLatency(
-                            issuing_inst->tcBase());
-                        dyn_lat > Cycles(0)) {
-                        op_latency = dyn_lat;
-                    } else {
-                        op_latency = fu_pool->getOpLatency(op_class);
-                    }
+            if (idx > FUPool::NoFreeFU) {
+                if (auto dyn_lat = issuing_inst->staticInst->dynamicOpLatency(
+                        issuing_inst->tcBase());
+                    dyn_lat > Cycles(0)) {
+                    op_latency = dyn_lat;
+                } else {
+                    op_latency = fu_pool->getOpLatency(op_class);
                 }
             }
         }
 
         // If we have an instruction that doesn't require a FU, or a
         // valid FU, then schedule for execution.
-        if (!diverted_to_sequencer && 
-            (idx > FUPool::NoFreeFU || idx == FUPool::NoNeedFU ||
-             idx == FUPool::NoCapableFU)) {
+        if (idx > FUPool::NoFreeFU || idx == FUPool::NoNeedFU ||
+             idx == FUPool::NoCapableFU) {
             if (op_latency == Cycles(1)) {
                 i2e_info->size++;
                 instsToExecute.push_back(issuing_inst);

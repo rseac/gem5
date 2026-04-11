@@ -42,8 +42,10 @@ class VectorSequencer : public SimObject
         EventType type;
 
         SequencerEvent(VectorSequencer *_seq, o3::DynInstPtr _inst, EventType _type)
-            : Event(Default_Pri, AutoDelete), 
-              sequencer(_seq), inst(_inst), type(_type) {}
+            : Event(Default_Pri), 
+              sequencer(_seq), inst(_inst), type(_type) {
+            setFlags(AutoDelete);
+        }
 
         void process() override;
         const char *description() const override { return "Vector Sequencer Event"; }
