@@ -924,7 +924,19 @@ InstructionQueue::scheduleReadyInsts()
         assert(iq);
         auto fu_pool = iq->fuPool();
 
-        if (op_class != No_OpClass) {
+        // --- ARA SEQUENCER GATEKEEPER ---
+        // We enforce the hardware dispatch floor before looking for an FU.
+        if (issuing_inst->isVector() && !issuing_inst->isMemRef() && 
+            cpu->vectorSequencer) {
+            if (!cpu->vectorSequencer->canIssue()) {
+                idx = FUPool::NoFreeFU;
+            } else {
+                cpu->vectorSequencer->recordIssue();
+                // Continue to standard FU allocation below
+            }
+        }
+
+        if (idx == FUPool::NoNeedFU && op_class != No_OpClass) {
             idx = fu_pool->getUnit(op_class);
         }
 
