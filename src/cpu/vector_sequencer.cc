@@ -15,68 +15,82 @@ VectorSequencer::VectorSequencer(const Params &p)
       cpu(nullptr),
       iq(nullptr),
       iew(nullptr),
-      completeEvent([this]{ completeInsn(); }, name() + ".completeEvent")
+      nextIdAvailableTick(0),
+      inFlightCount(0)
 {
 }
 
 bool
 VectorSequencer::canIssue() const
 {
-    return pendingInsts.size() < insnQueueSize;
+    // The O3 CPU can issue to us as long as our buffer isn't full.
+    return inFlightCount < insnQueueSize;
 }
 
 void
-VectorSequencer::dispatchInsn(o3::DynInstPtr inst, Cycles latency)
+VectorSequencer::dispatchInsn(o3::DynInstPtr inst, Cycles occupancy, Cycles readiness)
 {
-    pendingInsts.push_back({inst, latency});
+    inFlightCount++;
 
-    if (!completeEvent.scheduled()) {
-        schedule(completeEvent, cpu->clockEdge(latency));
-    }
-}
-
-void
-VectorSequencer::completeInsn()
-{
-    assert(!pendingInsts.empty());
+    // Calculate when this instruction can "start" in the sequencer.
+    // ARA enforces a dispatch floor between vector instructions.
+    Tick start_tick = std::max(curTick(), nextIdAvailableTick);
     
-    PendingInsn finished = pendingInsts.front();
-    pendingInsts.pop_front();
-    o3::DynInstPtr finished_inst = finished.inst;
+    // The sequencer will be busy for 7 cycles (floor) before it can 
+    // take the NEXT instruction.
+    nextIdAvailableTick = start_tick + cpu->clockEdge(Cycles(7)) - curTick();
 
-    if (finished_inst->isSquashed()) {
-        DPRINTF(IQ, "Vector instruction [sn:%llu] was squashed, ignoring completion\n",
-                finished_inst->seqNum);
-    } else {
-        // 1. Functional execution (non-memory only)
-        if (!finished_inst->isMemRef()) {
-            if (!finished_inst->isExecuted() && finished_inst->getFault() == NoFault) {
-                finished_inst->execute();
-            }
-            finished_inst->setExecuted();
+    // 1. Schedule WakeDependents (Chaining)
+    // This allows consumer instructions to start streaming elements early.
+    Tick wake_tick = start_tick + cpu->clockEdge(readiness) - curTick();
+    auto wake_event = new SequencerEvent(this, inst, SequencerEvent::WakeDependents);
+    schedule(wake_event, wake_tick);
+
+    // 2. Schedule Retirement (Occupancy)
+    // This defines when the instruction finally leaves the vector unit.
+    Tick retire_tick = start_tick + cpu->clockEdge(occupancy) - curTick();
+    auto retire_event = new SequencerEvent(this, inst, SequencerEvent::RetireInsn);
+    schedule(retire_event, retire_tick);
+
+    DPRINTF(IQ, "Sequencer: Dispatched [sn:%llu]. Wake at %lu, Retire at %lu\n",
+            inst->seqNum, wake_tick, retire_tick);
+}
+
+void
+VectorSequencer::SequencerEvent::process()
+{
+    sequencer->handleEvent(inst, type);
+}
+
+void
+VectorSequencer::handleEvent(o3::DynInstPtr inst, SequencerEvent::EventType type)
+{
+    if (inst->isSquashed()) {
+        if (type == SequencerEvent::RetireInsn) inFlightCount--;
+        return;
+    }
+
+    if (type == SequencerEvent::WakeDependents) {
+        // --- PHASE 1: WAKE ---
+        // Functional execution happens here so results are ready for chaining.
+        if (!inst->isExecuted() && inst->getFault() == NoFault) {
+            inst->execute();
         }
+        inst->setExecuted();
 
-        // 2. Wake dependents
         if (iq) {
-            iq->wakeDependents(finished_inst);
-        } else {
-            finished_inst->setCompleted();
+            iq->wakeDependents(inst);
         }
-
-        // 3. Retirement Handshake
+        DPRINTF(IQ, "Sequencer: Waking dependents for [sn:%llu]\n", inst->seqNum);
+    } 
+    else if (type == SequencerEvent::RetireInsn) {
+        // --- PHASE 2: RETIRE ---
         if (iew) {
-            iew->instToCommit(finished_inst);
+            iew->instToCommit(inst);
             iew->activityThisCycle();
         }
-        
-        DPRINTF(IQ, "Vector instruction [sn:%llu] completed in sequencer\n",
-                finished_inst->seqNum);
-    }
-
-    // 4. Sequential Modeling: Start the next instruction in the queue
-    if (!pendingInsts.empty()) {
-        // Schedule the next completion based on the next instruction's latency
-        schedule(completeEvent, cpu->clockEdge(pendingInsts.front().latency));
+        inFlightCount--;
+        DPRINTF(IQ, "Sequencer: Retired instruction [sn:%llu]\n", inst->seqNum);
     }
 }
 

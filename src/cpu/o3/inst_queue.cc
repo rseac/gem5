@@ -938,11 +938,16 @@ InstructionQueue::scheduleReadyInsts()
                 idx = FUPool::NoNeedFU; 
                 
                 op_latency = issuing_inst->staticInst->dynamicOpLatency(issuing_inst->tcBase());
-                cpu->vectorSequencer->setIQ(this);
-                cpu->vectorSequencer->dispatchInsn(issuing_inst, op_latency);
+                Cycles readiness = issuing_inst->staticInst->chainingLatency(issuing_inst->tcBase());
                 
-                DPRINTF(IQ, "Dispatching vector instruction [sn:%llu] to sequencer\n",
-                        issuing_inst->seqNum);
+                cpu->vectorSequencer->setIQ(this);
+                cpu->vectorSequencer->dispatchInsn(issuing_inst, op_latency, readiness);
+                
+                issuing_inst->setIssued();
+
+                DPRINTF(IQ, "Dispatching vector instruction [sn:%llu] to sequencer "
+                        "(lat:%d, ready:%d)\n",
+                        issuing_inst->seqNum, op_latency, readiness);
             }
         } else if (op_class != No_OpClass) {
             idx = fu_pool->getUnit(op_class);
