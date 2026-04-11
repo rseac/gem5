@@ -30,7 +30,7 @@ class VectorSequencer : public SimObject
 
     // Handshake with the O3 CPU
     bool canIssue() const;
-    void recordIssue();
+    Cycles getIssueDelay();
 };
 
 } // namespace gem5

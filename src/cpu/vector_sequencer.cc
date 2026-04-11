@@ -1,5 +1,4 @@
 #include "cpu/vector_sequencer.hh"
-
 #include "cpu/base.hh"
 
 namespace gem5
@@ -17,17 +16,22 @@ VectorSequencer::VectorSequencer(const Params &p)
 bool
 VectorSequencer::canIssue() const
 {
-    // The Dispatcher is a serial bottleneck.
-    // It can only accept one instruction every 7 cycles.
-    return (curTick() >= nextIdAvailableTick);
+    // Always return true to keep the pipeline moving.
+    // We will apply the delay via latency instead of stalling.
+    return true;
 }
 
-void
-VectorSequencer::recordIssue()
+Cycles
+VectorSequencer::getIssueDelay()
 {
-    // Mark the dispatcher as busy for the next 7 cycles.
-    // This pushes the bottleneck into the future CUMULATIVELY.
-    nextIdAvailableTick = std::max(curTick(), nextIdAvailableTick) + cpu->clockEdge(Cycles(7));
+    Tick now = curTick();
+    Tick start_tick = std::max(now, nextIdAvailableTick);
+    
+    // Update next availability (7 cycle floor)
+    nextIdAvailableTick = start_tick + cpu->clockEdge(Cycles(7));
+    
+    // Return how many cycles this instruction was "delayed" by the dispatcher
+    return cpu->ticksToCycles(start_tick - now);
 }
 
 } // namespace gem5
