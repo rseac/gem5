@@ -10,22 +10,35 @@
 //#define LEN_2D 256
 
 #include <stdint.h>
+#include <stdio.h>
+#include <inttypes.h>
 #include <sys/time.h>
 
-static inline uint64_t read_cycles(void)
-{
-    uint64_t c;
-    __asm__ volatile ("rdcycle %0" : "=r"(c));
-    return c;
+// Helper to read hardware cycle counter
+static inline uint64_t read_cycles() {
+    uint64_t val;
+    __asm__ volatile ("rdcycle %0" : "=r" (val));
+    return val;
 }
+
+#ifdef RDCYCLE
+    #undef USE_M5OPS
+    #define RDCYCLE_VAL 1
+#else
+    #define RDCYCLE_VAL 0
+#endif
 
 #ifdef USE_M5OPS
 #include <gem5/m5ops.h>
 #define ROI_BEGIN(fa) do { m5_reset_stats(0, 0); (fa)->c1 = read_cycles(); gettimeofday(&(fa)->t1, NULL); } while (0)
-#define ROI_END(fa)   do { gettimeofday(&(fa)->t2, NULL); (fa)->c2 = read_cycles(); m5_dump_reset_stats(0, 0); } while (0)
+#define ROI_END(fa)   do { gettimeofday(&(fa)->t2, NULL); (fa)->c2 = read_cycles(); m5_dump_reset_stats(0, 0); \
+                           printf("cycles: %" PRIu64 " [M5_OPS]\n", (fa)->c2 - (fa)->c1); } while (0)
 #else
-#define ROI_BEGIN(fa) do { (fa)->c1 = read_cycles(); gettimeofday(&(fa)->t1, NULL); } while (0)
-#define ROI_END(fa)   do { gettimeofday(&(fa)->t2, NULL); (fa)->c2 = read_cycles(); } while (0)
+#define ROI_BEGIN(fa) do { (fa)->c1 = read_cycles(); gettimeofday(&(fa)->t1, NULL); \
+                           if (RDCYCLE_VAL) printf("start cycles: %" PRIu64 " [RDCYCLE]\n", (fa)->c1); } while (0)
+#define ROI_END(fa)   do { gettimeofday(&(fa)->t2, NULL); (fa)->c2 = read_cycles(); \
+                           if (RDCYCLE_VAL) printf("end cycles: %" PRIu64 " [RDCYCLE]\n", (fa)->c2); \
+                           if (RDCYCLE_VAL) printf("cycles: %" PRIu64 " [RDCYCLE]\n", (fa)->c2 - (fa)->c1); } while (0)
 #endif
 
 struct args_t {

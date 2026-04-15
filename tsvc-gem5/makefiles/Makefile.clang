@@ -15,6 +15,12 @@ vecflags+=-Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loo
 #vecflags+=-Rpass-analysis=loop-vectorize
 endif
 
+# Print cycle count immediately at the end of each ROI (default: disabled)
+# enable with: make RDCYCLE=1
+ifdef RDCYCLE
+flags += -DRDCYCLE
+endif
+
 ieee_math_flags+=
 fast_math_flags+=-ffast-math
 
