@@ -20,15 +20,17 @@ L1D_SIZE=${L1D_SIZE:-"32KiB"}
 L2_SIZE=${L2_SIZE:-"512KiB"}
 VLEN=${VLEN:-2048}
 ELEN=${ELEN:-64}
+CPU_TYPE=${CPU_TYPE:-"AraO3"}
+THROUGHPUT=${THROUGHPUT:-4}
 
-echo "Running $BINARY with L1D=$L1D_SIZE, L2=$L2_SIZE, VLEN=$VLEN, ELEN=$ELEN"
+echo "Running $BINARY with L1D=$L1D_SIZE, L2=$L2_SIZE, VLEN=$VLEN, ELEN=$ELEN, CPU=$CPU_TYPE, THROUGHPUT=$THROUGHPUT"
 
 # Build the command
 CMD=("$GEM5_BIN" "$CONFIG_SCRIPT" \
-    --cpu-type AraO3 \
+    --cpu-type "$CPU_TYPE" \
     --enable-chaining \
     --simd-units 2 \
-    --vector-timing-throughput 4 \
+    --vector-timing-throughput "$THROUGHPUT" \
     -d "$L1D_SIZE" \
     -2 "$L2_SIZE" \
     -v "$VLEN" \

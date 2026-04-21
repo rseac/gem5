@@ -84,18 +84,20 @@ class AraSIMD_Pipelined(FUDesc):
         OpDesc(opClass="SimdFloatReduceCmp", opLat=1),
 
         # --- Load / Store Address Generation ---
-        OpDesc(opClass="SimdUnitStrideLoad", opLat=1),
-        OpDesc(opClass="SimdUnitStrideStore", opLat=1),
-        OpDesc(opClass="SimdUnitStrideMaskLoad", opLat=1),
-        OpDesc(opClass="SimdUnitStrideMaskStore", opLat=1),
-        OpDesc(opClass="SimdStridedLoad", opLat=1),
-        OpDesc(opClass="SimdStridedStore", opLat=1),
-        OpDesc(opClass="SimdIndexedLoad", opLat=1),
-        OpDesc(opClass="SimdIndexedStore", opLat=1),
-        OpDesc(opClass="SimdWholeRegisterLoad", opLat=1),
-        OpDesc(opClass="SimdWholeRegisterStore", opLat=1),
-        OpDesc(opClass="SimdUnitStrideSegmentedLoad", opLat=1),
-        OpDesc(opClass="SimdUnitStrideSegmentedStore", opLat=1),
+        # Increased to 3 cycles to account for internal shuffling and AXI request
+        # generation logic seen in ARA's addrgen.sv.
+        OpDesc(opClass="SimdUnitStrideLoad", opLat=3),
+        OpDesc(opClass="SimdUnitStrideStore", opLat=3),
+        OpDesc(opClass="SimdUnitStrideMaskLoad", opLat=3),
+        OpDesc(opClass="SimdUnitStrideMaskStore", opLat=3),
+        OpDesc(opClass="SimdStridedLoad", opLat=3),
+        OpDesc(opClass="SimdStridedStore", opLat=3),
+        OpDesc(opClass="SimdIndexedLoad", opLat=3),
+        OpDesc(opClass="SimdIndexedStore", opLat=3),
+        OpDesc(opClass="SimdWholeRegisterLoad", opLat=3),
+        OpDesc(opClass="SimdWholeRegisterStore", opLat=3),
+        OpDesc(opClass="SimdUnitStrideSegmentedLoad", opLat=3),
+        OpDesc(opClass="SimdUnitStrideSegmentedStore", opLat=3),
         OpDesc(opClass="SimdExt", opLat=1),
         OpDesc(opClass="SimdFloatExt", opLat=1),
         OpDesc(opClass="SimdConfig", opLat=1),
@@ -190,9 +192,9 @@ class AraLatencyModel(LatencyModel):
             lats[m['SimdMult']] = (0 if vsew == 0 else 1)
             lats[m['SimdMultAcc']] = (0 if vsew == 0 else 1)
             
-            # Memory (AGU depth = 1)
-            lats[m['SimdUnitStrideLoad']] = 1
-            lats[m['SimdUnitStrideStore']] = 1
+            # Memory (AGU depth = 3)
+            lats[m['SimdUnitStrideLoad']] = 3
+            lats[m['SimdUnitStrideStore']] = 3
 
             # Permute / Reduction
             lats[m['SimdReduceAdd']] = 1
@@ -212,15 +214,20 @@ try:
         Custom RiscvO3CPU that automatically sets up the ARA Functional Unit Pool
         and constrains widths to match ARA hardware.
         """
-        # Constrain O3 pipeline widths to match ARA's 2-lane issue capability
-        fetchWidth = 2
-        decodeWidth = 2
-        renameWidth = 2
-        dispatchWidth = 2
-        issueWidth = 2
-        wbWidth = 2
-        commitWidth = 2
-        squashWidth = 2
+        # Constrain O3 pipeline widths to mimic CVA6's single-issue capability
+        fetchWidth = 1
+        decodeWidth = 1
+        renameWidth = 1
+        dispatchWidth = 1
+        issueWidth = 1
+        wbWidth = 1
+        commitWidth = 1
+        squashWidth = 1
+
+        # Reduce buffer sizes to match CVA6's shallow pipeline and scoreboard
+        numROBEntries = 32
+        numPhysIntRegs = 64
+        numPhysFloatRegs = 64
 
         # Increase TimeBuffer sizes to ensure they are deep enough
         # for long ARA RTL latencies (e.g., 74-cycle division).
@@ -237,6 +244,9 @@ try:
             # have a clear parent-child relationship. We instantiate them inside
             # the constructor so they are immediately attached to their parents.
             for iq in self.instQueues:
+                # Set IQ size to match CVA6 (mimicking Suggestion #1)
+                iq.numEntries = 16
+
                 # We provide a fresh set of functional units for every Instruction Queue (IQ).
                 # This prevents 'multiple parent' and 'orphan node' RuntimeErrors.
                 #

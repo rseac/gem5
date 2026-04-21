@@ -58,11 +58,11 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '/gem5/
 
 
 from gem5.components.boards.simple_board import SimpleBoard
+from gem5.components.boards.abstract_board import AbstractBoard
 from gem5.components.cachehierarchies.classic.private_l1_private_l2_cache_hierarchy import (
     PrivateL1PrivateL2CacheHierarchy,
 )
-#from gem5.components.memory import SingleChannelDDR3_1600
-from gem5.components.memory import SingleChannelDDR4_2400
+from gem5.components.memory.simple import SingleChannelSimpleMemory
 from gem5.components.processors.base_cpu_core import BaseCPUCore
 from gem5.components.processors.base_cpu_processor import BaseCPUProcessor
 from gem5.isas import ISA
@@ -70,6 +70,7 @@ import gem5.resources.resource as res
 from gem5.resources.resource import obtain_resource
 from gem5.simulate.simulator import Simulator
 from gem5.utils.requires import requires
+from gem5.utils.override import overrides
 # from cpu.o3.AraConfig import AraFUPool # Removed
 
 class RVVCore(BaseCPUCore):
@@ -138,6 +139,13 @@ parser.add_argument("--disable-chaining", action="store_false", dest="enable_cha
 parser.add_argument("--vector-timing-throughput", type=int, default=4, help="Number of elements per cycle for timing model")
 parser.add_argument("--simd-units", type=int, default=2, help="Number of physical SIMD lanes")
 
+# Cache/Memory Calibration Parameters
+parser.add_argument("--l1d-lat", type=int, default=4, help="L1D hit latency")
+parser.add_argument("--l1d-mshrs", type=int, default=2, help="L1D MSHRs")
+parser.add_argument("--l2-lat", type=int, default=12, help="L2 hit latency")
+parser.add_argument("--l2-mshrs", type=int, default=4, help="L2 MSHRs")
+parser.add_argument("--mem-lat", type=str, default="50ns", help="Memory latency")
+
 args = parser.parse_args()
 
 # Import the selected CPU model
@@ -149,13 +157,44 @@ else:
     print(f"Error: Unknown CPU type {args.cpu_type}")
     sys.exit(1)
 
-cache_hierarchy = PrivateL1PrivateL2CacheHierarchy(
-    #l1d_size="32KiB", l1i_size="32KiB", l2_size="512KiB"
-    l1d_size=args.l1d, l1i_size="32KiB", l2_size=args.l2
+# Custom Cache Hierarchy to allow latency/MSHR overrides
+class AraCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
+    def __init__(self, l1d_size, l1i_size, l2_size, l1d_lat, l1d_mshrs, l2_lat, l2_mshrs):
+        super().__init__(l1d_size=l1d_size, l1i_size=l1i_size, l2_size=l2_size)
+        self._l1d_lat = l1d_lat
+        self._l1d_mshrs = l1d_mshrs
+        self._l2_lat = l2_lat
+        self._l2_mshrs = l2_mshrs
+
+    @overrides(PrivateL1PrivateL2CacheHierarchy)
+    def incorporate_cache(self, board: AbstractBoard) -> None:
+        super().incorporate_cache(board)
+        # Apply overrides after the base class has instantiated the caches
+        for i in range(board.get_processor().get_num_cores()):
+            # In PrivateL1PrivateL2CacheHierarchy, l1d_node.cache is the SimObject
+            l1d = getattr(self, f"l1d-cache-{i}")
+            l1d.tag_latency = self._l1d_lat
+            l1d.data_latency = self._l1d_lat
+            l1d.mshrs = self._l1d_mshrs
+
+            l2 = getattr(self, f"l2-cache-{i}")
+            l2.tag_latency = self._l2_lat
+            l2.data_latency = self._l2_lat
+            l2.mshrs = self._l2_mshrs
+
+cache_hierarchy = AraCacheHierarchy(
+    l1d_size=args.l1d, l1i_size="32KiB", l2_size=args.l2,
+    l1d_lat=args.l1d_lat, l1d_mshrs=args.l1d_mshrs,
+    l2_lat=args.l2_lat, l2_mshrs=args.l2_mshrs
 )
 
-#memory = SingleChannelDDR3_1600()
-memory = SingleChannelDDR4_2400(size="8GiB")
+# Use SimpleMemory to model the low-latency SRAM/L2 in ARA RTL
+memory = SingleChannelSimpleMemory(
+    latency=args.mem_lat,
+    latency_var="0ns",
+    bandwidth="128GiB/s", # Very high bandwidth to let cache hierarchy dominate
+    size="8GiB"
+)
 
 processor = BaseCPUProcessor(
     cores=[RVVCore(args.elen, args.vlen, i, args.enable_chaining, args.vector_timing_throughput, args.simd_units) for i in range(args.cores)]

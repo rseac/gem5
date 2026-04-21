@@ -2,7 +2,7 @@
 #define TSVC_COMMON_HDR
 
 #define iterations 1
-#define LEN_1D 32000
+#define LEN_1D 15360
 #define LEN_2D 256
 
 //#define iterations 100000
