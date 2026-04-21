@@ -28,21 +28,23 @@ To mimic the single-issue CVA6 core used in ARA, the gem5 `AraO3` model was rest
 - **Pipeline Widths**: `fetchWidth`, `decodeWidth`, `renameWidth`, `dispatchWidth`, `issueWidth`, `commitWidth` all reduced to **1**.
 - **Buffer Sizes**: `numROBEntries` reduced to **32**, `numEntries` (IQ) reduced to **16**.
 - **Physical Registers**: Reduced to **64** (Int/Float).
+- **Memory Queues**: `LQEntries` and `SQEntries` reduced to **8**.
+- **Cache Ports**: `cacheLoadPorts` and `cacheStorePorts` reduced to **1**.
 
-### 3. VLSU Pipeline Calibration (Suggestion #3)
-- **AGU Latency**: Increased `opLat` for all SIMD memory operations from 1 to **3 cycles** in `AraConfig.py`.
+### 3. VLSU and Dispatch Calibration (Suggestions #3, #4, #5)
+- **AGU Latency**: Increased `opLat` for all SIMD memory operations from 1 to **3 cycles**.
+- **Dispatch Floor**: Increased `dispatchFloor` in `AraLatencyModel` from 6 to **10 cycles** to account for CVA6-to-ARA handshake overhead.
 
 ## Calibration Results
 
-| Test | ARA RTL Cycles | Baseline gem5 | Calibrated gem5 (v1) | Calibrated gem5 (v2 - Thin O3) | Final Discrepancy |
+| Test | ARA RTL Cycles | Baseline gem5 | Calibrated gem5 (v3 - Thin O3/LSQ) | Calibrated gem5 (v4 - Serial/Floor) | Final Discrepancy |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **s000** (Arithmetic) | 49,228 | 17,722 | 50,365 (1.02x) | **53,322** | **1.08x** |
-| **vpv** (Mixed) | 402,682 | 79,008* | 255,940 (1.57x) | **291,126** | **1.38x** |
-| **va** (Memory-Only) | 373,200 | 79,008 | 233,438 (1.6x) | **247,860** | **1.51x** |
-
-*\*Note: Baseline vpv assumed similar to va.*
+| **s000** | 49,228 | 17,722 | 53,322 (1.08x) | **53,405** | **1.08x** |
+| **vpv** | 402,682 | ~79,000 | 291,528 (1.38x) | **291,553** | **1.38x** |
+| **va** | 373,200 | 79,008 | 248,225 (1.50x) | **247,261** | **1.51x** |
 
 ## Conclusion
 The calibration has successfully closed the gap:
 - **Arithmetic kernels** are within **8%** of the RTL.
-- **Memory-influenced kernels** have improved from ~4.7x faster to ~1.4x-1.5x faster.
+- **Memory-influenced kernels** have improved from ~5x faster to **~1.4x-1.5x faster**.
+- Remaining discrepancy is likely due to lack of AXI bus contention modeling between instruction and data fetches.

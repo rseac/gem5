@@ -142,6 +142,8 @@ parser.add_argument("--simd-units", type=int, default=2, help="Number of physica
 # Cache/Memory Calibration Parameters
 parser.add_argument("--l1d-lat", type=int, default=4, help="L1D hit latency")
 parser.add_argument("--l1d-mshrs", type=int, default=2, help="L1D MSHRs")
+parser.add_argument("--l1i-lat", type=int, default=4, help="L1I hit latency")
+parser.add_argument("--l1i-mshrs", type=int, default=2, help="L1I MSHRs")
 parser.add_argument("--l2-lat", type=int, default=12, help="L2 hit latency")
 parser.add_argument("--l2-mshrs", type=int, default=4, help="L2 MSHRs")
 parser.add_argument("--mem-lat", type=str, default="50ns", help="Memory latency")
@@ -159,10 +161,12 @@ else:
 
 # Custom Cache Hierarchy to allow latency/MSHR overrides
 class AraCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
-    def __init__(self, l1d_size, l1i_size, l2_size, l1d_lat, l1d_mshrs, l2_lat, l2_mshrs):
+    def __init__(self, l1d_size, l1i_size, l2_size, l1d_lat, l1d_mshrs, l1i_lat, l1i_mshrs, l2_lat, l2_mshrs):
         super().__init__(l1d_size=l1d_size, l1i_size=l1i_size, l2_size=l2_size)
         self._l1d_lat = l1d_lat
         self._l1d_mshrs = l1d_mshrs
+        self._l1i_lat = l1i_lat
+        self._l1i_mshrs = l1i_mshrs
         self._l2_lat = l2_lat
         self._l2_mshrs = l2_mshrs
 
@@ -177,6 +181,11 @@ class AraCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
             l1d.data_latency = self._l1d_lat
             l1d.mshrs = self._l1d_mshrs
 
+            l1i = getattr(self, f"l1i-cache-{i}")
+            l1i.tag_latency = self._l1i_lat
+            l1i.data_latency = self._l1i_lat
+            l1i.mshrs = self._l1i_mshrs
+
             l2 = getattr(self, f"l2-cache-{i}")
             l2.tag_latency = self._l2_lat
             l2.data_latency = self._l2_lat
@@ -185,6 +194,7 @@ class AraCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
 cache_hierarchy = AraCacheHierarchy(
     l1d_size=args.l1d, l1i_size="32KiB", l2_size=args.l2,
     l1d_lat=args.l1d_lat, l1d_mshrs=args.l1d_mshrs,
+    l1i_lat=args.l1i_lat, l1i_mshrs=args.l1i_mshrs,
     l2_lat=args.l2_lat, l2_mshrs=args.l2_mshrs
 )
 

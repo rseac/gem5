@@ -148,9 +148,9 @@ class AraLatencyModel(LatencyModel):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        # Global Floor: 6 cycles (RTL lane sequencer bottleneck)
+        # Global Floor: 10 cycles (increased from 6 to account for CVA6-to-ARA handshake)
         # Total latency will be max(Pipe + Throughput, Floor) + 1 issue
-        self.dispatchFloor = 6
+        self.dispatchFloor = 10
 
         def get_lats(vsew):
             # Pre-populate with 0 (falls back to standard FU opLat if not defined here)
@@ -224,10 +224,16 @@ try:
         commitWidth = 1
         squashWidth = 1
 
+        # Serialize memory accesses to match ARA RTL
+        cacheStorePorts = 1
+        cacheLoadPorts = 1
+
         # Reduce buffer sizes to match CVA6's shallow pipeline and scoreboard
         numROBEntries = 32
         numPhysIntRegs = 64
         numPhysFloatRegs = 64
+        LQEntries = 8
+        SQEntries = 8
 
         # Increase TimeBuffer sizes to ensure they are deep enough
         # for long ARA RTL latencies (e.g., 74-cycle division).
