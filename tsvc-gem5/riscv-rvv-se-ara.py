@@ -140,13 +140,14 @@ parser.add_argument("--vector-timing-throughput", type=int, default=4, help="Num
 parser.add_argument("--simd-units", type=int, default=2, help="Number of physical SIMD lanes")
 
 # Cache/Memory Calibration Parameters
-parser.add_argument("--l1d-lat", type=int, default=4, help="L1D hit latency")
+parser.add_argument("--l1d-lat", type=int, default=8, help="L1D hit latency")
 parser.add_argument("--l1d-mshrs", type=int, default=2, help="L1D MSHRs")
-parser.add_argument("--l1i-lat", type=int, default=4, help="L1I hit latency")
+parser.add_argument("--l1i-lat", type=int, default=8, help="L1I hit latency")
 parser.add_argument("--l1i-mshrs", type=int, default=2, help="L1I MSHRs")
 parser.add_argument("--l2-lat", type=int, default=12, help="L2 hit latency")
-parser.add_argument("--l2-mshrs", type=int, default=4, help="L2 MSHRs")
+parser.add_argument("--l2-mshrs", type=int, default=2, help="L2 MSHRs")
 parser.add_argument("--mem-lat", type=str, default="50ns", help="Memory latency")
+parser.add_argument("--bus-width", type=int, default=16, help="Data bus width in bytes (16=128-bit)")
 
 args = parser.parse_args()
 
@@ -159,23 +160,33 @@ else:
     print(f"Error: Unknown CPU type {args.cpu_type}")
     sys.exit(1)
 
-# Custom Cache Hierarchy to allow latency/MSHR overrides
+# Custom Cache Hierarchy to allow latency/MSHR/Width overrides
 class AraCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
-    def __init__(self, l1d_size, l1i_size, l2_size, l1d_lat, l1d_mshrs, l1i_lat, l1i_mshrs, l2_lat, l2_mshrs):
-        super().__init__(l1d_size=l1d_size, l1i_size=l1i_size, l2_size=l2_size)
+    def __init__(self, l1d_size, l1i_size, l2_size, l1d_lat, l1d_mshrs, l1i_lat, l1i_mshrs, l2_lat, l2_mshrs, bus_width):
+        from m5.objects import SystemXBar, BadAddr
+        # Custom membus with restricted width
+        membus = SystemXBar(width=bus_width)
+        membus.badaddr_responder = BadAddr()
+        membus.default = membus.badaddr_responder.pio
+        
+        super().__init__(l1d_size=l1d_size, l1i_size=l1i_size, l2_size=l2_size, membus=membus)
         self._l1d_lat = l1d_lat
         self._l1d_mshrs = l1d_mshrs
         self._l1i_lat = l1i_lat
         self._l1i_mshrs = l1i_mshrs
         self._l2_lat = l2_lat
         self._l2_mshrs = l2_mshrs
+        self._bus_width = bus_width
 
     @overrides(PrivateL1PrivateL2CacheHierarchy)
     def incorporate_cache(self, board: AbstractBoard) -> None:
         super().incorporate_cache(board)
         # Apply overrides after the base class has instantiated the caches
         for i in range(board.get_processor().get_num_cores()):
-            # In PrivateL1PrivateL2CacheHierarchy, l1d_node.cache is the SimObject
+            # Restrict L2Bus width (connecting L1s to L2)
+            self.l2buses[i].width = self._bus_width
+            
+            # In PrivateL1PrivateL2CacheHierarchy, nodes are added via self.add_root_child
             l1d = getattr(self, f"l1d-cache-{i}")
             l1d.tag_latency = self._l1d_lat
             l1d.data_latency = self._l1d_lat
@@ -195,7 +206,8 @@ cache_hierarchy = AraCacheHierarchy(
     l1d_size=args.l1d, l1i_size="32KiB", l2_size=args.l2,
     l1d_lat=args.l1d_lat, l1d_mshrs=args.l1d_mshrs,
     l1i_lat=args.l1i_lat, l1i_mshrs=args.l1i_mshrs,
-    l2_lat=args.l2_lat, l2_mshrs=args.l2_mshrs
+    l2_lat=args.l2_lat, l2_mshrs=args.l2_mshrs,
+    bus_width=args.bus_width
 )
 
 # Use SimpleMemory to model the low-latency SRAM/L2 in ARA RTL

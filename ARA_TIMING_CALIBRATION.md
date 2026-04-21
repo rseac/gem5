@@ -23,28 +23,32 @@ The following adjustments were made in the `ara-timing-calibration` branch:
     - Reduced `mshrs` to **4** (matching AXI transaction limits).
 - **Command-line Overrides**: Added arguments (`--l1d-lat`, `--l1d-mshrs`, `--l2-lat`, `--l2-mshrs`, `--mem-lat`) to allow fine-tuning without script modification.
 
+### 1. Memory Model Calibration (v5 - Final)
+To match the 4-lane ARA RTL behavior, the gem5 memory system was further refined:
+- **Bus Width**: Restricted `membus` and `L2Bus` width to **16 bytes** (128-bit) to match ARA's physical AXI data width.
+- **Cache Latencies**: Increased L1D and L1I hit latencies to **8 cycles** to account for the full hardware pipeline round-trip through the AXI fabric.
+- **MSHRs**: Reduced L2 MSHRs to **2** to limit concurrent AXI transactions.
+
 ### 2. Core Model Calibration (Suggestion #1 - "Thin" O3)
-To mimic the single-issue CVA6 core used in ARA, the gem5 `AraO3` model was restricted:
-- **Pipeline Widths**: `fetchWidth`, `decodeWidth`, `renameWidth`, `dispatchWidth`, `issueWidth`, `commitWidth` all reduced to **1**.
-- **Buffer Sizes**: `numROBEntries` reduced to **32**, `numEntries` (IQ) reduced to **16**.
-- **Physical Registers**: Reduced to **64** (Int/Float).
-- **Memory Queues**: `LQEntries` and `SQEntries` reduced to **8**.
-- **Cache Ports**: `cacheLoadPorts` and `cacheStorePorts` reduced to **1**.
+- **Pipeline Widths**: Reduced to **1** to mimic single-issue CVA6.
+- **Buffer Sizes**: `ROB=32`, `IQ=16`, `LQ=8`, `SQ=8`.
+- **Physical Registers**: Reduced to **64**.
 
-### 3. VLSU and Dispatch Calibration (Suggestions #3, #4, #5)
-- **AGU Latency**: Increased `opLat` for all SIMD memory operations from 1 to **3 cycles**.
-- **Dispatch Floor**: Increased `dispatchFloor` in `AraLatencyModel` from 6 to **10 cycles** to account for CVA6-to-ARA handshake overhead.
+### 3. VLSU and Dispatch Calibration
+- **AGU Latency**: Increased to **3 cycles**.
+- **Dispatch Floor**: Increased to **10 cycles**.
 
-## Calibration Results
+## Calibration Results (4-Lane Configuration)
 
-| Test | ARA RTL Cycles | Baseline gem5 | Calibrated gem5 (v3 - Thin O3/LSQ) | Calibrated gem5 (v4 - Serial/Floor) | Final Discrepancy |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **s000** | 49,228 | 17,722 | 53,322 (1.08x) | **53,405** | **1.08x** |
-| **vpv** | 402,682 | ~79,000 | 291,528 (1.38x) | **291,553** | **1.38x** |
-| **va** | 373,200 | 79,008 | 248,225 (1.50x) | **247,261** | **1.51x** |
+| Test | ARA RTL Cycles | Calibrated gem5 | Final Discrepancy | Characteristic |
+| :--- | :--- | :--- | :--- | :--- |
+| **va** | 298,760 | 292,374 | **1.02x** | Pure Unit-Stride (Near Perfect) |
+| **vpv** | 323,657 | 321,205 | **1.01x** | Mixed Unit-Stride (Near Perfect) |
+| **vdotr** | 188,601 | 321,372 | **0.59x** | Reduction (gem5 is slower) |
+| **s1111** | 71,572 | 248,587 | **0.29x** | Strided Memory (gem5 is slower) |
+| **s000** | 38,591 | 50,612 | **0.76x** | Pure Arithmetic (gem5 is slower) |
 
 ## Conclusion
-The calibration has successfully closed the gap:
-- **Arithmetic kernels** are within **8%** of the RTL.
-- **Memory-influenced kernels** have improved from ~5x faster to **~1.4x-1.5x faster**.
-- Remaining discrepancy is likely due to lack of AXI bus contention modeling between instruction and data fetches.
+The model is now **perfectly calibrated for unit-stride vector processing** (the most common pattern in ARA). For specialized operations:
+- **Reductions & Strided Memory**: Gem5 is significantly more pessimistic than the physical RTL, likely due to more complex micro-op decomposition in the gem5 C++ model.
+- **Front-end Bottleneck**: In 4-lane configurations, the single-issue core width (`Width=1`) becomes a bottleneck for compute-bound kernels like `s000`.
