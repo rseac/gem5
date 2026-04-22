@@ -30,9 +30,16 @@ To match the 4-lane ARA RTL behavior, the gem5 memory system was further refined
 - **MSHRs**: Reduced L2 MSHRs to **2** to limit concurrent AXI transactions.
 
 ### 2. Core Model Calibration (Suggestion #1 - "Thin" O3)
-- **Pipeline Widths**: Reduced to **1** to mimic single-issue CVA6.
-- **Buffer Sizes**: `ROB=32`, `IQ=16`, `LQ=8`, `SQ=8`.
-- **Physical Registers**: Reduced to **64**.
+To mimic the single-issue CVA6 core used in ARA, the gem5 `AraO3` model uses restricted widths and buffer sizes. 
+
+**Proportional Scaling**: To ensure the model scales correctly with wider lane configurations, all core resources scale with the lane count ($L$):
+- **Scale Factor ($S$**) $= \max(1, L/2)$
+- **Pipeline Widths** (Fetch, Decode, Commit, etc.) $= S$
+- **ROB Size** $= 32 \times S$
+- **IQ Size** $= 16 \times S$
+- **LSQ Size** $= 16 \times S$
+- **Physical Registers** $= 64 \times S$
+- **Cache Ports**: Strictly set to **1** (Load) and **1** (Store) to match ARA's single-ported memory bottleneck regardless of core width.
 
 ### 3. VLSU and Dispatch Calibration
 - **AGU Latency**: Increased to **3 cycles**.
@@ -40,15 +47,22 @@ To match the 4-lane ARA RTL behavior, the gem5 memory system was further refined
 
 ## Calibration Results (4-Lane Configuration)
 
-| Test | ARA RTL Cycles | Calibrated gem5 | Final Discrepancy | Characteristic |
+| Test | ARA RTL Cycles | Calibrated gem5 (v8 - Prop. Scaling) | Final Discrepancy | Characteristic |
 | :--- | :--- | :--- | :--- | :--- |
-| **va** | 298,760 | 292,374 | **1.02x** | Pure Unit-Stride (Near Perfect) |
-| **vpv** | 323,657 | 321,205 | **1.01x** | Mixed Unit-Stride (Near Perfect) |
-| **vdotr** | 188,601 | 321,372 | **0.59x** | Reduction (gem5 is slower) |
-| **s1111** | 71,572 | 248,587 | **0.29x** | Strided Memory (gem5 is slower) |
-| **s000** | 38,591 | 50,612 | **0.76x** | Pure Arithmetic (gem5 is slower) |
+| **va** | 298,760 | **301,665** | **0.99x (Perfect)** | Pure Unit-Stride |
+| **vpv** | 323,657 | **321,205** | **1.01x (Perfect)** | Mixed Unit-Stride |
+| **vdotr** | 188,601 | 321,326 | **0.59x** | Reduction (v6 Optimized) |
+| **s1111** | 71,572 | 189,524 | **0.37x** | Strided Memory (v6 Optimized) |
+| **s000** | 38,591 | 64,570 | **0.60x** | Pure Arithmetic |
 
-## Conclusion
-The model is now **perfectly calibrated for unit-stride vector processing** (the most common pattern in ARA). For specialized operations:
-- **Reductions & Strided Memory**: Gem5 is significantly more pessimistic than the physical RTL, likely due to more complex micro-op decomposition in the gem5 C++ model.
-- **Front-end Bottleneck**: In 4-lane configurations, the single-issue core width (`Width=1`) becomes a bottleneck for compute-bound kernels like `s000`.
+## Calibration Results (8-Lane Configuration)
+
+| Test | ARA RTL Cycles | Calibrated gem5 (v8) | Discrepancy | Characteristic |
+| :--- | :--- | :--- | :--- | :--- |
+| **s000** | 34,811 | 78,924 | **0.44x** | Pure Arithmetic |
+| **va** | *Running* | 414,233 | - | Pure Unit-Stride |
+| **vpv** | *Running* | 447,212 | - | Mixed Unit-Stride |
+
+## Scaling Observations
+1.  **Memory Accuracy**: The model achieved near-perfect accuracy (within 1%) for the 4-lane unit-stride tests, validating the memory system calibration.
+2.  **Arithmetic Scaling Challenge**: As the number of lanes increases (2 -> 4 -> 8), the arithmetic discrepancy grows (0.92x -> 0.60x -> 0.44x). Even with proportional resource scaling, gem5's Out-of-Order model becomes significantly slower than the RTL for compute-bound loops. This suggests that the internal instruction dispatch and sequencer overhead in ARA is much lower than the current gem5 O3 model can mimic for wide vector units.

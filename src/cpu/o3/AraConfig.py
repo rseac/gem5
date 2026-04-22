@@ -90,10 +90,10 @@ class AraSIMD_Pipelined(FUDesc):
         OpDesc(opClass="SimdUnitStrideStore", opLat=3),
         OpDesc(opClass="SimdUnitStrideMaskLoad", opLat=3),
         OpDesc(opClass="SimdUnitStrideMaskStore", opLat=3),
-        OpDesc(opClass="SimdStridedLoad", opLat=3),
-        OpDesc(opClass="SimdStridedStore", opLat=3),
-        OpDesc(opClass="SimdIndexedLoad", opLat=3),
-        OpDesc(opClass="SimdIndexedStore", opLat=3),
+        OpDesc(opClass="SimdStridedLoad", opLat=1),
+        OpDesc(opClass="SimdStridedStore", opLat=1),
+        OpDesc(opClass="SimdIndexedLoad", opLat=1),
+        OpDesc(opClass="SimdIndexedStore", opLat=1),
         OpDesc(opClass="SimdWholeRegisterLoad", opLat=3),
         OpDesc(opClass="SimdWholeRegisterStore", opLat=3),
         OpDesc(opClass="SimdUnitStrideSegmentedLoad", opLat=3),
@@ -145,12 +145,13 @@ from m5.objects.LatencyModel import LatencyModel
 from m5.objects.FuncUnit import OpClass
 
 class AraLatencyModel(LatencyModel):
-    def __init__(self, **kwargs):
+    def __init__(self, simd_units=2, **kwargs):
         super().__init__(**kwargs)
 
-        # Global Floor: 10 cycles (increased from 6 to account for CVA6-to-ARA handshake)
-        # Total latency will be max(Pipe + Throughput, Floor) + 1 issue
-        self.dispatchFloor = 10
+        # Dynamic Dispatch Floor: max(4, 12 - L)
+        # This accounts for the core-to-vector handshake becoming a smaller
+        # percentage of total execution as the vector units grow.
+        self.dispatchFloor = max(4, 12 - simd_units)
 
         def get_lats(vsew):
             # Pre-populate with 0 (falls back to standard FU opLat if not defined here)
@@ -212,46 +213,54 @@ try:
     class AraO3CPU(RiscvO3CPU):
         """
         Custom RiscvO3CPU that automatically sets up the ARA Functional Unit Pool
-        and constrains widths to match ARA hardware.
+        and scales core resources based on the number of vector lanes.
         """
-        # Constrain O3 pipeline widths to mimic CVA6's single-issue capability
-        fetchWidth = 1
-        decodeWidth = 1
-        renameWidth = 1
-        dispatchWidth = 1
-        issueWidth = 1
-        wbWidth = 1
-        commitWidth = 1
-        squashWidth = 1
+        def __init__(self, simd_units=2, **kwargs):
+            # Proportional Scaling: Each 2 lanes add 1 wide to the scalar core
+            # 2 lanes -> 1 wide, 4 lanes -> 2 wide, 8 lanes -> 4 wide
+            scale = max(1, simd_units // 2)
 
-        # Serialize memory accesses to match ARA RTL
-        cacheStorePorts = 1
-        cacheLoadPorts = 1
+            # --- Scaled Pipeline Widths ---
+            self.fetchWidth = scale
+            self.decodeWidth = scale
+            self.renameWidth = scale
+            self.dispatchWidth = scale
+            self.issueWidth = scale
+            self.wbWidth = scale
+            self.commitWidth = scale
+            self.squashWidth = scale
 
-        # Reduce buffer sizes to match CVA6's shallow pipeline and scoreboard
-        numROBEntries = 32
-        numPhysIntRegs = 64
-        numPhysFloatRegs = 64
-        LQEntries = 8
-        SQEntries = 8
+            # --- Scaled Core Buffer Sizes ---
+            # We scale buffers to ensure the wider front-end doesn't cause
+            # "resource full" stalls before the lanes are saturated.
+            self.numROBEntries = 32 * scale
+            self.numPhysIntRegs = 64 * scale
+            self.numPhysFloatRegs = 64 * scale
+            self.LQEntries = 16 * scale
+            self.SQEntries = 16 * scale
 
-        # Increase TimeBuffer sizes to ensure they are deep enough
-        # for long ARA RTL latencies (e.g., 74-cycle division).
-        backComSize = 100
-        forwardComSize = 100
-
-        def __init__(self, **kwargs):
             super().__init__(**kwargs)
 
-            # Assign the ARA Latency Model
-            self.latency_model = AraLatencyModel()
+            # Assign the ARA Latency Model with lane-aware dispatch floor
+            self.latency_model = AraLatencyModel(simd_units=simd_units)
+
+            # --- Serialize Cache Ports ---
+            # Even with multiple lanes, requests are serialized at the cache level
+            # to match ARA's single-ported memory model.
+            self.cacheStorePorts = 1
+            self.cacheLoadPorts = 1
+
+            # Increase TimeBuffer sizes to ensure they are deep enough
+            # for long ARA RTL latencies (e.g., 74-cycle division).
+            self.backComSize = 100
+            self.forwardComSize = 100
 
             # CRITICAL: In gem5, SimObject instances (like functional units) must
             # have a clear parent-child relationship. We instantiate them inside
             # the constructor so they are immediately attached to their parents.
             for iq in self.instQueues:
-                # Set IQ size to match CVA6 (mimicking Suggestion #1)
-                iq.numEntries = 16
+                # Set IQ size proportional to scale (Deeper for wider lanes)
+                iq.numEntries = 32 * scale
 
                 # We provide a fresh set of functional units for every Instruction Queue (IQ).
                 # This prevents 'multiple parent' and 'orphan node' RuntimeErrors.

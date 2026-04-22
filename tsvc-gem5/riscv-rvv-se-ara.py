@@ -75,8 +75,8 @@ from gem5.utils.override import overrides
 
 class RVVCore(BaseCPUCore):
     def __init__(self, elen, vlen, cpu_id, enable_chaining, vector_timing_throughput, simd_units):
-        # Use our custom SelectedCPU which handles FUPool configuration automatically
-        core = SelectedCPU(cpu_id=cpu_id)
+        # Use our custom SelectedCPU which handles FUPool and width configuration
+        core = SelectedCPU(cpu_id=cpu_id, simd_units=simd_units)
         
         # Configure the CPU Core
         core.enable_vector_chaining = enable_chaining
