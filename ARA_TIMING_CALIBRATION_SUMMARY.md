@@ -32,9 +32,11 @@ To mimic the single-issue CVA6 core while allowing enough slack for wide vector 
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **2** | **s000** | 49,228 | 53,405 | **0.92x** | Pure Arithmetic |
 | | **va** | 373,200 | 247,261 | **1.51x** | Pure Unit-Stride |
-| | **s111** | 522,565 | 120,446 | **4.33x** | Dependency/Stride |
+| | **vtv** | 395,188 | 1,588,433 | **0.25x** | Vector Product |
+| | **s111** | 522,565 | 511,741* | **1.02x** | **Dependency Loop (Accurate w/ Penalty)** |
 | **4** | **va** | 298,760 | **301,665** | **0.99x** | **Unit-Stride (Perfect)** |
 | | **vpv** | 323,657 | **321,205** | **1.01x** | **Mixed Stride (Perfect)** |
+| | **vtv** | 1,084,574 | 1,588,433 | **0.68x** | Vector Product |
 | | **s000** | 38,591 | 64,570 | **0.60x** | Pure Arithmetic |
 | | **vdotr** | 188,601 | 321,326 | **0.59x** | Reduction |
 | | **s1111** | 71,572 | 189,524 | **0.37x** | Strided Memory |
