@@ -71,7 +71,6 @@ from gem5.resources.resource import obtain_resource
 from gem5.simulate.simulator import Simulator
 from gem5.utils.requires import requires
 from gem5.utils.override import overrides
-# from cpu.o3.AraConfig import AraFUPool # Removed
 
 class RVVCore(BaseCPUCore):
     def __init__(self, elen, vlen, cpu_id, enable_chaining, vector_timing_throughput, 
@@ -86,12 +85,6 @@ class RVVCore(BaseCPUCore):
         core.vector_timing_throughput = vector_timing_throughput
         core.simd_units = simd_units
         
-        # --- MODULAR LATENCY MODEL ---
-        # The AraO3CPU constructor automatically sets up the AraLatencyModel.
-        # This provides a hook for researchers to swap in different timing models
-        # without recompiling gem5.
-        # -----------------------------
-
         super().__init__(core=core, isa=ISA.RISCV)
         
         # --- CRITICAL FIX: Propagate to ISA ---
@@ -134,7 +127,7 @@ parser.add_argument("-e", "--elen", required=False, type=int, default=64) # spec
 parser.add_argument("-d", "--l1d", required=False, type=str, default="32KiB")
 parser.add_argument("-2", "--l2", required=False, type=str, default="512KiB")
 
-parser.add_argument("-p", "--parms", required=False, type = str, default='2048')
+parser.add_argument("-p", "--parms", required=False, type = str, default='')
 parser.add_argument("--cpu-type", type=str, default="AraO3", choices=["AraO3", "AraMinor"], 
                     help="CPU model to use: AraO3 (O3CPU) or AraMinor (MinorCPU)")
 parser.add_argument("--enable-chaining", action="store_true", default=True, help="Enable vector chaining")
@@ -231,10 +224,6 @@ processor = BaseCPUProcessor(
                    args.simd_units, args.is_araxl, args.nr_clusters, args.ring_latency) for i in range(args.cores)]
 )
 
-# --- VITAL: ASSIGN ARA FU POOL ---
-# processor.fuPool = AraFUPool() # <--- Incorrect, ignored by BaseCPUProcessor
-# ---------------------------------
-
 board = SimpleBoard(
     clk_freq="1GHz",
     processor=processor,
@@ -248,7 +237,7 @@ else:
 
 # --- Formatted Parameter Summary ---
 print("=" * 50)
-print("       ARA RISC-V VECTOR SIMUATION CONFIG")
+print("       ARA RISC-V VECTOR SIMULATION CONFIG")
 print("-" * 50)
 print(f"  Binary Resource:  {args.resource}")
 print(f"  Program Args:     {args.parms}")
@@ -269,7 +258,6 @@ print("-" * 50)
 print("Beginning simulation...")
 print("=" * 50)
 
-# board.set_se_binary_workload(binary, arguments=[args.parms])
 board.set_se_binary_workload(binary, arguments=args.parms.split())
 
 import m5 # For curTick()
@@ -277,8 +265,6 @@ simulator = Simulator(board=board, full_system=False)
 
 simulator.run()
 
-# Output cycles (assuming 1GHz clock as configured in SimpleBoard)
-# 1GHz = 1000 ps period (default gem5 tick is 1ps)
 cycles = int(m5.curTick() / 1000)
 
 print("\n" + "=" * 50)

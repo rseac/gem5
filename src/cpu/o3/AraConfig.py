@@ -24,6 +24,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import math
 from m5.objects.FuncUnit import *
 from m5.objects.FuncUnitConfig import *
 from m5.objects.FUPool import FUPool
@@ -41,69 +42,71 @@ class AraSIMD_Pipelined(FUDesc):
     mirrors the ARA hardware behaviour where a new instruction can enter a
     pipelined VFU while the previous one is still streaming elements through.
     """
-    opList = [
-        # --- Integer Arithmetic ---
-        OpDesc(opClass="SimdAdd", opLat=1),
-        OpDesc(opClass="SimdAddAcc", opLat=1),
-        OpDesc(opClass="SimdAlu", opLat=1),
-        OpDesc(opClass="SimdCmp", opLat=1),
-        OpDesc(opClass="SimdCvt", opLat=1),
-        OpDesc(opClass="SimdMisc", opLat=1),
-        OpDesc(opClass="SimdShift", opLat=1),
-        OpDesc(opClass="SimdShiftAcc", opLat=1),
+    def __init__(self, count=2, op_lat_mem=3, **kwargs):
+        super().__init__(**kwargs)
+        self.count = count
 
-        # --- Integer Multiply ---
-        OpDesc(opClass="SimdMult", opLat=1),
-        OpDesc(opClass="SimdMultAcc", opLat=1),
-        OpDesc(opClass="SimdMatMultAcc", opLat=1),
+        self.opList = [
+            # --- Integer Arithmetic ---
+            OpDesc(opClass="SimdAdd", opLat=1),
+            OpDesc(opClass="SimdAddAcc", opLat=1),
+            OpDesc(opClass="SimdAlu", opLat=1),
+            OpDesc(opClass="SimdCmp", opLat=1),
+            OpDesc(opClass="SimdCvt", opLat=1),
+            OpDesc(opClass="SimdMisc", opLat=1),
+            OpDesc(opClass="SimdShift", opLat=1),
+            OpDesc(opClass="SimdShiftAcc", opLat=1),
 
-        # --- Float Arithmetic ---
-        # RTL: LatFCompEW64=5, LatFCompEW32=4, LatFCompEW16=3, LatFCompEW8=2
-        # gem5 opClass does not distinguish element width, so opLat=4 is used as
-        # the EW32 (single-precision) representative — the dominant FP width in
-        # practice. EW64 workloads will see 1-cycle optimism; EW16/8 workloads
-        # will see 1-2 cycles pessimism.
-        OpDesc(opClass="SimdFloatAdd", opLat=10),
-        OpDesc(opClass="SimdFloatAlu", opLat=10),
-        OpDesc(opClass="SimdFloatMult", opLat=10),
-        OpDesc(opClass="SimdFloatMultAcc", opLat=10),
-        OpDesc(opClass="SimdFloatMatMultAcc", opLat=10),
+            # --- Integer Multiply ---
+            OpDesc(opClass="SimdMult", opLat=1),
+            OpDesc(opClass="SimdMultAcc", opLat=1),
+            OpDesc(opClass="SimdMatMultAcc", opLat=1),
 
-        # --- Float Misc / Compare ---
-        OpDesc(opClass="SimdFloatCmp", opLat=1),
-        OpDesc(opClass="SimdFloatMisc", opLat=1),
+            # --- Float Arithmetic ---
+            # RTL: LatFCompEW64=5, LatFCompEW32=4, LatFCompEW16=3, LatFCompEW8=2
+            # gem5 opClass does not distinguish element width, so opLat=4 is used as
+            # the EW32 (single-precision) representative — the dominant FP width in
+            # practice. EW64 workloads will see 1-cycle optimism; EW16/8 workloads
+            # will see 1-2 cycles pessimism.
+            OpDesc(opClass="SimdFloatAdd", opLat=10),
+            OpDesc(opClass="SimdFloatAlu", opLat=10),
+            OpDesc(opClass="SimdFloatMult", opLat=10),
+            OpDesc(opClass="SimdFloatMultAcc", opLat=10),
+            OpDesc(opClass="SimdFloatMatMultAcc", opLat=10),
 
-        # --- Float Conversion ---
-        OpDesc(opClass="SimdFloatCvt", opLat=2),
+            # --- Float Misc / Compare ---
+            OpDesc(opClass="SimdFloatCmp", opLat=1),
+            OpDesc(opClass="SimdFloatMisc", opLat=1),
 
-        # --- Reductions ---
-        OpDesc(opClass="SimdReduceAdd", opLat=1),
-        OpDesc(opClass="SimdReduceAlu", opLat=1),
-        OpDesc(opClass="SimdReduceCmp", opLat=1),
-        OpDesc(opClass="SimdFloatReduceAdd", opLat=1),
-        OpDesc(opClass="SimdFloatReduceCmp", opLat=1),
+            # --- Float Conversion ---
+            OpDesc(opClass="SimdFloatCvt", opLat=2),
 
-        # --- Load / Store Address Generation ---
-        # Increased to 3 cycles to account for internal shuffling and AXI request
-        # generation logic seen in ARA's addrgen.sv.
-        OpDesc(opClass="SimdUnitStrideLoad", opLat=3),
-        OpDesc(opClass="SimdUnitStrideStore", opLat=3),
-        OpDesc(opClass="SimdUnitStrideMaskLoad", opLat=3),
-        OpDesc(opClass="SimdUnitStrideMaskStore", opLat=3),
-        OpDesc(opClass="SimdStridedLoad", opLat=1),
-        OpDesc(opClass="SimdStridedStore", opLat=1),
-        OpDesc(opClass="SimdIndexedLoad", opLat=1),
-        OpDesc(opClass="SimdIndexedStore", opLat=1),
-        OpDesc(opClass="SimdWholeRegisterLoad", opLat=3),
-        OpDesc(opClass="SimdWholeRegisterStore", opLat=3),
-        OpDesc(opClass="SimdUnitStrideSegmentedLoad", opLat=3),
-        OpDesc(opClass="SimdUnitStrideSegmentedStore", opLat=3),
-        OpDesc(opClass="SimdExt", opLat=1),
-        OpDesc(opClass="SimdFloatExt", opLat=1),
-        OpDesc(opClass="SimdConfig", opLat=1),
-    ]
+            # --- Reductions ---
+            OpDesc(opClass="SimdReduceAdd", opLat=1),
+            OpDesc(opClass="SimdReduceAlu", opLat=1),
+            OpDesc(opClass="SimdReduceCmp", opLat=1),
+            OpDesc(opClass="SimdFloatReduceAdd", opLat=1),
+            OpDesc(opClass="SimdFloatReduceCmp", opLat=1),
 
-    count = 2
+            # --- Load / Store Address Generation ---
+            # Increased to 3 cycles (Ara) or 6 cycles (AraXL) to account for 
+            # internal shuffling and AXI request generation logic.
+            OpDesc(opClass="SimdUnitStrideLoad", opLat=op_lat_mem),
+            OpDesc(opClass="SimdUnitStrideStore", opLat=op_lat_mem),
+            OpDesc(opClass="SimdUnitStrideMaskLoad", opLat=op_lat_mem),
+            OpDesc(opClass="SimdUnitStrideMaskStore", opLat=op_lat_mem),
+            OpDesc(opClass="SimdStridedLoad", opLat=1),
+            OpDesc(opClass="SimdStridedStore", opLat=1),
+            OpDesc(opClass="SimdIndexedLoad", opLat=1),
+            OpDesc(opClass="SimdIndexedStore", opLat=1),
+            OpDesc(opClass="SimdWholeRegisterLoad", opLat=op_lat_mem),
+            OpDesc(opClass="SimdWholeRegisterStore", opLat=op_lat_mem),
+            OpDesc(opClass="SimdUnitStrideSegmentedLoad", opLat=op_lat_mem),
+            OpDesc(opClass="SimdUnitStrideSegmentedStore", opLat=op_lat_mem),
+            OpDesc(opClass="SimdExt", opLat=1),
+            OpDesc(opClass="SimdFloatExt", opLat=1),
+            OpDesc(opClass="SimdConfig", opLat=1),
+        ]
 
 
 class AraSIMD_IntDiv(FUDesc):
@@ -145,13 +148,17 @@ from m5.objects.LatencyModel import LatencyModel
 from m5.objects.FuncUnit import OpClass
 
 class AraLatencyModel(LatencyModel):
-    def __init__(self, simd_units=2, **kwargs):
+    def __init__(self, simd_units=2, is_araxl=False, nr_clusters=1,
+                 ring_latency=2, **kwargs):
         super().__init__(**kwargs)
 
         # Dynamic Dispatch Floor: max(4, 12 - L)
         # This accounts for the core-to-vector handshake becoming a smaller
         # percentage of total execution as the vector units grow.
-        self.dispatchFloor = max(4, 12 - simd_units)
+        # In AraXL, we increase the floor by 2 cycles to account for 
+        # additional spill registers in the cva6_cut and macro interfaces.
+        base_floor = max(4, 12 - simd_units)
+        self.dispatchFloor = base_floor + (2 if is_araxl else 0)
 
         def get_lats(vsew):
             # Pre-populate with 0 (falls back to standard FU opLat if not defined here)
@@ -193,14 +200,31 @@ class AraLatencyModel(LatencyModel):
             lats[m['SimdMult']] = (0 if vsew == 0 else 1)
             lats[m['SimdMultAcc']] = (0 if vsew == 0 else 1)
             
-            # Memory (AGU depth = 3)
-            lats[m['SimdUnitStrideLoad']] = 3
-            lats[m['SimdUnitStrideStore']] = 3
+            # Memory (AGU depth = 3 in Ara, 6 in AraXL)
+            mem_agu_lat = 6 if is_araxl else 3
+            lats[m['SimdUnitStrideLoad']] = mem_agu_lat
+            lats[m['SimdUnitStrideStore']] = mem_agu_lat
 
             # Permute / Reduction
-            lats[m['SimdReduceAdd']] = 1
-            lats[m['SimdFloatReduceAdd']] = 1
+            # AraXL reduction latency accounts for inter-cluster reduction tree.
+            # Each cluster hop costs ~2 * ring_latency cycles (round trip/sync).
+            inter_cluster_overhead = 0
+            if is_araxl and nr_clusters > 1:
+                # Logarithmic reduction tree overhead
+                inter_cluster_overhead = 2 * ring_latency * \
+                                        math.ceil(math.log2(nr_clusters))
             
+            lats[m['SimdReduceAdd']] = 1 + inter_cluster_overhead
+            lats[m['SimdFloatReduceAdd']] = 1 + inter_cluster_overhead
+            
+            # For slides (Permute), overhead is proportional to ring distance.
+            # We use an average distance of nr_clusters / 2 hops.
+            permute_overhead = 0
+            if is_araxl and nr_clusters > 1:
+                permute_overhead = 2 * ring_latency * (nr_clusters // 2)
+
+            lats[m['SimdMisc']] += permute_overhead
+
             return lats
 
         self.latenciesEW8  = get_lats(0)
@@ -215,64 +239,62 @@ try:
         Custom RiscvO3CPU that automatically sets up the ARA Functional Unit Pool
         and scales core resources based on the number of vector lanes.
         """
-        def __init__(self, simd_units=2, **kwargs):
-            # Proportional Scaling: Each 2 lanes add 1 wide to the scalar core
-            # 2 lanes -> 1 wide, 4 lanes -> 2 wide, 8 lanes -> 4 wide
-            scale = max(1, simd_units // 2)
+        def __init__(self, simd_units=2, nr_clusters=1, is_araxl=False, 
+                     ring_latency=2, **kwargs):
+            # Total ARA lanes = lanes_per_cluster (throughput) * nr_clusters
+            # For AraO3, simd_units is always 2 (chaining support).
+            # The actual lane count (throughput) is passed separately 
+            # to the ISA model via vector-timing-throughput.
+            
+            # We assume the user provides total lanes via an external param
+            # or it is inferred. Here we scale based on nr_clusters.
+            # Proportional Scaling: Higher cluster count implies a beefier core.
+            scale = max(1, nr_clusters)
 
             # --- Scaled Pipeline Widths ---
-            self.fetchWidth = scale
-            self.decodeWidth = scale
-            self.renameWidth = scale
-            self.dispatchWidth = scale
-            self.issueWidth = scale
-            self.wbWidth = scale
-            self.commitWidth = scale
-            self.squashWidth = scale
+            self.fetchWidth = scale * 2
+            self.decodeWidth = scale * 2
+            self.renameWidth = scale * 2
+            self.dispatchWidth = scale * 2
+            self.issueWidth = scale * 2
+            self.wbWidth = scale * 2
+            self.commitWidth = scale * 2
+            self.squashWidth = scale * 2
 
             # --- Scaled Core Buffer Sizes ---
-            # We scale buffers to ensure the wider front-end doesn't cause
-            # "resource full" stalls before the lanes are saturated.
-            self.numROBEntries = 32 * scale
-            self.numPhysIntRegs = 64 * scale
-            self.numPhysFloatRegs = 64 * scale
-            self.LQEntries = 16 * scale
-            self.SQEntries = 16 * scale
+            self.numROBEntries = 64 * scale
+            self.numPhysIntRegs = 128 * scale
+            self.numPhysFloatRegs = 128 * scale
+            self.LQEntries = 32 * scale
+            self.SQEntries = 32 * scale
 
             super().__init__(**kwargs)
 
-            # Assign the ARA Latency Model with lane-aware dispatch floor
-            self.latency_model = AraLatencyModel(simd_units=simd_units)
+            # Assign the ARA Latency Model with AraXL awareness
+            self.latency_model = AraLatencyModel(
+                simd_units=simd_units, 
+                is_araxl=is_araxl,
+                nr_clusters=nr_clusters,
+                ring_latency=ring_latency
+            )
 
             # --- Serialize Cache Ports ---
-            # Even with multiple lanes, requests are serialized at the cache level
-            # to match ARA's single-ported memory model.
             self.cacheStorePorts = 1
             self.cacheLoadPorts = 1
 
-            # Increase TimeBuffer sizes to ensure they are deep enough
-            # for long ARA RTL latencies (e.g., 74-cycle division).
             self.backComSize = 100
             self.forwardComSize = 100
 
-            # CRITICAL: In gem5, SimObject instances (like functional units) must
-            # have a clear parent-child relationship. We instantiate them inside
-            # the constructor so they are immediately attached to their parents.
-            for iq in self.instQueues:
-                # Set IQ size proportional to scale (Deeper for wider lanes)
-                iq.numEntries = 32 * scale
+            # Functional unit memory latency
+            mem_lat = 6 if is_araxl else 3
 
-                # We provide a fresh set of functional units for every Instruction Queue (IQ).
-                # This prevents 'multiple parent' and 'orphan node' RuntimeErrors.
-                #
-                # AraSIMD_Pipelined: count=simd_units (default 2) — the two slots
-                #   needed for gem5's WakeDependents chaining mechanism.
-                # AraSIMD_IntDiv / AraSIMD_FPDivSqrt: count=1 — enforces the
-                #   single-issue structural hazard on ARA's serial divide units.
+            for iq in self.instQueues:
+                iq.numEntries = 64 * scale
+
                 iq.fuPool = FUPool(FUList = [
                     IntALU(), IntMultDiv(), FP_ALU(), FP_MultDiv(),
                     ReadPort(),
-                    AraSIMD_Pipelined(count=self.simd_units),
+                    AraSIMD_Pipelined(count=simd_units, op_lat_mem=mem_lat),
                     AraSIMD_IntDiv(),
                     AraSIMD_FPDivSqrt(),
                     Matrix_Unit(), System_Unit(), PredALU(),
