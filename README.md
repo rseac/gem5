@@ -66,8 +66,11 @@ build/RISCV/gem5.opt rvv/riscv-rvv-se-ara.py \
 | `--vlen` | 512 | Vector register length in bits |
 | `--vector-timing-throughput` | 4 | **Number of ARA lanes** — scales `NrLanes` in the throughput formula |
 | `--simd-units` | 2 | FU pool slots for `AraSIMD_Pipelined` — always keep at 2 |
+| `--is-araxl` | off | Enable AraXL multi-cluster timing model |
+| `--nr-clusters` | 1 | Number of AraXL clusters (scales inter-cluster overhead) |
+| `--ring-latency` | 2 | Cycles per cluster hop in AraXL ring interconnect |
 
-`--vector-timing-throughput` should match the ARA hardware lane count (2, 4, 8, or 16). `--simd-units` should always be 2 regardless of lane count — see `README_ARA_sim.md` for a full explanation.
+`--vector-timing-throughput` should match the ARA hardware lane count (2, 4, 8, or 16). `--simd-units` should always be 2 regardless of lane count. For multi-cluster configurations, use `--is-araxl` and set `--nr-clusters` to the desired cluster count.
 
 ## Test Suite
 

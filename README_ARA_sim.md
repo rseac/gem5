@@ -162,6 +162,36 @@ When chaining is enabled and `chainingLatency < dynamicOpLatency` (i.e. the vect
 
 Vector loads cannot use `WakeDependents` because the data arrives from the cache, not from a fixed-latency FU. Instead, `LSQUnit::writeback()` is hooked: after `completeAcc()` makes the loaded data available, a 1-cycle `VectorLoadChainEvent` fires before the instruction is committed. 
 
+## AraXL (Multi-Cluster) Model
+
+The **AraXL** extension models a multi-cluster ARA configuration. In this mode, vector lanes are distributed across multiple clusters connected by a **Ring Interconnect**.
+
+### Enabling AraXL
+To enable the AraXL timing characteristics, use the following flags:
+```bash
+--is-araxl \
+--nr-clusters 4 \
+--ring-latency 2
+```
+
+### AraXL Timing Characteristics
+When `--is-araxl` is enabled, the timing model automatically adjusts:
+1.  **Inter-Cluster Reduction Overhead**: Reductions (`vfredsum`) incur a logarithmic overhead: `2 * ring_latency * log2(nr_clusters)`.
+2.  **Permutation/Slide Overhead**: Vector slides incur an average overhead proportional to the ring distance: `2 * ring_latency * (nr_clusters / 2)`.
+3.  **Increased Memory Latency**: Load/Store address generation latency increases from 3 to 6 cycles to account for the additional `axi_cut` stages in the multi-cluster shuffle and align units.
+4.  **Frontend Latency**: The sequencer dispatch floor increases by 2 cycles to model extra spill registers in the `cva6_cut` and macro interfaces.
+5.  **Core Scaling**: The O3 core (ROB, registers, fetch width) scales proportionally with `--nr-clusters` to reflect the larger frontend needed to saturate multiple vector clusters.
+
+### Summary Table: ARA vs AraXL
+
+| Feature | Standard ARA | AraXL |
+| :--- | :---: | :---: |
+| `is_araxl` | `False` | `True` |
+| `nr_clusters` | 1 | 2, 4, 8, ... |
+| `SimdUnitStrideLoad` Latency | 3 | 6 |
+| `SimdReduceAdd` Latency | 1 | 1 + Cluster Overhead |
+| Dispatch Floor | `max(4, 12-L)` | `max(4, 12-L) + 2` |
+
 ---
 
 ## Test Suite
