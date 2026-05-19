@@ -33,6 +33,8 @@
 #include "common.h"
 #include "array_defs.h"
 
+int iterations_val = 1;
+
 // array definitions
 __attribute__((aligned(ARRAY_ALIGNMENT))) real_t flat_2d_array[LEN_2D*LEN_2D];
 
@@ -3964,13 +3966,9 @@ void time_function(const char *name, test_function_t vector_func, void * arg_inf
 
     double result = vector_func(&func_args);
 
-    double tic=func_args.t1.tv_sec+(func_args.t1.tv_usec/1000000.0);
-    double toc=func_args.t2.tv_sec+(func_args.t2.tv_usec/1000000.0);
-
-    double taken = toc-tic;
     uint64_t cycles = func_args.c2 - func_args.c1;
 
-    printf("%-12s\t%10.3f\t%12" PRIu64 "\t%f\n", name, taken, cycles, result);
+    printf("%-12s\t%12" PRIu64 "\t%f\n", name, cycles, result);
 }
 
 /* RUN_KERNEL: stringifies the function name, checks filter, then times it. */
@@ -3981,6 +3979,17 @@ int main(int argc, char ** argv){
     /* Newlib buffers stdout when not connected to a terminal (e.g. gem5 SE
      * mode).  Disable buffering so every printf is immediately visible. */
     setvbuf(stdout, NULL, _IONBF, 0);
+
+    /* Check for -i or --iterations to override the default iterations count */
+    for (int i = 1; i < argc; i++) {
+        if ((strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--iterations") == 0) && i + 1 < argc) {
+            iterations_val = atoi(argv[i+1]);
+            // Remove these from the args so they don't interfere with kernel filtering
+            for (int j = i; j < argc - 2; j++) argv[j] = argv[j+2];
+            argc -= 2;
+            i--; // Re-check this index as it now contains next arg
+        }
+    }
 
 #ifdef TSVC_KERNELS
     /* Kernel whitelist baked in at compile time.
@@ -4012,7 +4021,7 @@ int main(int argc, char ** argv){
     int* ip;
     real_t s1,s2;
     init(&ip, &s1, &s2);
-    printf("%-12s\t%10s\t%12s\t%s\n", "Loop", "Time(sec)", "Cycles", "Checksum");
+    printf("%-12s\t%12s\t%s\n", "Loop", "Cycles", "Checksum");
 
     RUN_KERNEL(s000, NULL);
     RUN_KERNEL(s111, NULL);

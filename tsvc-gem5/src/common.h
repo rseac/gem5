@@ -4,33 +4,18 @@
 #if defined(TINY)
     #define LEN_1D 15360
     #define LEN_2D 128
-    #ifndef iterations
-        #define iterations 1
-    #endif
 #elif defined(SMALL)
     #define LEN_1D 30720
     #define LEN_2D 256
-    #ifndef iterations
-        #define iterations 1
-    #endif
 #elif defined(MEDIUM)
     #define LEN_1D 256000
     #define LEN_2D 512
-    #ifndef iterations
-        #define iterations 5
-    #endif
 #elif defined(LARGE)
     #define LEN_1D 1024000
     #define LEN_2D 1024
-    #ifndef iterations
-        #define iterations 10
-    #endif
 #elif defined(HUGE)
     #define LEN_1D 4096000
     #define LEN_2D 2048
-    #ifndef iterations
-        #define iterations 20
-    #endif
 #else
     #ifndef LEN_1D
         #define LEN_1D 32000
@@ -38,10 +23,11 @@
     #ifndef LEN_2D
         #define LEN_2D 256
     #endif
-    #ifndef iterations
-        #define iterations 1
-    #endif
 #endif
+
+// iterations is now a runtime variable
+extern int iterations_val;
+#define iterations iterations_val
 
 #include <stdint.h>
 #include <stdio.h>
@@ -71,12 +57,12 @@ static inline uint64_t read_cycles() {
 
 #ifdef USE_M5OPS
 #include <gem5/m5ops.h>
-#define ROI_BEGIN(fa) do { m5_reset_stats(0, 0); (fa)->c1 = read_cycles(); gettimeofday(&(fa)->t1, NULL); } while (0)
-#define ROI_END(fa)   do { gettimeofday(&(fa)->t2, NULL); (fa)->c2 = read_cycles(); m5_dump_reset_stats(0, 0); } while (0)
+#define ROI_BEGIN(fa) do { m5_reset_stats(0, 0); (fa)->c1 = read_cycles(); } while (0)
+#define ROI_END(fa)   do { (fa)->c2 = read_cycles(); m5_dump_reset_stats(0, 0); } while (0)
 #define ROI_PRINT(fa) do { printf("cycles: %" PRIu64 " [M5_OPS]\n", (fa)->c2 - (fa)->c1); } while (0)
 #else
-#define ROI_BEGIN(fa) do { (fa)->c1 = read_cycles(); gettimeofday(&(fa)->t1, NULL); } while (0)
-#define ROI_END(fa)   do { gettimeofday(&(fa)->t2, NULL); (fa)->c2 = read_cycles(); } while (0)
+#define ROI_BEGIN(fa) do { (fa)->c1 = read_cycles(); } while (0)
+#define ROI_END(fa)   do { (fa)->c2 = read_cycles(); } while (0)
 #define ROI_PRINT(fa) do { \
     if (RDCYCLE_VAL) { \
         printf("start cycles: %" PRIu64 " [RDCYCLE]\n", (fa)->c1); \
