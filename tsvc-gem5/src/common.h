@@ -1,18 +1,59 @@
 #ifndef TSVC_COMMON_HDR
 #define TSVC_COMMON_HDR
 
-#define iterations 1
-#define LEN_1D 15360
-#define LEN_2D 256
-
-//#define iterations 1
-//#define LEN_1D 32000
-//#define LEN_2D 256
+#if defined(TINY)
+    #define LEN_1D 15360
+    #define LEN_2D 128
+    #ifndef iterations
+        #define iterations 1
+    #endif
+#elif defined(SMALL)
+    #define LEN_1D 30720
+    #define LEN_2D 256
+    #ifndef iterations
+        #define iterations 1
+    #endif
+#elif defined(MEDIUM)
+    #define LEN_1D 256000
+    #define LEN_2D 512
+    #ifndef iterations
+        #define iterations 5
+    #endif
+#elif defined(LARGE)
+    #define LEN_1D 1024000
+    #define LEN_2D 1024
+    #ifndef iterations
+        #define iterations 10
+    #endif
+#elif defined(HUGE)
+    #define LEN_1D 4096000
+    #define LEN_2D 2048
+    #ifndef iterations
+        #define iterations 20
+    #endif
+#else
+    #ifndef LEN_1D
+        #define LEN_1D 32000
+    #endif
+    #ifndef LEN_2D
+        #define LEN_2D 256
+    #endif
+    #ifndef iterations
+        #define iterations 1
+    #endif
+#endif
 
 #include <stdint.h>
 #include <stdio.h>
 #include <inttypes.h>
 #include <sys/time.h>
+#include <math.h>
+
+#define ABS(x) ((x)<0 ? -(x) : (x))
+#define MIN(a,b) ((a)<(b) ? (a) : (b))
+#define MAX(a,b) ((a)>(b) ? (a) : (b))
+
+#define ARRAY_ALIGNMENT 64
 
 // Helper to read hardware cycle counter
 static inline uint64_t read_cycles() {
@@ -31,14 +72,18 @@ static inline uint64_t read_cycles() {
 #ifdef USE_M5OPS
 #include <gem5/m5ops.h>
 #define ROI_BEGIN(fa) do { m5_reset_stats(0, 0); (fa)->c1 = read_cycles(); gettimeofday(&(fa)->t1, NULL); } while (0)
-#define ROI_END(fa)   do { gettimeofday(&(fa)->t2, NULL); (fa)->c2 = read_cycles(); m5_dump_reset_stats(0, 0); \
-                           printf("cycles: %" PRIu64 " [M5_OPS]\n", (fa)->c2 - (fa)->c1); } while (0)
+#define ROI_END(fa)   do { gettimeofday(&(fa)->t2, NULL); (fa)->c2 = read_cycles(); m5_dump_reset_stats(0, 0); } while (0)
+#define ROI_PRINT(fa) do { printf("cycles: %" PRIu64 " [M5_OPS]\n", (fa)->c2 - (fa)->c1); } while (0)
 #else
-#define ROI_BEGIN(fa) do { (fa)->c1 = read_cycles(); gettimeofday(&(fa)->t1, NULL); \
-                           if (RDCYCLE_VAL) printf("start cycles: %" PRIu64 " [RDCYCLE]\n", (fa)->c1); } while (0)
-#define ROI_END(fa)   do { gettimeofday(&(fa)->t2, NULL); (fa)->c2 = read_cycles(); \
-                           if (RDCYCLE_VAL) printf("end cycles: %" PRIu64 " [RDCYCLE]\n", (fa)->c2); \
-                           if (RDCYCLE_VAL) printf("cycles: %" PRIu64 " [RDCYCLE]\n", (fa)->c2 - (fa)->c1); } while (0)
+#define ROI_BEGIN(fa) do { (fa)->c1 = read_cycles(); gettimeofday(&(fa)->t1, NULL); } while (0)
+#define ROI_END(fa)   do { gettimeofday(&(fa)->t2, NULL); (fa)->c2 = read_cycles(); } while (0)
+#define ROI_PRINT(fa) do { \
+    if (RDCYCLE_VAL) { \
+        printf("start cycles: %" PRIu64 " [RDCYCLE]\n", (fa)->c1); \
+        printf("end cycles: %" PRIu64 " [RDCYCLE]\n", (fa)->c2); \
+        printf("cycles: %" PRIu64 " [RDCYCLE]\n", (fa)->c2 - (fa)->c1); \
+    } \
+} while (0)
 #endif
 
 struct args_t {
@@ -46,16 +91,10 @@ struct args_t {
     struct timeval t2;
     uint64_t c1;
     uint64_t c2;
-    void * __restrict__ arg_info;
+    void * arg_info;
 };
 
-#if 0
-typedef double real_t;
-#define ABS fabs
-#else
 typedef float real_t;
-#define ABS fabsf
-#endif
 
 int dummy(real_t[LEN_1D], real_t[LEN_1D], real_t[LEN_1D], real_t[LEN_1D], real_t[LEN_1D], real_t[LEN_2D][LEN_2D], real_t[LEN_2D][LEN_2D], real_t[LEN_2D][LEN_2D], real_t);
 

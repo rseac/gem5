@@ -62,7 +62,7 @@ real_t s000(struct args_t * func_args)
         dummy((real_t*)a, (real_t*)b, (real_t*)c, (real_t*)d, (real_t*)e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -377,7 +377,7 @@ real_t s121(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -598,7 +598,7 @@ real_t s131(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -791,7 +791,7 @@ real_t s162(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -816,7 +816,7 @@ real_t s171(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -968,7 +968,7 @@ real_t s211(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -1147,7 +1147,7 @@ real_t s1232(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 1.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -1296,7 +1296,7 @@ real_t s243(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -1386,7 +1386,7 @@ real_t s251(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -2094,7 +2094,7 @@ real_t s1281(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -2270,7 +2270,7 @@ real_t s311(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, sum);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -2692,7 +2692,7 @@ real_t s321(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -2765,7 +2765,7 @@ real_t s331(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, chksum);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return j+1;
 }
 
@@ -2800,7 +2800,7 @@ L20:
         dummy(a, b, c, d, e, aa, bb, cc, chksum);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return value;
 }
 
@@ -2828,7 +2828,7 @@ real_t s341(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -2913,7 +2913,7 @@ real_t s351(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -3026,7 +3026,7 @@ real_t s421(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 1.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -3427,7 +3427,7 @@ real_t s491(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -3669,7 +3669,7 @@ real_t vag(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
