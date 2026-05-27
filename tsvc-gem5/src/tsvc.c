@@ -59,9 +59,10 @@ real_t s000(struct args_t * func_args)
 
     for (int nl = 0; nl < 2*iterations; nl++) {
         for (int i = 0; i < LEN_1D; i++) {
-            a[i] = b[i] + 1;
+            a[i] = b[i] + 1 ;
         }
         dummy((real_t*)a, (real_t*)b, (real_t*)c, (real_t*)d, (real_t*)e, aa, bb, cc, 0.);
+        // Tells the compiler "assume memory has been read/written here"
     }
 
     ROI_END(func_args); ROI_PRINT(func_args);
@@ -3980,15 +3981,24 @@ int main(int argc, char ** argv){
      * mode).  Disable buffering so every printf is immediately visible. */
     setvbuf(stdout, NULL, _IONBF, 0);
 
-    /* Check for -i or --iterations to override the default iterations count */
+    /* Robust non-destructive argument parsing */
+    static char *filter_list[256];
+    int filter_count = 0;
+
     for (int i = 1; i < argc; i++) {
         if ((strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--iterations") == 0) && i + 1 < argc) {
-            iterations_val = atoi(argv[i+1]);
-            // Remove these from the args so they don't interfere with kernel filtering
-            for (int j = i; j < argc - 2; j++) argv[j] = argv[j+2];
-            argc -= 2;
-            i--; // Re-check this index as it now contains next arg
+            iterations_val = atoi(argv[++i]);
+        } else if (argv[i][0] != '-') {
+            // Treat anything not starting with a dash as a kernel filter
+            if (filter_count < 256) {
+                filter_list[filter_count++] = argv[i];
+            }
         }
+    }
+    
+    if (filter_count > 0) {
+        g_num_filters = filter_count;
+        g_filters = filter_list;
     }
 
 #ifdef TSVC_KERNELS

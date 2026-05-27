@@ -21,17 +21,17 @@ L2_SIZE=${L2_SIZE:-"512KiB"}
 VLEN=${VLEN:-2048}
 ELEN=${ELEN:-64}
 CPU_TYPE=${CPU_TYPE:-"AraO3"}
-THROUGHPUT=${THROUGHPUT:-2}
+LANES=${LANES:-2}
 ITERATIONS=${ITERATIONS:-1}
 
-echo "Running $BINARY with L1D=$L1D_SIZE, L2=$L2_SIZE, VLEN=$VLEN, ELEN=$ELEN, CPU=$CPU_TYPE, THROUGHPUT=$THROUGHPUT, ITERATIONS=$ITERATIONS"
+echo "Running $BINARY with L1D=$L1D_SIZE, L2=$L2_SIZE, VLEN=$VLEN, ELEN=$ELEN, CPU=$CPU_TYPE, LANES=$LANES, ITERATIONS=$ITERATIONS"
 
 # Build the command
 CMD=("$GEM5_BIN" "--quiet" "$CONFIG_SCRIPT" \
     --cpu-type "$CPU_TYPE" \
     --enable-chaining \
     --simd-units 2 \
-    --vector-timing-throughput "$THROUGHPUT" \
+    --vector-timing-throughput "$LANES" \
     -d "$L1D_SIZE" \
     -2 "$L2_SIZE" \
     -v "$VLEN" \
@@ -63,10 +63,10 @@ if [ -f "$STATS_FILE" ]; then
     ALL_CYCLES=($(grep "board.processor.cores.core.numCycles" "$STATS_FILE" | awk '{print $2}'))
     ALL_VEC_INSTS=($(grep "board.processor.cores.core.commitStats0.numVecInsts" "$STATS_FILE" | awk '{print $2}'))
     
-    # We want the second occurrence (the ROI block)
+    # We want the first occurrence (the ROI block)
     if [ ${#ALL_CYCLES[@]} -ge 2 ]; then
-        ROI_CYCLES=${ALL_CYCLES[1]}
-        ROI_VEC_INSTS=${ALL_VEC_INSTS[1]}
+        ROI_CYCLES=${ALL_CYCLES[0]}
+        ROI_VEC_INSTS=${ALL_VEC_INSTS[0]}
         echo "--------------------------------------------------"
         echo "Gem5 Stats Analysis (m5out/stats.txt):"
         echo "  ROI Cycles (Loop):       $ROI_CYCLES"

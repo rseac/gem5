@@ -16,6 +16,9 @@
 #elif defined(HUGE)
     #define LEN_1D 4096000
     #define LEN_2D 2048
+#elif defined(SMALL)
+    #define LEN_1D 150360
+    #define LEN_2D 256
 #else
     #ifndef LEN_1D
         #define LEN_1D 32000
@@ -43,8 +46,10 @@ extern int iterations_val;
 
 // Helper to read hardware cycle counter
 static inline uint64_t read_cycles() {
-    uint64_t val;
+    uint64_t val = 0;
+#if defined(__riscv)
     __asm__ volatile ("rdcycle %0" : "=r" (val));
+#endif
     return val;
 }
 
