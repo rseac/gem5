@@ -22,7 +22,7 @@ ITER_COUNTS=(1 5 10 20)
 LANE_COUNTS=(2 4)
 
 # List of data configurations to run
-CONFIGS=("MEDIUM")
+CONFIGS=("TINY")
 
 # Create a timestamped directory for results
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
