@@ -3,23 +3,17 @@
 # List of tests to run
 TESTS=(
     "s000"
-    "s121"
-    "s131"
-    "s162"
-    "s171"
-    "s211"
-    "s243"
-    "s251"
-    "s128"
-    "s311"
-    "s341"
 )
 
+
+#TESTS=( "s000" "s121" "s131" "s162" "s171" "s211" "s243" "s251" "s128" "s311" "s341")
+
 # List of iteration counts to run
-ITER_COUNTS=(1 5 10 20)
+ITER_COUNTS=(1 5)
+#ITER_COUNTS=(1 5 10 20)
 
 # List of lane counts (vector-timing-throughput) to run
-LANE_COUNTS=(2 4)
+LANE_COUNTS=(2)
 
 # List of data configurations to run
 CONFIG=${1:-"TINY"}

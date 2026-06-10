@@ -9,7 +9,8 @@ if [ -z "$1" ]; then
 fi
 
 BINARY=$1
-KERNEL=$2
+shift
+KERNELS=$@
 
 # Paths
 GEM5_BIN="/gem5/build/RISCV/gem5.opt"
@@ -25,6 +26,7 @@ LANES=${LANES:-2}
 ITERATIONS=${ITERATIONS:-1}
 
 echo "Running $BINARY with L1D=$L1D_SIZE, L2=$L2_SIZE, VLEN=$VLEN, ELEN=$ELEN, CPU=$CPU_TYPE, LANES=$LANES, ITERATIONS=$ITERATIONS"
+echo "Kernels: ${KERNELS:-all}"
 
 # Build the command
 CMD=("$GEM5_BIN" "--quiet" "$CONFIG_SCRIPT" \
@@ -37,10 +39,10 @@ CMD=("$GEM5_BIN" "--quiet" "$CONFIG_SCRIPT" \
     -v "$VLEN" \
     -e "$ELEN")
 
-# Program parameters (kernel name and iterations)
+# Program parameters (kernel names and iterations)
 PROG_ARGS=""
-if [ ! -z "$KERNEL" ]; then
-    PROG_ARGS="$KERNEL"
+if [ ! -z "$KERNELS" ]; then
+    PROG_ARGS="$KERNELS"
 fi
 PROG_ARGS="$PROG_ARGS -i $ITERATIONS"
 

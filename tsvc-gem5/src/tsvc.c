@@ -4017,13 +4017,6 @@ int main(int argc, char ** argv){
         g_num_filters = n;
         g_filters = kernel_tokens;
     }
-#else
-    /* Runtime fallback: argv[1], argv[2], ... are kernel names to run.
-     * Used by run-tsvc.sh, which passes the kernel name via gem5's --parms. */
-    if (argc > 1) {
-        g_num_filters = argc - 1;
-        g_filters = argv + 1;
-    }
 #endif
 
     int n1 = 1;
