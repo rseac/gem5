@@ -22,11 +22,12 @@ ITER_COUNTS=(1 5 10 20)
 LANE_COUNTS=(2 4)
 
 # List of data configurations to run
-CONFIGS=("TINY")
+CONFIG=${1:-"TINY"}
+CONFIGS=("$CONFIG")
 
 # Create a timestamped directory for results
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-RESULTS_DIR="subset_results_$TIMESTAMP"
+RESULTS_DIR="subset_results_${CONFIG}_$TIMESTAMP"
 mkdir -p "$RESULTS_DIR"
 
 echo "Starting subset runs with configs: ${CONFIGS[*]}"
