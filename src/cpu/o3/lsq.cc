@@ -1108,6 +1108,16 @@ LSQ::LSQRequest::addReq(Addr addr, unsigned size,
             );
         }
 
+        // Scalar cache bypass (--scalar-uncacheable): mark non-vector
+        // data accesses uncacheable so the caches forward them straight
+        // to memory without allocating. Atomics and LR/SC stay cacheable.
+        // SE mode only — in FS mode the PMA checker manages this flag.
+        if (_inst->cpu->scalarUncacheable && !_inst->isVector() &&
+            !req->isLLSC() && !req->isAtomicReturn() &&
+            !req->isAtomicNoReturn()) {
+            req->setFlags(Request::UNCACHEABLE);
+        }
+
         _reqs.emplace_back(req);
 
         // Tag the request with metadata about the instruction that

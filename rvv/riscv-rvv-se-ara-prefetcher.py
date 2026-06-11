@@ -88,6 +88,7 @@ class RVVCore(BaseCPUCore):
         enable_chaining,
         vector_timing_throughput,
         simd_units,
+        scalar_uncacheable=False,
     ):
         # Use our custom SelectedCPU which handles FUPool configuration automatically
         core = SelectedCPU(cpu_id=cpu_id)
@@ -96,6 +97,7 @@ class RVVCore(BaseCPUCore):
         core.enable_vector_chaining = enable_chaining
         core.vector_timing_throughput = vector_timing_throughput
         core.simd_units = simd_units
+        core.scalar_uncacheable = scalar_uncacheable
 
         # --- MODULAR LATENCY MODEL ---
         # The AraO3CPU constructor automatically sets up the AraLatencyModel.
@@ -175,6 +177,14 @@ parser.add_argument(
 parser.add_argument(
     "--simd-units", type=int, default=2, help="Number of physical SIMD lanes"
 )
+parser.add_argument(
+    "--scalar-uncacheable",
+    action="store_true",
+    default=False,
+    help="Mark scalar (non-vector) data accesses uncacheable so they "
+    "bypass L1/L2, leaving the caches and prefetcher driven only by "
+    "vector accesses (SE mode only; atomics/LR-SC stay cacheable)",
+)
 
 args = parser.parse_args()
 
@@ -206,6 +216,7 @@ processor = BaseCPUProcessor(
             args.enable_chaining,
             args.vector_timing_throughput,
             args.simd_units,
+            args.scalar_uncacheable,
         )
         for i in range(args.cores)
     ]
@@ -243,6 +254,10 @@ print(f"  Throughput:       {args.vector_timing_throughput} elements/cycle")
 print(f"  SIMD Units:       {args.simd_units} parallel units")
 print(f"  L1D Cache:        {args.l1d}")
 print(f"  L2 Cache:         {args.l2}")
+print(
+    f"  Scalar Bypass:    "
+    f"{'ON (scalar accesses uncacheable)' if args.scalar_uncacheable else 'OFF'}"
+)
 print("-" * 50)
 print("Beginning simulation...")
 print("=" * 50)

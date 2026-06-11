@@ -35,6 +35,8 @@ In general, I want you to extend gem5 features by utilizing the existing infrast
 
 Finally, the code you write should be as simple as possible. It should be reasonably straightforward to understand for anyone with a basic understanding of gem5, and you should not rely on any exotic C++/Python features to implement changes (such as monkeypatches).
 
+Always remember to ask clarifying questions when there is any doubt on your end.
+
 ## Build
 
 Whenever any files are edited in the src directory, I will build it myself in my docker shell. Do not run any build commands yourself, simply notify me when I need to run a build.

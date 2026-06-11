@@ -101,6 +101,11 @@ class BaseCPU(ClockedObject):
     enable_vector_chaining = Param.Bool(True, "Enable RISC-V Vector Chaining")
     vector_timing_throughput = Param.Unsigned(2, "Number of vector elements processed per cycle (timing model throughput)")
     simd_units = Param.Unsigned(1, "Number of SIMD functional units (physical lane count)")
+    scalar_uncacheable = Param.Bool(
+        False,
+        "Mark non-vector data accesses uncacheable so they bypass the "
+        "caches (SE-mode scalar-bypass experiments; atomics/LLSC excluded)",
+    )
     socket_id = Param.Unsigned(0, "Physical Socket identifier")
     numThreads = Param.Unsigned(1, "number of HW thread contexts")
     pwr_gating_latency = Param.Cycles(

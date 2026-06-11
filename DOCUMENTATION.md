@@ -876,3 +876,234 @@ Expected: the two `vlse64.v` accesses appear as
 `stride1.c`), the `vse64.v` as `WriteReq [...] type=SimdUnitStrideStore`
 with **no** rs2 field, scalar accesses as `type=MemRead`/`type=MemWrite`,
 and tick-0 `functionalAccess` lines unchanged (no `type=`).
+
+# Packet Travel: `NoCache` vs. `PrivateL1PrivateL2` Classic Hierarchies
+
+Both live in `src/python/gem5/components/cachehierarchies/classic/`
+(`no_cache.py`, `private_l1_private_l2_cache_hierarchy.py`). They are pure
+*wiring* components: each implements `incorporate_cache(board)` to connect
+the processor's ports to memory, and exposes the same two attachment points
+(`get_cpu_side_port()` / `get_mem_side_port()`, both returning ports of a
+`SystemXBar` "membus"). The difference is entirely in what sits between the
+CPU and that membus — which changes what a packet *is* by the time memory
+sees it. This fork's experiment script uses `PrivateL1PrivateL2`
+(`rvv/riscv-rvv-se-ara-prefetcher.py`).
+
+## Topologies
+
+```
+NoCache (no_cache.py:106-128)              PrivateL1PrivateL2 (…cache_hierarchy.py:125-172)
+
+ icache_port  dcache_port  walkers          icache_port   dcache_port    walkers
+      \          |          /                    |             |            |
+       \         |         /                 L1ICache      L1DCache         |
+        +--------+--------+                      \             |            |
+        |     membus      |                       +------ L2XBar (per core)-+
+        |  SystemXBar(64B)|                                  |
+        +--------+--------+                               L2Cache (private, per core)
+                 |                                            |
+            memory ctrl                            +----- membus -----+
+                                                   |  SystemXBar(16B) |
+                                                   +--------+---------+
+                                                            |
+                                                       memory ctrl
+```
+
+- `NoCache` plugs every CPU port — icache, dcache, *and* MMU walker ports —
+  straight into membus `cpu_side_ports` (`no_cache.py:110-115`).
+- `PrivateL1PrivateL2` gives each core an `L1ICache`/`L1DCache` (stdlib
+  `caches/l1icache.py`, `caches/l1dcache.py`: 1-cycle tag/data, 16 MSHRs),
+  both feeding a per-core `L2XBar`, then a private `L2Cache`
+  (`caches/l2cache.py`: 10-cycle tag/data, 20 MSHRs), then membus
+  (`private_l1_private_l2_cache_hierarchy.py:136-154`). Walker ports attach
+  to the **L2XBar**, not the L1s (`:168-172`) — page-table walks are cached
+  in L2 but never pollute L1.
+
+Both membuses are `SystemXBar`s — the coherent crossbar marked
+`point_of_coherency` (`src/mem/XBar.py:179-196`) — but `NoCache` widens
+its membus to 64 bytes (`no_cache.py:78`) since it carries every CPU access,
+while the default is 16 bytes. The `L2XBar` is a lighter coherent crossbar
+(1-cycle frontend, 0-cycle forward vs. the SystemXBar's 3+4,
+`src/mem/XBar.py:154-173`).
+
+## A load's journey in `NoCache`
+
+1. LSQ sends the packet out the dcache port (split only at cache-line
+   boundaries, `src/cpu/o3/lsq.cc:958-1010`).
+2. `CoherentXBar::recvTimingReq` (`src/mem/coherent_xbar.cc:149`) looks up
+   the destination port by address range, records the return path in
+   `routeTo[pkt->req]` (`coherent_xbar.cc:344`), applies its
+   frontend+forward latency (3+4 cycles), and forwards **the same `Packet`
+   object** to the memory controller. No new packet, no command change, no
+   size change.
+3. The memory controller services the access and the response retraces the
+   route. Total latency ≈ xbar (≈9 cycles both ways) + DRAM.
+
+Consequences: memory sees the CPU's *raw* access stream — sub-line sizes,
+unaligned offsets, one DRAM transaction per LSQ request. There is **no
+coalescing** (no MSHRs exist) and **no place to hang a prefetcher** (gem5
+prefetchers are cache components, `src/mem/cache/prefetch/base.hh`). Every
+access pays full memory latency. Because the original `Request` travels
+end-to-end, this fork's `RVVExtension` tags are visible at the memory
+controller on every access.
+
+## A load's journey in `PrivateL1PrivateL2`
+
+1. Same LSQ exit, but the packet lands on `L1DCache.cpu_side` →
+   `BaseCache::recvTimingReq` → `access()`.
+2. **Hit**: response scheduled back after tag+data latency (1+1 cycles)
+   (`src/mem/cache/base.cc:342`). The packet never goes further.
+3. **Miss**: an MSHR is allocated, or the access **coalesces** onto an
+   existing MSHR for the same line (`base.cc:365-409` — the
+   `coalescing MSHR` trace lines documented earlier). For a fresh miss the
+   cache mints a **new, different packet**: block-aligned, full line size,
+   command transformed (`ReadReq` → `ReadSharedReq`/`ReadExReq`) by
+   `createMissPacket` (`src/mem/cache/cache.cc:493,550-551`). The CPU's
+   original packet waits in the MSHR; only the new one travels on, reusing
+   the same `Request` (`cache.cc:599`).
+4. The miss packet crosses the per-core `L2XBar` (1 cycle) into the L2,
+   where the same hit/miss logic repeats (10-cycle tag), and on an L2 miss
+   continues through membus to memory.
+5. The fill response climbs back: `BaseCache::recvTimingResp`
+   (`base.cc:539`) → `handleFill` allocates the line, possibly evicting a
+   victim — which mints a *brand-new* writeback request heading the other
+   way (`base.cc:608,1571`) → `serviceMSHRTargets` answers **all** coalesced
+   original packets from the one fill (`base.cc:637`).
+6. Each cache's `StridePrefetcher` (instantiated by default in the stdlib
+   L1D/L1I/L2 classes, `caches/l1dcache.py`, `caches/l2cache.py`) observes
+   the access stream via probes and injects its own new requests.
+
+Consequences: memory sees only line-sized misses, writebacks, and
+prefetches — a filtered, transformed echo of the CPU stream. Hits cost 2
+cycles instead of a DRAM round trip; misses to the same line are merged.
+`RVVExtension` visibility follows the Step-5 table of the RVVExtension
+section: demand misses keep the tag down to memory, writebacks and
+prefetcher requests do not.
+
+## Side-by-side
+
+| | `NoCache` | `PrivateL1PrivateL2` |
+|---|---|---|
+| Packet at memory | The CPU's own packet, original size/command | New block-sized `ReadSharedReq`/`ReadExReq`, plus writebacks/prefetches |
+| Request identity | One `Request` end-to-end | Same `Request` for demand misses; fresh ones for writebacks/prefetches |
+| Coalescing | None — every LSQ request reaches DRAM | MSHRs merge same-line accesses at each level |
+| Prefetching | Impossible (no cache to host one) | `StridePrefetcher` per cache by default |
+| Walker traffic | Direct to membus | Through L2XBar (L2-cached, L1-bypassed) |
+| Coherence | Membus is PoC; nothing to snoop (FS mode broken, see `no_cache.py:51-66` docstring) | Membus snoops into each core's L2→L1 via the snoop filter |
+| Min load-use latency | Full xbar+DRAM round trip, every time | 2 cycles (L1 hit) |
+| Use here | Memory-bound baseline / sanity runs | The prefetcher research platform (`rvv/riscv-rvv-se-ara-prefetcher.py`) |
+
+One shared path worth knowing: both hierarchies route the simulator's
+functional/atemporal accesses through membus (`board.connect_system_port`,
+`no_cache.py:125`, `private_l1_private_l2_cache_hierarchy.py:127`). With
+caches present, every functional access also walks each cache to keep all
+copies coherent (`BaseCache::functionalAccess`, `src/mem/cache/base.cc:765`)
+— which is why the tick-0 SE-mode loader writes appear once per cache level
+in the trace.
+
+# Scalar Cache Bypass (`--scalar-uncacheable`) (implemented)
+
+Marks every **non-vector** data access `Request::UNCACHEABLE` so L1/L2
+forward it straight to memory without allocating, leaving cache contents,
+MSHR behavior, and prefetcher training driven **only by RVV accesses** —
+the isolation mode for prefetcher experiments. Off by default; enable with:
+
+```bash
+build/RISCV/gem5.opt rvv/riscv-rvv-se-ara-prefetcher.py \
+    --enable-chaining --vlen 512 --vector-timing-throughput 4 --simd-units 2 \
+    --scalar-uncacheable /path/to/riscv-binary
+```
+
+## What gem5 does by default
+
+- The classic cache already implements a complete per-request bypass path,
+  keyed off `Request::UNCACHEABLE`: `Cache::access` skips lookup, flushes
+  any cached copy of the touched line, and treats the access as a forced
+  miss (`src/mem/cache/cache.cc:166-180`); `handleTimingReqMiss` never
+  coalesces it and forwards the **original packet** downstream
+  (`cache.cc:331-345`, `mshr->isForward`), so the access traverses L1 → L2
+  → memory as a pass-through. Prefetchers ignore uncacheable accesses
+  (`src/mem/cache/prefetch/base.cc:179`).
+- `UNCACHEABLE` and `STRICT_ORDER` are independent request-flag bits
+  (`src/mem/request.hh:126,136`). The only code that couples them is the
+  RISC-V PMA checker (`src/arch/riscv/pma_checker.cc:69`), which runs
+  **only in full-system mode** (`pma->check` call at
+  `src/arch/riscv/tlb.cc:579`, inside the `if (FullSystem)` branch at
+  `tlb.cc:512`). SE-mode translation goes through the process page table
+  and never sets either flag.
+- The O3 LSQ serializes accesses at the ROB head only when
+  `isStrictlyOrdered()` (`src/cpu/o3/lsq.cc:855`,
+  `src/cpu/o3/lsq_unit.cc:511,568,1400`); it never inspects
+  `isUncacheable()` (the only O3 use is an icache-response assert,
+  `src/cpu/o3/fetch.cc:1662`). **Therefore, in SE mode, an
+  UNCACHEABLE-only access stays speculative and out-of-order** — it just
+  always goes to memory. (A previous attempt on branch `test`, commit
+  `af1c8e5936`, concluded the flags were inseparable and built a bypass
+  port instead; that conclusion came from the FS-only PMA coupling and
+  does not apply to SE mode.)
+
+## What this fork adds
+
+| Change | File |
+|---|---|
+| `scalar_uncacheable` parameter (default `False`) | `src/cpu/BaseCPU.py:104` |
+| `scalarUncacheable` member, initialized from the param | `src/cpu/base.hh:430`, `src/cpu/base.cc:140` |
+| Tagging at request creation: non-vector, non-LLSC, non-AMO requests get `Request::UNCACHEABLE` | `src/cpu/o3/lsq.cc:1115` (in `LSQRequest::addReq`, next to the `annotateMemRequest` hook) |
+| `--scalar-uncacheable` CLI flag, plumbed through `RVVCore` to `core.scalar_uncacheable`, shown in the config banner | `rvv/riscv-rvv-se-ara-prefetcher.py` |
+
+The classification is `DynInst::isVector()` (the `IsVector` static-inst
+flag), so all RVV loads/stores — unit-stride, strided, indexed, segmented —
+stay cacheable; everything else (integer/FP scalar loads and stores)
+bypasses. Atomics and LR/SC are excluded from tagging
+(`isLLSC`/`isAtomicReturn`/`isAtomicNoReturn`) because uncacheable LLSC
+semantics are untested in the classic memory model. Instruction fetch never
+passes through `addReq`, so the L1I is unaffected.
+
+In the debug trace, bypassed accesses are directly visible: `Packet::print`
+already shows ` UC` for uncacheable requests, which now composes with the
+RVVExtension tag:
+
+```
+...l1d-cache-0: access for ReadReq [27e10:27e17] type=MemRead UC
+```
+
+## Caveats (read before interpreting results)
+
+1. **Flush-on-collision.** An uncacheable access to a line currently cached
+   evicts it first (`cache.cc:175-179`) — a scalar read of vector-written
+   data kicks that line out of L1/L2 (dirty lines are written back to
+   memory first). Keep
+   scalar and vector data on disjoint cache lines inside the ROI for clean
+   isolation; scalar checksum loops after the ROI are harmless.
+2. **Cycle counts are not faithful; cache/prefetcher characterization is.**
+   Every scalar access pays the full memory round trip, so absolute
+   IPC/cycle numbers are pessimistic for scalar-heavy phases. Hit/miss
+   rates, prefetcher accuracy/coverage/timeliness, and the vector access
+   stream are the intended use — same trade-off as the bypass-port design
+   on branch `test`.
+3. **SE mode only.** In FS mode the PMA checker owns this flag (and pairs
+   it with `STRICT_ORDER`); this feature is designed for the SE-mode ARA
+   experiments.
+4. **O3 only.** The tagging lives in the O3 LSQ; AraMinor runs ignore the
+   flag (the param exists on BaseCPU but nothing reads it outside O3's
+   `addReq`).
+5. **Uncacheable stores drain slower.** Each scalar store occupies its SQ
+   entry until memory responds (`handleUncacheableWriteResp`,
+   `src/mem/cache/base.cc:562`), so store-heavy scalar phases add SQ
+   pressure. Correct, just pessimistic.
+
+## Validation checklist (after rebuild)
+
+Run a kernel (e.g. `stride1` or a TSVC kernel) with and without
+`--scalar-uncacheable` and compare `m5out/stats.txt`:
+
+- `l1d-cache-0.overallAccesses` / L2 accesses collapse to ~the vector-only
+  count (plus writebacks); `mem_ctrl` traffic rises correspondingly.
+- `l1d-cache-0.ReadReq.mshrUncacheable::processor...` counters appear (the
+  uncacheable-stream stats, `cache.cc:338`).
+- With `--debug-flags=Exec,Cache`: scalar loads still commit out-of-order
+  relative to issue (no head-of-ROB serialization — this empirically
+  confirms the SE-mode flag independence), and their cache lines show
+  `type=MemRead UC` / `type=MemWrite UC` while vector lines keep plain
+  `type=SimdStridedLoad rs2=...`.
+- Program output must be unchanged (correctness preserved).

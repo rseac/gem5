@@ -423,6 +423,12 @@ class BaseCPU : public ClockedObject
     /** Number of SIMD functional units */
     unsigned simdUnits;
 
+    /**
+     * Mark non-vector data accesses uncacheable so they bypass the
+     * caches (scalar cache bypass; SE-mode experiments only).
+     */
+    bool scalarUncacheable;
+
     System *system;
 
     LatencyModel *latencyModel;
