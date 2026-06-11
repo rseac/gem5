@@ -29,8 +29,10 @@
 #include "cpu/static_inst.hh"
 
 #include <iostream>
+#include <memory>
 
 #include "cpu/thread_context.hh"
+#include "mem/rvv_ext.hh"
 
 namespace gem5
 {
@@ -90,6 +92,12 @@ StaticInst::advancePC(ThreadContext *tc) const
     std::unique_ptr<PCStateBase> pc(tc->pcState().clone());
     advancePC(*pc);
     tc->pcState(*pc);
+}
+
+void
+StaticInst::annotateMemRequest(ExecContext *xc, const RequestPtr &req) const
+{
+    req->setExtension(std::make_shared<RVVExtension>(opClass()));
 }
 
 } // namespace gem5

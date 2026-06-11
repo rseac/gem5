@@ -966,6 +966,7 @@ LSQ::SplitDataRequest::initiateTranslation()
                 _size, _flags, _inst->requestorId(),
                 _inst->pcState().instAddr(), _inst->contextId());
     _mainReq->setByteEnable(_byteEnable);
+    _inst->staticInst->annotateMemRequest(_inst.get(), _mainReq);
 
     // Paddr is not used in _mainReq. However, we will accumulate the flags
     // from the sub requests into _mainReq by calling setFlags() in finish().
@@ -1108,6 +1109,12 @@ LSQ::LSQRequest::addReq(Addr addr, unsigned size,
         }
 
         _reqs.emplace_back(req);
+
+        // Tag the request with metadata about the instruction that
+        // created it (OpClass, and rs2 for strided vector accesses), so
+        // downstream consumers (caches, prefetchers, Packet::print) can
+        // tell what kind of access this is.
+        _inst->staticInst->annotateMemRequest(_inst.get(), _reqs.back());
     }
 }
 

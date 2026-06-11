@@ -757,3 +757,122 @@ microbenchmark (`tests/test-progs/custom/bin/stride1`): a `DPRINTF(HWPrefetch, .
 in the prefetcher printing `kind/strideBytes` under
 `--debug-flags=HWPrefetch` should show `Strided, stride=16` for the
 `vlse64.v` accesses (stride register value 16 in `stride1.c`).
+
+# RVVExtension Request Extension (implemented; originally InstructionTypeExtension)
+
+Tags every O3 data-memory `Request` with the **OpClass of the instruction
+that created it**, plus — for strided vector accesses — the **rs2 register
+value** (the architectural byte stride), and makes `Packet::print()` show
+both. Every cache debug line then reveals what kind of access it is:
+
+```
+1353000: board.cache_hierarchy.l1d-cache-0: access for ReadReq [2868:286f] type=SimdStridedLoad rs2=16 miss
+```
+
+> Naming note: this feature was first implemented as
+> `InstructionTypeExtension` (OpClass only, attached directly by the LSQ).
+> It was renamed to `RVVExtension` when the rs2 field was added and the
+> attach mechanism moved to the `annotateMemRequest` hook described below.
+> The old header `src/mem/inst_type_ext.hh` is gone; the class now lives in
+> `src/mem/rvv_ext.hh`.
+
+## What gem5 does by default
+
+- `Request` carries no information about the instruction that produced it
+  beyond the PC (see "What a `Request` carries today" above). Caches and
+  prefetchers cannot tell a `vlse64.v` element access from a scalar `ld`,
+  and a prefetcher must *infer* the stride the instruction already knows.
+- `Packet::print()` (`src/mem/packet.cc:368`) prints only the command name,
+  the inclusive physical byte range `[start:end]`, and request flags
+  (`(s)`/`IF`/`UC`/`ES`/`PoC`/`PoU`). Every cache `DPRINTF` that embeds
+  `pkt->print()` inherits this format.
+- gem5 already classifies RVV memory accesses at decode: the decoder assigns
+  per-kind op classes (`SimdUnitStrideLoadOp`, `SimdStridedLoadOp`,
+  `SimdIndexedLoadOp`, …) as instruction flags
+  (`src/arch/riscv/isa/decoder.isa:607,755`), retrievable from any
+  instruction via `StaticInst::opClass()`. The stride for `vlse*`/`vsse*`
+  is the rs2 source register, re-read freely via
+  `ExecContext::getRegOperand` — the generated microop code reads
+  `Rs2 = xc->getRegOperand(this, 1)` for both loads and stores
+  (`build/RISCV/arch/riscv/generated/exec-ns.cc.inc`, `Vlse64_vMicro::initiateAcc`
+  and `Vsse64_vMicro::initiateAcc`). None of this traveled with the request
+  until now.
+
+## What this fork adds
+
+Mechanism #3 from "Extending `Request` with Custom Instruction Metadata"
+above (the `Extensible<Request>` framework, `src/mem/request.hh:97`,
+`src/base/extensible.hh`), combined with the Step-2 attach-hook pattern
+(mirroring this fork's `dynamicOpLatency` precedent in `static_inst.hh`).
+
+| Change | File |
+|---|---|
+| **New** `RVVExtension` — header-only extension class holding an `OpClass` plus an `int64_t rs2` (default 0); `getInstType()`, `getRs2()`, `toString()` | `src/mem/rvv_ext.hh` |
+| **New virtual** `StaticInst::annotateMemRequest(ExecContext*, const RequestPtr&)` — the per-instruction tagging hook | decl `src/cpu/static_inst.hh:424`, default impl `src/cpu/static_inst.cc:98` (attaches `RVVExtension(opClass())` — every memory instruction, scalar included) |
+| Strided-microop overrides: when `has_rs2` is set, attach `RVVExtension(opClass(), rs2)` with rs2 read from source slot 1; otherwise fall back to the default | `src/arch/riscv/insts/vector.hh:630` (`VlElementMicroInst`, covers `vlse*`/`vlsseg*`) and `:680` (`VsElementMicroInst`, covers `vsse*`/`vssseg*`) |
+| Hook call sites: every single/split-fragment request the LSQ creates, plus the split-access main request | `src/cpu/o3/lsq.cc:1117` (in `LSQRequest::addReq`) and `:969` (in `SplitDataRequest::initiateTranslation`) |
+| `Packet::print()` appends ` type=<OpClass>` when the extension is present, and ` rs2=<stride>` (signed decimal) only when the type is `SimdStridedLoad` or `SimdStridedStore` | `src/mem/packet.cc:372-384` |
+
+No SConscript change: the extension is header-only. The operand-slot
+knowledge (rs2 = source slot 1) lives only in the RISC-V microop classes
+that own it, guarded by their `has_rs2` flag — the same classes whose
+generated `initiateAcc` reads that slot, so the two cannot silently
+diverge in meaning. Reading a source register at request-creation time is
+side-effect-free and safe: `addReq` runs inside `initiateAcc`, when the
+microop's sources are ready by definition.
+
+## Coverage and caveats
+
+- **Tagged with type**: all data requests born in `LSQ::LSQRequest::addReq`
+  (`src/cpu/o3/lsq.cc:1084`) — the single creation point for O3
+  loads/stores/AMOs. Demand misses forwarded to L2/L3 keep the tag because
+  the downstream miss packet reuses the same request
+  (`src/mem/cache/cache.cc:553`); request copies deep-clone the extension
+  (`src/mem/request.hh:515`, `src/base/extensible.hh:123`).
+- **Tagged with rs2**: only microops of `VlElementMicroInst` /
+  `VsElementMicroInst` with `has_rs2 == true` — i.e. `vlse*`, `vlsseg*`,
+  `vsse*`, `vssseg*`. Variants of those classes without an rs2 operand
+  fall back to type-only tagging.
+- **rs2 printed**: only when the OpClass is `SimdStridedLoad` or
+  `SimdStridedStore`. The field defaults to 0 in all other extensions and
+  is not shown.
+- **Untagged** (print shows no `type=`): instruction fetches, cache
+  writebacks/evictions (`src/mem/cache/base.cc:1765,1808`),
+  prefetcher-generated requests (`src/mem/cache/prefetch/queued.cc:380`),
+  page-table walks, anything from non-O3 CPU models, and the tick-0
+  functional loader writes.
+- Under MSHR coalescing the packet sent downstream belongs to the *first*
+  miss to that line, so L2 sees one tag per line fill, not one per
+  coalesced access.
+
+## How to read it elsewhere
+
+Anywhere a packet is in hand (e.g. a custom prefetcher's `notify`):
+
+```cpp
+#include "mem/rvv_ext.hh"
+
+if (auto ext = pkt->req->getExtension<RVVExtension>()) {
+    if (ext->getInstType() == enums::SimdStridedLoad) {
+        int64_t stride = ext->getRs2();   // train directly, no inference
+    }
+}
+```
+
+`getExtension` returns `nullptr` for untagged requests, so scalar/legacy
+paths are unaffected.
+
+## Validation
+
+Rebuild `build/RISCV/gem5.opt` (user-run, per repo workflow), then:
+
+```bash
+build/RISCV/gem5.opt --debug-flags=Cache --debug-file=trace.log \
+    rvv/riscv-rvv-se-ara-prefetcher.py [...] tests/test-progs/custom/bin/stride1
+```
+
+Expected: the two `vlse64.v` accesses appear as
+`ReadReq [...] type=SimdStridedLoad rs2=16` (stride register value 16 in
+`stride1.c`), the `vse64.v` as `WriteReq [...] type=SimdUnitStrideStore`
+with **no** rs2 field, scalar accesses as `type=MemRead`/`type=MemWrite`,
+and tick-0 `functionalAccess` lines unchanged (no `type=`).

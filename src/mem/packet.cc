@@ -56,6 +56,7 @@
 #include "base/cprintf.hh"
 #include "base/logging.hh"
 #include "base/trace.hh"
+#include "mem/rvv_ext.hh"
 #include "mem/packet_access.hh"
 #include "sim/bufval.hh"
 
@@ -368,8 +369,22 @@ void
 Packet::print(std::ostream &o, const int verbosity,
               const std::string &prefix) const
 {
-    ccprintf(o, "%s%s [%x:%x]%s%s%s%s%s%s", prefix, cmdString(),
+    // Requests created by the LSQ carry an RVVExtension identifying the
+    // OpClass of the originating instruction, plus the rs2 byte stride
+    // for strided vector accesses; requests minted elsewhere (fetch,
+    // writebacks, prefetches) do not.
+    std::string inst_type;
+    if (auto rvv_ext = req->getExtension<RVVExtension>()) {
+        inst_type = csprintf(" type=%s", rvv_ext->toString());
+        if (rvv_ext->getInstType() == enums::SimdStridedLoad ||
+            rvv_ext->getInstType() == enums::SimdStridedStore) {
+            inst_type += csprintf(" rs2=%d", rvv_ext->getRs2());
+        }
+    }
+
+    ccprintf(o, "%s%s [%x:%x]%s%s%s%s%s%s%s", prefix, cmdString(),
              getAddr(), getAddr() + getSize() - 1,
+             inst_type,
              req->isSecure() ? " (s)" : "",
              req->isInstFetch() ? " IF" : "",
              req->isUncacheable() ? " UC" : "",

@@ -67,6 +67,9 @@ class Packet;
 class ExecContext;
 class ThreadContext;
 
+class Request;
+using RequestPtr = std::shared_ptr<Request>;
+
 namespace loader
 {
 class SymbolTable;
@@ -410,6 +413,16 @@ class StaticInst : public RefCounted, public StaticInstFlags
     {
         return dynamicOpLatency(tc);
     }
+
+    /**
+     * Tag a memory request created for this instruction with metadata
+     * about the instruction (an RVVExtension). The default attaches the
+     * instruction's OpClass; strided vector microops override this to
+     * also capture the rs2 stride value. Called by the O3 LSQ when the
+     * request is created (LSQ::LSQRequest::addReq).
+     */
+    virtual void annotateMemRequest(ExecContext *xc,
+                                    const RequestPtr &req) const;
 
     /// Return logical index (architectural reg num) of i'th destination reg.
     /// Only the entries from 0 through numDestRegs()-1 are valid.

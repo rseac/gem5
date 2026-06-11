@@ -42,6 +42,7 @@
 #include "cpu/base.hh"
 #include "cpu/latency_model.hh"
 #include "debug/VectorTiming.hh"
+#include "mem/rvv_ext.hh"
 
 namespace gem5
 {
@@ -620,6 +621,21 @@ class VlElementMicroInst : public VectorMemMicroInst
     std::string
     generateDisassembly(Addr pc,
                         const loader::SymbolTable *symtab) const override;
+
+  public:
+    // Strided loads (vlse*/vlsseg*) carry rs2 (the byte stride) in source
+    // slot 1; tag the request with it so prefetchers and debug traces see
+    // the architectural stride directly.
+    void
+    annotateMemRequest(ExecContext *xc, const RequestPtr &req) const override
+    {
+        if (has_rs2) {
+            req->setExtension(std::make_shared<RVVExtension>(
+                opClass(), (int64_t)xc->getRegOperand(this, 1)));
+        } else {
+            StaticInst::annotateMemRequest(xc, req);
+        }
+    }
 };
 
 class VsElementMacroInst : public VectorMemMacroInst
@@ -656,6 +672,20 @@ class VsElementMicroInst : public VectorMemMicroInst
     std::string
     generateDisassembly(Addr pc,
                         const loader::SymbolTable *symtab) const override;
+
+  public:
+    // Strided stores (vsse*/vssseg*) carry rs2 (the byte stride) in
+    // source slot 1, same as the load side.
+    void
+    annotateMemRequest(ExecContext *xc, const RequestPtr &req) const override
+    {
+        if (has_rs2) {
+            req->setExtension(std::make_shared<RVVExtension>(
+                opClass(), (int64_t)xc->getRegOperand(this, 1)));
+        } else {
+            StaticInst::annotateMemRequest(xc, req);
+        }
+    }
 };
 
 class VlIndexMacroInst : public VectorMemMacroInst

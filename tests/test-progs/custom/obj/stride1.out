@@ -1,5 +1,5 @@
 
-bin/stride1:     file format elf64-littleriscv
+tests/test-progs/custom/bin/stride1:     file format elf64-littleriscv
 
 
 Disassembly of section .text:
