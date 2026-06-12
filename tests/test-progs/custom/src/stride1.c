@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <gem5/m5ops.h>
 #if __riscv_v >= 1000000
 #include <riscv_vector.h>
 #endif /* __riscv_v_intrinsic */
@@ -13,6 +14,7 @@ int main() {
     vint64m1_t c = __riscv_vlse64_v_i64m1(&a[1], 24, vl);
     vint64m1_t d = __riscv_vle64_v_i64m1(b, vl);
     __riscv_vsse64_v_i64m1(e, 16, __riscv_vadd(c, d, vl), vl);
+    m5_write_file(e, sizeof(e), 0, "stride1_result.bin");
 
     return 0;
 }
