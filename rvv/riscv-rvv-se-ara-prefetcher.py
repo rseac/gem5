@@ -59,6 +59,8 @@ sys.path.append(
 sys.path.append(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "/gem5/src")
 )
+# For sibling modules in rvv/ (vector_cache_hierarchy)
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 
 import gem5.resources.resource as res
@@ -185,6 +187,26 @@ parser.add_argument(
     "bypass L1/L2, leaving the caches and prefetcher driven only by "
     "vector accesses (SE mode only; atomics/LR-SC stay cacheable)",
 )
+parser.add_argument(
+    "--vector-cache",
+    action="store_true",
+    default=False,
+    help="Give vector memory accesses their own private L1D+L2 chain "
+    "in parallel with the scalar caches, steered by a VectorSplitter "
+    "on the dcache port (coherent via the membus)",
+)
+parser.add_argument(
+    "--vector-l1d",
+    type=str,
+    default="32KiB",
+    help="Size of the vector-side L1D cache (with --vector-cache)",
+)
+parser.add_argument(
+    "--vector-l2",
+    type=str,
+    default="512KiB",
+    help="Size of the vector-side L2 cache (with --vector-cache)",
+)
 
 args = parser.parse_args()
 
@@ -197,12 +219,23 @@ else:
     print(f"Error: Unknown CPU type {args.cpu_type}")
     sys.exit(1)
 
-cache_hierarchy = PrivateL1PrivateL2CacheHierarchy(
-    # l1d_size="32KiB", l1i_size="32KiB", l2_size="512KiB"
-    l1d_size=args.l1d,
-    l1i_size="32KiB",
-    l2_size=args.l2,
-)
+if args.vector_cache:
+    from vector_cache_hierarchy import VectorSplitCacheHierarchy
+
+    cache_hierarchy = VectorSplitCacheHierarchy(
+        l1d_size=args.l1d,
+        l1i_size="32KiB",
+        l2_size=args.l2,
+        vector_l1d_size=args.vector_l1d,
+        vector_l2_size=args.vector_l2,
+    )
+else:
+    cache_hierarchy = PrivateL1PrivateL2CacheHierarchy(
+        # l1d_size="32KiB", l1i_size="32KiB", l2_size="512KiB"
+        l1d_size=args.l1d,
+        l1i_size="32KiB",
+        l2_size=args.l2,
+    )
 
 # memory = SingleChannelDDR3_1600()
 memory = SingleChannelDDR4_2400(size="8GiB")
@@ -258,6 +291,12 @@ print(
     f"  Scalar Bypass:    "
     f"{'ON (scalar accesses uncacheable)' if args.scalar_uncacheable else 'OFF'}"
 )
+if args.vector_cache:
+    print(f"  Vector Caches:    ON (split hierarchy via VectorSplitter)")
+    print(f"  Vector L1D Cache: {args.vector_l1d}")
+    print(f"  Vector L2 Cache:  {args.vector_l2}")
+else:
+    print(f"  Vector Caches:    OFF (shared L1D/L2)")
 print("-" * 50)
 print("Beginning simulation...")
 print("=" * 50)

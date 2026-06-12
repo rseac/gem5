@@ -29,8 +29,11 @@ namespace gem5
 class RVVExtension : public Extension<Request, RVVExtension>
 {
   public:
-    explicit RVVExtension(OpClass op_class, int64_t rs2 = 0)
-        : instType(op_class), rs2(rs2) {}
+    // No default arguments on purpose: every construction site must state
+    // the rs2 value and the vector flag explicitly, so adding a new
+    // annotation path can't silently mis-tag requests.
+    explicit RVVExtension(OpClass op_class, int64_t rs2, bool is_vector)
+        : instType(op_class), rs2(rs2), vector(is_vector) {}
 
     std::unique_ptr<ExtensionBase>
     clone() const override
@@ -47,6 +50,13 @@ class RVVExtension : public Extension<Request, RVVExtension>
      */
     int64_t getRs2() const { return rs2; }
 
+    /**
+     * True when the originating instruction is a vector instruction
+     * (the StaticInst IsVector flag). VectorSplitter steers on this to
+     * pick between the scalar and vector cache hierarchies.
+     */
+    bool isVector() const { return vector; }
+
     /** Human-readable type name, e.g. "SimdStridedLoad". */
     const char *
     toString() const
@@ -57,6 +67,7 @@ class RVVExtension : public Extension<Request, RVVExtension>
   private:
     OpClass instType;
     int64_t rs2;
+    bool vector;
 };
 
 } // namespace gem5

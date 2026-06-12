@@ -631,7 +631,7 @@ class VlElementMicroInst : public VectorMemMicroInst
     {
         if (has_rs2) {
             req->setExtension(std::make_shared<RVVExtension>(
-                opClass(), (int64_t)xc->getRegOperand(this, 1)));
+                opClass(), (int64_t)xc->getRegOperand(this, 1), isVector()));
         } else {
             StaticInst::annotateMemRequest(xc, req);
         }
@@ -681,7 +681,7 @@ class VsElementMicroInst : public VectorMemMicroInst
     {
         if (has_rs2) {
             req->setExtension(std::make_shared<RVVExtension>(
-                opClass(), (int64_t)xc->getRegOperand(this, 1)));
+                opClass(), (int64_t)xc->getRegOperand(this, 1), isVector()));
         } else {
             StaticInst::annotateMemRequest(xc, req);
         }

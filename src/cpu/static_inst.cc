@@ -97,7 +97,8 @@ StaticInst::advancePC(ThreadContext *tc) const
 void
 StaticInst::annotateMemRequest(ExecContext *xc, const RequestPtr &req) const
 {
-    req->setExtension(std::make_shared<RVVExtension>(opClass()));
+    req->setExtension(
+        std::make_shared<RVVExtension>(opClass(), 0, isVector()));
 }
 
 } // namespace gem5

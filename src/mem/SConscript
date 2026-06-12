@@ -43,6 +43,9 @@ Import('*')
 SimObject('CommMonitor.py', sim_objects=['CommMonitor'])
 Source('comm_monitor.cc')
 
+SimObject('VectorSplitter.py', sim_objects=['VectorSplitter'])
+Source('vector_splitter.cc')
+
 SimObject('AbstractMemory.py', sim_objects=['AbstractMemory'])
 SimObject('AddrMapper.py', sim_objects=['AddrMapper', 'RangeAddrMapper'])
 SimObject('Bridge.py', sim_objects=['BridgeBase', 'Bridge'])
@@ -144,6 +147,7 @@ CompoundFlag('XBar', ['BaseXBar', 'CoherentXBar', 'NoncoherentXBar',
 
 DebugFlag('Bridge')
 DebugFlag('CommMonitor')
+DebugFlag('VectorSplitter')
 DebugFlag('DRAM')
 DebugFlag('DRAMPower')
 DebugFlag('DRAMState')
