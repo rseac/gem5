@@ -17,4 +17,3 @@ ifeq ($(VC), 1)
 endif
 verify:
 	cmp m5out/$(PROG)_result.bin m5out2/$(PROG)_result.bin && echo PASS
-	xxd m5out2/stride1_result.bin

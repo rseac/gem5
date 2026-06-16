@@ -86,7 +86,7 @@ fontsize=14;
 label="core \n: AraO3CPU";
 shape=box;
 style="rounded, filled";
-tooltip="LFSTSize&#61;1024&#10;\LQEntries&#61;32&#10;\LSQCheckLoads&#61;true&#10;\LSQDepCheckShift&#61;4&#10;\SQEntries&#61;32&#10;\SSITAssoc&#61;1&#10;\SSITIndexingPolicy&#61;board.processor.cores.core.SSITIndexingPolicy&#10;\SSITReplPolicy&#61;board.processor.cores.core.SSITReplPolicy&#10;\SSITSize&#61;1024&#10;\activity&#61;0&#10;\bacToFetchDelay&#61;1&#10;\backComSize&#61;100&#10;\branchPred&#61;board.processor.cores.core.branchPred&#10;\cacheLoadPorts&#61;200&#10;\cacheStorePorts&#61;200&#10;\checker&#61;Null&#10;\clk_domain&#61;board.clk_domain&#10;\commitToDecodeDelay&#61;1&#10;\commitToFetchDelay&#61;1&#10;\commitToIEWDelay&#61;1&#10;\commitToRenameDelay&#61;1&#10;\commitWidth&#61;2&#10;\cpu_id&#61;0&#10;\decodeToFetchDelay&#61;1&#10;\decodeToRenameDelay&#61;1&#10;\decodeWidth&#61;2&#10;\decoder&#61;board.processor.cores.core.decoder&#10;\decoupledFrontEnd&#61;false&#10;\dispatchWidth&#61;2&#10;\do_checkpoint_insts&#61;true&#10;\do_statistics_insts&#61;true&#10;\enable_vector_chaining&#61;true&#10;\eventq_index&#61;0&#10;\fetchBufferSize&#61;64&#10;\fetchQueueSize&#61;32&#10;\fetchTargetWidth&#61;32&#10;\fetchToBacDelay&#61;1&#10;\fetchToDecodeDelay&#61;1&#10;\fetchTrapLatency&#61;1&#10;\fetchWidth&#61;2&#10;\forwardComSize&#61;100&#10;\function_trace&#61;false&#10;\function_trace_start&#61;0&#10;\iewToCommitDelay&#61;1&#10;\iewToDecodeDelay&#61;1&#10;\iewToFetchDelay&#61;1&#10;\iewToRenameDelay&#61;1&#10;\instQueues&#61;board.processor.cores.core.instQueues&#10;\interrupts&#61;board.processor.cores.core.interrupts&#10;\isa&#61;board.processor.cores.core.isa&#10;\issueToExecuteDelay&#61;1&#10;\issueWidth&#61;2&#10;\latency_model&#61;board.processor.cores.core.latency_model&#10;\maxFTPerCycle&#61;4&#10;\maxTakenPredPerCycle&#61;1&#10;\max_insts_all_threads&#61;0&#10;\max_insts_any_thread&#61;0&#10;\minInstSize&#61;1&#10;\mmu&#61;board.processor.cores.core.mmu&#10;\needsTSO&#61;false&#10;\numFTQEntries&#61;8&#10;\numPhysCCRegs&#61;0&#10;\numPhysFloatRegs&#61;256&#10;\numPhysIntRegs&#61;256&#10;\numPhysMatRegs&#61;2&#10;\numPhysVecPredRegs&#61;32&#10;\numPhysVecRegs&#61;256&#10;\numROBEntries&#61;192&#10;\numRobs&#61;1&#10;\numThreads&#61;1&#10;\power_gating_on_idle&#61;false&#10;\power_model&#61;&#10;\power_state&#61;board.processor.cores.core.power_state&#10;\progress_interval&#61;0&#10;\pwr_gating_latency&#61;300&#10;\recvRespBufferSize&#61;64&#10;\recvRespMaxCachelines&#61;1&#10;\recvRespThrottling&#61;false&#10;\renameToDecodeDelay&#61;1&#10;\renameToFetchDelay&#61;1&#10;\renameToIEWDelay&#61;2&#10;\renameToROBDelay&#61;1&#10;\renameWidth&#61;2&#10;\scalar_uncacheable&#61;false&#10;\simd_units&#61;2&#10;\simpoint_start_insts&#61;&#10;\smtCommitPolicy&#61;RoundRobin&#10;\smtFetchPolicy&#61;RoundRobin&#10;\smtLSQPolicy&#61;Partitioned&#10;\smtLSQThreshold&#61;100&#10;\smtNumFetchingThreads&#61;1&#10;\smtROBPolicy&#61;Partitioned&#10;\smtROBThreshold&#61;100&#10;\socket_id&#61;0&#10;\squashWidth&#61;2&#10;\store_set_clear_period&#61;250000&#10;\switched_out&#61;false&#10;\syscallRetryLatency&#61;10000&#10;\system&#61;board&#10;\tracer&#61;board.processor.cores.core.tracer&#10;\trapLatency&#61;13&#10;\vector_timing_throughput&#61;4&#10;\wbWidth&#61;2&#10;\workload&#61;board.processor.cores.core.workload";
+tooltip="LFSTSize&#61;1024&#10;\LQEntries&#61;32&#10;\LSQCheckLoads&#61;true&#10;\LSQDepCheckShift&#61;4&#10;\SQEntries&#61;32&#10;\SSITAssoc&#61;1&#10;\SSITIndexingPolicy&#61;board.processor.cores.core.SSITIndexingPolicy&#10;\SSITReplPolicy&#61;board.processor.cores.core.SSITReplPolicy&#10;\SSITSize&#61;1024&#10;\activity&#61;0&#10;\bacToFetchDelay&#61;1&#10;\backComSize&#61;100&#10;\branchPred&#61;board.processor.cores.core.branchPred&#10;\cacheLoadPorts&#61;200&#10;\cacheStorePorts&#61;200&#10;\checker&#61;Null&#10;\clk_domain&#61;board.clk_domain&#10;\commitToDecodeDelay&#61;1&#10;\commitToFetchDelay&#61;1&#10;\commitToIEWDelay&#61;1&#10;\commitToRenameDelay&#61;1&#10;\commitWidth&#61;2&#10;\cpu_id&#61;0&#10;\decodeToFetchDelay&#61;1&#10;\decodeToRenameDelay&#61;1&#10;\decodeWidth&#61;2&#10;\decoder&#61;board.processor.cores.core.decoder&#10;\decoupledFrontEnd&#61;false&#10;\dispatchWidth&#61;2&#10;\do_checkpoint_insts&#61;true&#10;\do_statistics_insts&#61;true&#10;\enable_vector_chaining&#61;true&#10;\eventq_index&#61;0&#10;\fetchBufferSize&#61;64&#10;\fetchQueueSize&#61;32&#10;\fetchTargetWidth&#61;32&#10;\fetchToBacDelay&#61;1&#10;\fetchToDecodeDelay&#61;1&#10;\fetchTrapLatency&#61;1&#10;\fetchWidth&#61;2&#10;\forwardComSize&#61;100&#10;\function_trace&#61;false&#10;\function_trace_start&#61;0&#10;\iewToCommitDelay&#61;1&#10;\iewToDecodeDelay&#61;1&#10;\iewToFetchDelay&#61;1&#10;\iewToRenameDelay&#61;1&#10;\instQueues&#61;board.processor.cores.core.instQueues&#10;\interrupts&#61;board.processor.cores.core.interrupts&#10;\isa&#61;board.processor.cores.core.isa&#10;\issueToExecuteDelay&#61;1&#10;\issueWidth&#61;2&#10;\latency_model&#61;board.processor.cores.core.latency_model&#10;\maxFTPerCycle&#61;4&#10;\maxTakenPredPerCycle&#61;1&#10;\max_insts_all_threads&#61;0&#10;\max_insts_any_thread&#61;0&#10;\minInstSize&#61;1&#10;\mmu&#61;board.processor.cores.core.mmu&#10;\needsTSO&#61;false&#10;\numFTQEntries&#61;8&#10;\numPhysCCRegs&#61;0&#10;\numPhysFloatRegs&#61;256&#10;\numPhysIntRegs&#61;256&#10;\numPhysMatRegs&#61;2&#10;\numPhysVecPredRegs&#61;32&#10;\numPhysVecRegs&#61;256&#10;\numROBEntries&#61;192&#10;\numRobs&#61;1&#10;\numThreads&#61;1&#10;\power_gating_on_idle&#61;false&#10;\power_model&#61;&#10;\power_state&#61;board.processor.cores.core.power_state&#10;\progress_interval&#61;0&#10;\pwr_gating_latency&#61;300&#10;\recvRespBufferSize&#61;64&#10;\recvRespMaxCachelines&#61;1&#10;\recvRespThrottling&#61;false&#10;\renameToDecodeDelay&#61;1&#10;\renameToFetchDelay&#61;1&#10;\renameToIEWDelay&#61;2&#10;\renameToROBDelay&#61;1&#10;\renameWidth&#61;2&#10;\scalar_uncacheable&#61;true&#10;\simd_units&#61;2&#10;\simpoint_start_insts&#61;&#10;\smtCommitPolicy&#61;RoundRobin&#10;\smtFetchPolicy&#61;RoundRobin&#10;\smtLSQPolicy&#61;Partitioned&#10;\smtLSQThreshold&#61;100&#10;\smtNumFetchingThreads&#61;1&#10;\smtROBPolicy&#61;Partitioned&#10;\smtROBThreshold&#61;100&#10;\socket_id&#61;0&#10;\squashWidth&#61;2&#10;\store_set_clear_period&#61;250000&#10;\switched_out&#61;false&#10;\syscallRetryLatency&#61;10000&#10;\system&#61;board&#10;\tracer&#61;board.processor.cores.core.tracer&#10;\trapLatency&#61;13&#10;\vector_timing_throughput&#61;4&#10;\wbWidth&#61;2&#10;\workload&#61;board.processor.cores.core.workload";
 board_processor_cores_core_icache_port [color="#000000", fillcolor="#959ead", fontcolor="#000000", fontname=Arial, fontsize=14, label=icache_port, shape=box, style="rounded, filled"];
 board_processor_cores_core_dcache_port [color="#000000", fillcolor="#959ead", fontcolor="#000000", fontname=Arial, fontsize=14, label=dcache_port, shape=box, style="rounded, filled"];
 subgraph cluster_board_processor_cores_core_mmu {
@@ -1768,7 +1768,7 @@ fontsize=14;
 label="workload \n: Process";
 shape=box;
 style="rounded, filled";
-tooltip="cmd&#61;./rvv/rvv_load_chain_test.bin 2048&#10;\cwd&#61;/gem5&#10;\drivers&#61;&#10;\egid&#61;100&#10;\env&#61;&#10;\errout&#61;cerr&#10;\euid&#61;100&#10;\eventq_index&#61;0&#10;\executable&#61;./rvv/rvv_load_chain_test.bin&#10;\gid&#61;100&#10;\input&#61;cin&#10;\kvmInSE&#61;false&#10;\maxStackSize&#61;67108864&#10;\output&#61;cout&#10;\pgid&#61;100&#10;\pid&#61;100&#10;\ppid&#61;0&#10;\release&#61;5.1.0&#10;\simpoint&#61;0&#10;\system&#61;board&#10;\uid&#61;100&#10;\useArchPT&#61;false&#10;\zeroPages&#61;true";
+tooltip="cmd&#61;./tests/test-progs/custom/bin//stride1 2048&#10;\cwd&#61;/gem5&#10;\drivers&#61;&#10;\egid&#61;100&#10;\env&#61;&#10;\errout&#61;cerr&#10;\euid&#61;100&#10;\eventq_index&#61;0&#10;\executable&#61;./tests/test-progs/custom/bin//stride1&#10;\gid&#61;100&#10;\input&#61;cin&#10;\kvmInSE&#61;false&#10;\maxStackSize&#61;67108864&#10;\output&#61;cout&#10;\pgid&#61;100&#10;\pid&#61;100&#10;\ppid&#61;0&#10;\release&#61;5.1.0&#10;\simpoint&#61;0&#10;\system&#61;board&#10;\uid&#61;100&#10;\useArchPT&#61;false&#10;\zeroPages&#61;true";
 }
 
 subgraph cluster_board_processor_cores_core_interrupts {
@@ -1856,7 +1856,7 @@ fillcolor="#bab6ae";
 fontcolor="#000000";
 fontname=Arial;
 fontsize=14;
-label="cache_hierarchy \n: VectorSplitCacheHierarchy";
+label="cache_hierarchy \n: PrivateL1PrivateL2CacheHierarchy";
 shape=box;
 style="rounded, filled";
 tooltip="eventq_index&#61;0&#10;\thermal_domain&#61;Null";
@@ -1960,59 +1960,6 @@ style="rounded, filled";
 tooltip="clk_gate_bins&#61;20&#10;\clk_gate_max&#61;1000000000000&#10;\clk_gate_min&#61;1000&#10;\default_state&#61;UNDEFINED&#10;\eventq_index&#61;0&#10;\leaders&#61;&#10;\possible_states&#61;";
 }
 
-}
-
-subgraph cluster_board_cache_hierarchy_vector_l2buses {
-color="#000000";
-fillcolor="#6f798c";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="vector_l2buses \n: L2XBar";
-shape=box;
-style="rounded, filled";
-tooltip="clk_domain&#61;board.clk_domain&#10;\eventq_index&#61;0&#10;\forward_latency&#61;0&#10;\frontend_latency&#61;1&#10;\header_latency&#61;1&#10;\max_outstanding_snoops&#61;512&#10;\max_routing_table_size&#61;512&#10;\point_of_coherency&#61;false&#10;\point_of_unification&#61;true&#10;\power_model&#61;&#10;\power_state&#61;board.cache_hierarchy.vector_l2buses.power_state&#10;\response_latency&#61;1&#10;\snoop_filter&#61;board.cache_hierarchy.vector_l2buses.snoop_filter&#10;\snoop_response_latency&#61;1&#10;\system&#61;board&#10;\use_default_range&#61;false&#10;\width&#61;32";
-board_cache_hierarchy_vector_l2buses_cpu_side_ports [color="#000000", fillcolor="#586070", fontcolor="#000000", fontname=Arial, fontsize=14, label=cpu_side_ports, shape=box, style="rounded, filled"];
-board_cache_hierarchy_vector_l2buses_mem_side_ports [color="#000000", fillcolor="#586070", fontcolor="#000000", fontname=Arial, fontsize=14, label=mem_side_ports, shape=box, style="rounded, filled"];
-subgraph cluster_board_cache_hierarchy_vector_l2buses_snoop_filter {
-color="#000000";
-fillcolor="#bab6ae";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="snoop_filter \n: SnoopFilter";
-shape=box;
-style="rounded, filled";
-tooltip="eventq_index&#61;0&#10;\lookup_latency&#61;0&#10;\max_capacity&#61;8388608&#10;\system&#61;board";
-}
-
-subgraph cluster_board_cache_hierarchy_vector_l2buses_power_state {
-color="#000000";
-fillcolor="#bab6ae";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="power_state \n: PowerState";
-shape=box;
-style="rounded, filled";
-tooltip="clk_gate_bins&#61;20&#10;\clk_gate_max&#61;1000000000000&#10;\clk_gate_min&#61;1000&#10;\default_state&#61;UNDEFINED&#10;\eventq_index&#61;0&#10;\leaders&#61;&#10;\possible_states&#61;";
-}
-
-}
-
-subgraph cluster_board_cache_hierarchy_splitters {
-color="#000000";
-fillcolor="#9f9c95";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="splitters \n: VectorSplitter";
-shape=box;
-style="rounded, filled";
-tooltip="eventq_index&#61;0&#10;\system&#61;board";
-board_cache_hierarchy_splitters_cpu_side_port [color="#000000", fillcolor="#7f7c77", fontcolor="#000000", fontname=Arial, fontsize=14, label=cpu_side_port, shape=box, style="rounded, filled"];
-board_cache_hierarchy_splitters_scalar_side_port [color="#000000", fillcolor="#7f7c77", fontcolor="#000000", fontname=Arial, fontsize=14, label=scalar_side_port, shape=box, style="rounded, filled"];
-board_cache_hierarchy_splitters_vector_side_port [color="#000000", fillcolor="#7f7c77", fontcolor="#000000", fontname=Arial, fontsize=14, label=vector_side_port, shape=box, style="rounded, filled"];
 }
 
 subgraph "cluster_board_cache_hierarchy_l2-cache-0" {
@@ -2381,250 +2328,6 @@ tooltip="clk_gate_bins&#61;20&#10;\clk_gate_max&#61;1000000000000&#10;\clk_gate_
 
 }
 
-subgraph "cluster_board_cache_hierarchy_vector-l2-cache-0" {
-color="#000000";
-fillcolor="#9f9c95";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="vector-l2-cache-0 \n: L2Cache";
-shape=box;
-style="rounded, filled";
-tooltip="addr_ranges&#61;0:18446744073709551615&#10;\assoc&#61;16&#10;\clk_domain&#61;board.clk_domain&#10;\clusivity&#61;mostly_incl&#10;\compressor&#61;Null&#10;\data_latency&#61;10&#10;\demand_mshr_reserve&#61;1&#10;\eventq_index&#61;0&#10;\is_read_only&#61;false&#10;\max_miss_count&#61;0&#10;\move_contractions&#61;true&#10;\mshrs&#61;20&#10;\partitioning_manager&#61;Null&#10;\power_model&#61;&#10;\power_state&#61;board.cache_hierarchy.vector-l2-cache-0.power_state&#10;\prefetcher&#61;board.cache_hierarchy.vector-l2-cache-0.prefetcher&#10;\replace_expansions&#61;true&#10;\replacement_policy&#61;board.cache_hierarchy.vector-l2-cache-0.replacement_policy&#10;\response_latency&#61;1&#10;\sequential_access&#61;false&#10;\size&#61;524288&#10;\system&#61;board&#10;\tag_latency&#61;10&#10;\tags&#61;board.cache_hierarchy.vector-l2-cache-0.tags&#10;\tgts_per_mshr&#61;12&#10;\warmup_percentage&#61;0&#10;\write_allocator&#61;Null&#10;\write_buffers&#61;8&#10;\writeback_clean&#61;false";
-"board_cache_hierarchy_vector-l2-cache-0_cpu_side" [color="#000000", fillcolor="#7f7c77", fontcolor="#000000", fontname=Arial, fontsize=14, label=cpu_side, shape=box, style="rounded, filled"];
-"board_cache_hierarchy_vector-l2-cache-0_mem_side" [color="#000000", fillcolor="#7f7c77", fontcolor="#000000", fontname=Arial, fontsize=14, label=mem_side, shape=box, style="rounded, filled"];
-subgraph "cluster_board_cache_hierarchy_vector-l2-cache-0_tags" {
-color="#000000";
-fillcolor="#84827c";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="tags \n: BaseSetAssoc";
-shape=box;
-style="rounded, filled";
-tooltip="assoc&#61;16&#10;\block_size&#61;64&#10;\clk_domain&#61;board.clk_domain&#10;\entry_size&#61;64&#10;\eventq_index&#61;0&#10;\indexing_policy&#61;board.cache_hierarchy.vector-l2-cache-0.tags.indexing_policy&#10;\partitioning_manager&#61;Null&#10;\power_model&#61;&#10;\power_state&#61;board.cache_hierarchy.vector-l2-cache-0.tags.power_state&#10;\replacement_policy&#61;board.cache_hierarchy.vector-l2-cache-0.replacement_policy&#10;\sequential_access&#61;false&#10;\size&#61;524288&#10;\system&#61;board&#10;\tag_latency&#61;10&#10;\warmup_percentage&#61;0";
-subgraph "cluster_board_cache_hierarchy_vector-l2-cache-0_tags_indexing_policy" {
-color="#000000";
-fillcolor="#6a6863";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="indexing_policy \n: TaggedSetAssociative";
-shape=box;
-style="rounded, filled";
-tooltip="assoc&#61;16&#10;\entry_size&#61;64&#10;\eventq_index&#61;0&#10;\size&#61;524288";
-}
-
-subgraph "cluster_board_cache_hierarchy_vector-l2-cache-0_tags_power_state" {
-color="#000000";
-fillcolor="#6a6863";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="power_state \n: PowerState";
-shape=box;
-style="rounded, filled";
-tooltip="clk_gate_bins&#61;20&#10;\clk_gate_max&#61;1000000000000&#10;\clk_gate_min&#61;1000&#10;\default_state&#61;UNDEFINED&#10;\eventq_index&#61;0&#10;\leaders&#61;&#10;\possible_states&#61;";
-}
-
-}
-
-subgraph "cluster_board_cache_hierarchy_vector-l2-cache-0_replacement_policy" {
-color="#000000";
-fillcolor="#84827c";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="replacement_policy \n: LRURP";
-shape=box;
-style="rounded, filled";
-tooltip="eventq_index&#61;0";
-}
-
-subgraph "cluster_board_cache_hierarchy_vector-l2-cache-0_power_state" {
-color="#000000";
-fillcolor="#84827c";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="power_state \n: PowerState";
-shape=box;
-style="rounded, filled";
-tooltip="clk_gate_bins&#61;20&#10;\clk_gate_max&#61;1000000000000&#10;\clk_gate_min&#61;1000&#10;\default_state&#61;UNDEFINED&#10;\eventq_index&#61;0&#10;\leaders&#61;&#10;\possible_states&#61;";
-}
-
-subgraph "cluster_board_cache_hierarchy_vector-l2-cache-0_prefetcher" {
-color="#000000";
-fillcolor="#84827c";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="prefetcher \n: StridePrefetcher";
-shape=box;
-style="rounded, filled";
-tooltip="block_size&#61;64&#10;\cache_snoop&#61;false&#10;\clk_domain&#61;board.clk_domain&#10;\confidence_counter_bits&#61;3&#10;\confidence_threshold&#61;50&#10;\degree&#61;4&#10;\distance&#61;0&#10;\eventq_index&#61;0&#10;\initial_confidence&#61;4&#10;\latency&#61;1&#10;\max_prefetch_requests_with_pending_translation&#61;32&#10;\on_data&#61;true&#10;\on_inst&#61;false&#10;\on_miss&#61;false&#10;\on_read&#61;true&#10;\on_write&#61;true&#10;\page_bytes&#61;4096&#10;\power_model&#61;&#10;\power_state&#61;board.cache_hierarchy.vector-l2-cache-0.prefetcher.power_state&#10;\prefetch_on_access&#61;false&#10;\prefetch_on_pf_hit&#61;true&#10;\queue_filter&#61;true&#10;\queue_size&#61;32&#10;\queue_squash&#61;true&#10;\sys&#61;board&#10;\table_assoc&#61;4&#10;\table_entries&#61;64&#10;\table_indexing_policy&#61;board.cache_hierarchy.vector-l2-cache-0.prefetcher.table_indexing_policy&#10;\table_replacement_policy&#61;board.cache_hierarchy.vector-l2-cache-0.prefetcher.table_replacement_policy&#10;\tag_prefetch&#61;true&#10;\throttle_control_percentage&#61;0&#10;\use_cache_line_address&#61;true&#10;\use_requestor_id&#61;true&#10;\use_virtual_addresses&#61;false";
-subgraph "cluster_board_cache_hierarchy_vector-l2-cache-0_prefetcher_table_indexing_policy" {
-color="#000000";
-fillcolor="#6a6863";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="table_indexing_policy \n: StridePrefetcherHashedSetAssociative";
-shape=box;
-style="rounded, filled";
-tooltip="assoc&#61;4&#10;\entry_size&#61;1&#10;\eventq_index&#61;0&#10;\size&#61;64";
-}
-
-subgraph "cluster_board_cache_hierarchy_vector-l2-cache-0_prefetcher_table_replacement_policy" {
-color="#000000";
-fillcolor="#6a6863";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="table_replacement_policy \n: RandomRP";
-shape=box;
-style="rounded, filled";
-tooltip="eventq_index&#61;0";
-}
-
-subgraph "cluster_board_cache_hierarchy_vector-l2-cache-0_prefetcher_power_state" {
-color="#000000";
-fillcolor="#6a6863";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="power_state \n: PowerState";
-shape=box;
-style="rounded, filled";
-tooltip="clk_gate_bins&#61;20&#10;\clk_gate_max&#61;1000000000000&#10;\clk_gate_min&#61;1000&#10;\default_state&#61;UNDEFINED&#10;\eventq_index&#61;0&#10;\leaders&#61;&#10;\possible_states&#61;";
-}
-
-}
-
-}
-
-subgraph "cluster_board_cache_hierarchy_vector-l1d-cache-0" {
-color="#000000";
-fillcolor="#9f9c95";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="vector-l1d-cache-0 \n: L1DCache";
-shape=box;
-style="rounded, filled";
-tooltip="addr_ranges&#61;0:18446744073709551615&#10;\assoc&#61;8&#10;\clk_domain&#61;board.clk_domain&#10;\clusivity&#61;mostly_incl&#10;\compressor&#61;Null&#10;\data_latency&#61;1&#10;\demand_mshr_reserve&#61;1&#10;\eventq_index&#61;0&#10;\is_read_only&#61;false&#10;\max_miss_count&#61;0&#10;\move_contractions&#61;true&#10;\mshrs&#61;16&#10;\partitioning_manager&#61;Null&#10;\power_model&#61;&#10;\power_state&#61;board.cache_hierarchy.vector-l1d-cache-0.power_state&#10;\prefetcher&#61;board.cache_hierarchy.vector-l1d-cache-0.prefetcher&#10;\replace_expansions&#61;true&#10;\replacement_policy&#61;board.cache_hierarchy.vector-l1d-cache-0.replacement_policy&#10;\response_latency&#61;1&#10;\sequential_access&#61;false&#10;\size&#61;32768&#10;\system&#61;board&#10;\tag_latency&#61;1&#10;\tags&#61;board.cache_hierarchy.vector-l1d-cache-0.tags&#10;\tgts_per_mshr&#61;20&#10;\warmup_percentage&#61;0&#10;\write_allocator&#61;Null&#10;\write_buffers&#61;8&#10;\writeback_clean&#61;false";
-"board_cache_hierarchy_vector-l1d-cache-0_cpu_side" [color="#000000", fillcolor="#7f7c77", fontcolor="#000000", fontname=Arial, fontsize=14, label=cpu_side, shape=box, style="rounded, filled"];
-"board_cache_hierarchy_vector-l1d-cache-0_mem_side" [color="#000000", fillcolor="#7f7c77", fontcolor="#000000", fontname=Arial, fontsize=14, label=mem_side, shape=box, style="rounded, filled"];
-subgraph "cluster_board_cache_hierarchy_vector-l1d-cache-0_tags" {
-color="#000000";
-fillcolor="#84827c";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="tags \n: BaseSetAssoc";
-shape=box;
-style="rounded, filled";
-tooltip="assoc&#61;8&#10;\block_size&#61;64&#10;\clk_domain&#61;board.clk_domain&#10;\entry_size&#61;64&#10;\eventq_index&#61;0&#10;\indexing_policy&#61;board.cache_hierarchy.vector-l1d-cache-0.tags.indexing_policy&#10;\partitioning_manager&#61;Null&#10;\power_model&#61;&#10;\power_state&#61;board.cache_hierarchy.vector-l1d-cache-0.tags.power_state&#10;\replacement_policy&#61;board.cache_hierarchy.vector-l1d-cache-0.replacement_policy&#10;\sequential_access&#61;false&#10;\size&#61;32768&#10;\system&#61;board&#10;\tag_latency&#61;1&#10;\warmup_percentage&#61;0";
-subgraph "cluster_board_cache_hierarchy_vector-l1d-cache-0_tags_indexing_policy" {
-color="#000000";
-fillcolor="#6a6863";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="indexing_policy \n: TaggedSetAssociative";
-shape=box;
-style="rounded, filled";
-tooltip="assoc&#61;8&#10;\entry_size&#61;64&#10;\eventq_index&#61;0&#10;\size&#61;32768";
-}
-
-subgraph "cluster_board_cache_hierarchy_vector-l1d-cache-0_tags_power_state" {
-color="#000000";
-fillcolor="#6a6863";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="power_state \n: PowerState";
-shape=box;
-style="rounded, filled";
-tooltip="clk_gate_bins&#61;20&#10;\clk_gate_max&#61;1000000000000&#10;\clk_gate_min&#61;1000&#10;\default_state&#61;UNDEFINED&#10;\eventq_index&#61;0&#10;\leaders&#61;&#10;\possible_states&#61;";
-}
-
-}
-
-subgraph "cluster_board_cache_hierarchy_vector-l1d-cache-0_replacement_policy" {
-color="#000000";
-fillcolor="#84827c";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="replacement_policy \n: LRURP";
-shape=box;
-style="rounded, filled";
-tooltip="eventq_index&#61;0";
-}
-
-subgraph "cluster_board_cache_hierarchy_vector-l1d-cache-0_power_state" {
-color="#000000";
-fillcolor="#84827c";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="power_state \n: PowerState";
-shape=box;
-style="rounded, filled";
-tooltip="clk_gate_bins&#61;20&#10;\clk_gate_max&#61;1000000000000&#10;\clk_gate_min&#61;1000&#10;\default_state&#61;UNDEFINED&#10;\eventq_index&#61;0&#10;\leaders&#61;&#10;\possible_states&#61;";
-}
-
-subgraph "cluster_board_cache_hierarchy_vector-l1d-cache-0_prefetcher" {
-color="#000000";
-fillcolor="#84827c";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="prefetcher \n: StridePrefetcher";
-shape=box;
-style="rounded, filled";
-tooltip="block_size&#61;64&#10;\cache_snoop&#61;false&#10;\clk_domain&#61;board.clk_domain&#10;\confidence_counter_bits&#61;3&#10;\confidence_threshold&#61;50&#10;\degree&#61;4&#10;\distance&#61;0&#10;\eventq_index&#61;0&#10;\initial_confidence&#61;4&#10;\latency&#61;1&#10;\max_prefetch_requests_with_pending_translation&#61;32&#10;\on_data&#61;true&#10;\on_inst&#61;false&#10;\on_miss&#61;false&#10;\on_read&#61;true&#10;\on_write&#61;true&#10;\page_bytes&#61;4096&#10;\power_model&#61;&#10;\power_state&#61;board.cache_hierarchy.vector-l1d-cache-0.prefetcher.power_state&#10;\prefetch_on_access&#61;false&#10;\prefetch_on_pf_hit&#61;true&#10;\queue_filter&#61;true&#10;\queue_size&#61;32&#10;\queue_squash&#61;true&#10;\sys&#61;board&#10;\table_assoc&#61;4&#10;\table_entries&#61;64&#10;\table_indexing_policy&#61;board.cache_hierarchy.vector-l1d-cache-0.prefetcher.table_indexing_policy&#10;\table_replacement_policy&#61;board.cache_hierarchy.vector-l1d-cache-0.prefetcher.table_replacement_policy&#10;\tag_prefetch&#61;true&#10;\throttle_control_percentage&#61;0&#10;\use_cache_line_address&#61;true&#10;\use_requestor_id&#61;true&#10;\use_virtual_addresses&#61;false";
-subgraph "cluster_board_cache_hierarchy_vector-l1d-cache-0_prefetcher_table_indexing_policy" {
-color="#000000";
-fillcolor="#6a6863";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="table_indexing_policy \n: StridePrefetcherHashedSetAssociative";
-shape=box;
-style="rounded, filled";
-tooltip="assoc&#61;4&#10;\entry_size&#61;1&#10;\eventq_index&#61;0&#10;\size&#61;64";
-}
-
-subgraph "cluster_board_cache_hierarchy_vector-l1d-cache-0_prefetcher_table_replacement_policy" {
-color="#000000";
-fillcolor="#6a6863";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="table_replacement_policy \n: RandomRP";
-shape=box;
-style="rounded, filled";
-tooltip="eventq_index&#61;0";
-}
-
-subgraph "cluster_board_cache_hierarchy_vector-l1d-cache-0_prefetcher_power_state" {
-color="#000000";
-fillcolor="#6a6863";
-fontcolor="#000000";
-fontname=Arial;
-fontsize=14;
-label="power_state \n: PowerState";
-shape=box;
-style="rounded, filled";
-tooltip="clk_gate_bins&#61;20&#10;\clk_gate_max&#61;1000000000000&#10;\clk_gate_min&#61;1000&#10;\default_state&#61;UNDEFINED&#10;\eventq_index&#61;0&#10;\leaders&#61;&#10;\possible_states&#61;";
-}
-
-}
-
-}
-
 }
 
 subgraph cluster_board_workload {
@@ -2645,7 +2348,7 @@ tooltip="eventq_index&#61;0&#10;\remote_gdb_port&#61;#7000&#10;\wait_for_remote_
 
 board_system_port -> board_cache_hierarchy_membus_cpu_side_ports  [dir=forward];
 board_processor_cores_core_icache_port -> "board_cache_hierarchy_l1i-cache-0_cpu_side"  [dir=forward];
-board_processor_cores_core_dcache_port -> board_cache_hierarchy_splitters_cpu_side_port  [dir=forward];
+board_processor_cores_core_dcache_port -> "board_cache_hierarchy_l1d-cache-0_cpu_side"  [dir=forward];
 board_processor_cores_core_mmu_itb_walker_port -> board_cache_hierarchy_l2buses_cpu_side_ports  [dir=forward];
 board_processor_cores_core_mmu_dtb_walker_port -> board_cache_hierarchy_l2buses_cpu_side_ports  [dir=forward];
 board_memory_mem_ctrl_port -> board_cache_hierarchy_membus_mem_side_ports  [dir=back];
@@ -2654,9 +2357,4 @@ board_cache_hierarchy_membus_default -> board_cache_hierarchy_membus_badaddr_res
 board_cache_hierarchy_l2buses_cpu_side_ports -> "board_cache_hierarchy_l1i-cache-0_mem_side"  [dir=back];
 board_cache_hierarchy_l2buses_cpu_side_ports -> "board_cache_hierarchy_l1d-cache-0_mem_side"  [dir=back];
 board_cache_hierarchy_l2buses_mem_side_ports -> "board_cache_hierarchy_l2-cache-0_cpu_side"  [dir=forward];
-board_cache_hierarchy_vector_l2buses_cpu_side_ports -> "board_cache_hierarchy_vector-l1d-cache-0_mem_side"  [dir=back];
-board_cache_hierarchy_vector_l2buses_mem_side_ports -> "board_cache_hierarchy_vector-l2-cache-0_cpu_side"  [dir=forward];
-board_cache_hierarchy_splitters_scalar_side_port -> "board_cache_hierarchy_l1d-cache-0_cpu_side"  [dir=forward];
-"board_cache_hierarchy_vector-l2-cache-0_mem_side" -> board_cache_hierarchy_membus_cpu_side_ports  [dir=forward];
-"board_cache_hierarchy_vector-l1d-cache-0_cpu_side" -> board_cache_hierarchy_splitters_vector_side_port  [dir=back];
 }

@@ -224,7 +224,7 @@
                 "writeback_clean": false,
                 "cpu_side": {
                     "role": "GEM5 RESPONDER",
-                    "peer": "board.cache_hierarchy.splitters.scalar_side_port",
+                    "peer": "board.processor.cores.core.dcache_port",
                     "is_source": "False"
                 },
                 "mem_side": {
@@ -726,8 +726,7 @@
                     "role": "GEM5 RESPONDER",
                     "peer": [
                         "board.system_port",
-                        "board.cache_hierarchy.l2-cache-0.mem_side",
-                        "board.cache_hierarchy.vector-l2-cache-0.mem_side"
+                        "board.cache_hierarchy.l2-cache-0.mem_side"
                     ],
                     "is_source": "False"
                 },
@@ -743,436 +742,7 @@
                     ],
                     "is_source": "True"
                 }
-            },
-            "splitters": [
-                {
-                    "type": "VectorSplitter",
-                    "cxx_class": "gem5::VectorSplitter",
-                    "name": "splitters",
-                    "path": "board.cache_hierarchy.splitters",
-                    "eventq_index": 0,
-                    "system": "board",
-                    "cpu_side_port": {
-                        "role": "GEM5 RESPONDER",
-                        "peer": "board.processor.cores.core.dcache_port",
-                        "is_source": "False"
-                    },
-                    "scalar_side_port": {
-                        "role": "GEM5 REQUESTOR",
-                        "peer": "board.cache_hierarchy.l1d-cache-0.cpu_side",
-                        "is_source": "True"
-                    },
-                    "vector_side_port": {
-                        "role": "GEM5 REQUESTOR",
-                        "peer": "board.cache_hierarchy.vector-l1d-cache-0.cpu_side",
-                        "is_source": "True"
-                    }
-                }
-            ],
-            "vector-l1d-cache-0": {
-                "type": "Cache",
-                "cxx_class": "gem5::Cache",
-                "name": "vector-l1d-cache-0",
-                "path": "board.cache_hierarchy.vector-l1d-cache-0",
-                "addr_ranges": [
-                    "0:18446744073709551615"
-                ],
-                "assoc": 8,
-                "clk_domain": "board.clk_domain",
-                "clusivity": "mostly_incl",
-                "compressor": null,
-                "data_latency": 1,
-                "demand_mshr_reserve": 1,
-                "eventq_index": 0,
-                "is_read_only": false,
-                "max_miss_count": 0,
-                "move_contractions": true,
-                "mshrs": 16,
-                "partitioning_manager": null,
-                "power_model": [],
-                "power_state": {
-                    "type": "PowerState",
-                    "cxx_class": "gem5::PowerState",
-                    "name": "power_state",
-                    "path": "board.cache_hierarchy.vector-l1d-cache-0.power_state",
-                    "clk_gate_bins": 20,
-                    "clk_gate_max": 1000000000000,
-                    "clk_gate_min": 1000,
-                    "default_state": "UNDEFINED",
-                    "eventq_index": 0,
-                    "leaders": [],
-                    "possible_states": []
-                },
-                "prefetcher": {
-                    "type": "StridePrefetcher",
-                    "cxx_class": "gem5::prefetch::Stride",
-                    "name": "prefetcher",
-                    "path": "board.cache_hierarchy.vector-l1d-cache-0.prefetcher",
-                    "block_size": 64,
-                    "cache_snoop": false,
-                    "clk_domain": "board.clk_domain",
-                    "confidence_counter_bits": 3,
-                    "confidence_threshold": 50,
-                    "degree": 4,
-                    "distance": 0,
-                    "eventq_index": 0,
-                    "initial_confidence": 4,
-                    "latency": 1,
-                    "max_prefetch_requests_with_pending_translation": 32,
-                    "on_data": true,
-                    "on_inst": false,
-                    "on_miss": false,
-                    "on_read": true,
-                    "on_write": true,
-                    "page_bytes": 4096,
-                    "power_model": [],
-                    "power_state": {
-                        "type": "PowerState",
-                        "cxx_class": "gem5::PowerState",
-                        "name": "power_state",
-                        "path": "board.cache_hierarchy.vector-l1d-cache-0.prefetcher.power_state",
-                        "clk_gate_bins": 20,
-                        "clk_gate_max": 1000000000000,
-                        "clk_gate_min": 1000,
-                        "default_state": "UNDEFINED",
-                        "eventq_index": 0,
-                        "leaders": [],
-                        "possible_states": []
-                    },
-                    "prefetch_on_access": false,
-                    "prefetch_on_pf_hit": true,
-                    "queue_filter": true,
-                    "queue_size": 32,
-                    "queue_squash": true,
-                    "sys": "board",
-                    "table_assoc": 4,
-                    "table_entries": 64,
-                    "table_indexing_policy": {
-                        "type": "StridePrefetcherHashedSetAssociative",
-                        "cxx_class": "gem5::prefetch::StridePrefetcherHashedSetAssociative",
-                        "name": "table_indexing_policy",
-                        "path": "board.cache_hierarchy.vector-l1d-cache-0.prefetcher.table_indexing_policy",
-                        "assoc": 4,
-                        "entry_size": 1,
-                        "eventq_index": 0,
-                        "size": 64
-                    },
-                    "table_replacement_policy": {
-                        "type": "RandomRP",
-                        "cxx_class": "gem5::replacement_policy::Random",
-                        "name": "table_replacement_policy",
-                        "path": "board.cache_hierarchy.vector-l1d-cache-0.prefetcher.table_replacement_policy",
-                        "eventq_index": 0
-                    },
-                    "tag_prefetch": true,
-                    "throttle_control_percentage": 0,
-                    "use_cache_line_address": true,
-                    "use_requestor_id": true,
-                    "use_virtual_addresses": false
-                },
-                "replace_expansions": true,
-                "replacement_policy": {
-                    "type": "LRURP",
-                    "cxx_class": "gem5::replacement_policy::LRU",
-                    "name": "replacement_policy",
-                    "path": "board.cache_hierarchy.vector-l1d-cache-0.replacement_policy",
-                    "eventq_index": 0
-                },
-                "response_latency": 1,
-                "sequential_access": false,
-                "size": 32768,
-                "system": "board",
-                "tag_latency": 1,
-                "tags": {
-                    "type": "BaseSetAssoc",
-                    "cxx_class": "gem5::BaseSetAssoc",
-                    "name": "tags",
-                    "path": "board.cache_hierarchy.vector-l1d-cache-0.tags",
-                    "assoc": 8,
-                    "block_size": 64,
-                    "clk_domain": "board.clk_domain",
-                    "entry_size": 64,
-                    "eventq_index": 0,
-                    "indexing_policy": {
-                        "type": "TaggedSetAssociative",
-                        "cxx_class": "gem5::TaggedSetAssociative",
-                        "name": "indexing_policy",
-                        "path": "board.cache_hierarchy.vector-l1d-cache-0.tags.indexing_policy",
-                        "assoc": 8,
-                        "entry_size": 64,
-                        "eventq_index": 0,
-                        "size": 32768
-                    },
-                    "partitioning_manager": null,
-                    "power_model": [],
-                    "power_state": {
-                        "type": "PowerState",
-                        "cxx_class": "gem5::PowerState",
-                        "name": "power_state",
-                        "path": "board.cache_hierarchy.vector-l1d-cache-0.tags.power_state",
-                        "clk_gate_bins": 20,
-                        "clk_gate_max": 1000000000000,
-                        "clk_gate_min": 1000,
-                        "default_state": "UNDEFINED",
-                        "eventq_index": 0,
-                        "leaders": [],
-                        "possible_states": []
-                    },
-                    "replacement_policy": "board.cache_hierarchy.vector-l1d-cache-0.replacement_policy",
-                    "sequential_access": false,
-                    "size": 32768,
-                    "system": "board",
-                    "tag_latency": 1,
-                    "warmup_percentage": 0
-                },
-                "tgts_per_mshr": 20,
-                "warmup_percentage": 0,
-                "write_allocator": null,
-                "write_buffers": 8,
-                "writeback_clean": false,
-                "cpu_side": {
-                    "role": "GEM5 RESPONDER",
-                    "peer": "board.cache_hierarchy.splitters.vector_side_port",
-                    "is_source": "False"
-                },
-                "mem_side": {
-                    "role": "GEM5 REQUESTOR",
-                    "peer": "board.cache_hierarchy.vector_l2buses.cpu_side_ports[0]",
-                    "is_source": "True"
-                }
-            },
-            "vector-l2-cache-0": {
-                "type": "Cache",
-                "cxx_class": "gem5::Cache",
-                "name": "vector-l2-cache-0",
-                "path": "board.cache_hierarchy.vector-l2-cache-0",
-                "addr_ranges": [
-                    "0:18446744073709551615"
-                ],
-                "assoc": 16,
-                "clk_domain": "board.clk_domain",
-                "clusivity": "mostly_incl",
-                "compressor": null,
-                "data_latency": 10,
-                "demand_mshr_reserve": 1,
-                "eventq_index": 0,
-                "is_read_only": false,
-                "max_miss_count": 0,
-                "move_contractions": true,
-                "mshrs": 20,
-                "partitioning_manager": null,
-                "power_model": [],
-                "power_state": {
-                    "type": "PowerState",
-                    "cxx_class": "gem5::PowerState",
-                    "name": "power_state",
-                    "path": "board.cache_hierarchy.vector-l2-cache-0.power_state",
-                    "clk_gate_bins": 20,
-                    "clk_gate_max": 1000000000000,
-                    "clk_gate_min": 1000,
-                    "default_state": "UNDEFINED",
-                    "eventq_index": 0,
-                    "leaders": [],
-                    "possible_states": []
-                },
-                "prefetcher": {
-                    "type": "StridePrefetcher",
-                    "cxx_class": "gem5::prefetch::Stride",
-                    "name": "prefetcher",
-                    "path": "board.cache_hierarchy.vector-l2-cache-0.prefetcher",
-                    "block_size": 64,
-                    "cache_snoop": false,
-                    "clk_domain": "board.clk_domain",
-                    "confidence_counter_bits": 3,
-                    "confidence_threshold": 50,
-                    "degree": 4,
-                    "distance": 0,
-                    "eventq_index": 0,
-                    "initial_confidence": 4,
-                    "latency": 1,
-                    "max_prefetch_requests_with_pending_translation": 32,
-                    "on_data": true,
-                    "on_inst": false,
-                    "on_miss": false,
-                    "on_read": true,
-                    "on_write": true,
-                    "page_bytes": 4096,
-                    "power_model": [],
-                    "power_state": {
-                        "type": "PowerState",
-                        "cxx_class": "gem5::PowerState",
-                        "name": "power_state",
-                        "path": "board.cache_hierarchy.vector-l2-cache-0.prefetcher.power_state",
-                        "clk_gate_bins": 20,
-                        "clk_gate_max": 1000000000000,
-                        "clk_gate_min": 1000,
-                        "default_state": "UNDEFINED",
-                        "eventq_index": 0,
-                        "leaders": [],
-                        "possible_states": []
-                    },
-                    "prefetch_on_access": false,
-                    "prefetch_on_pf_hit": true,
-                    "queue_filter": true,
-                    "queue_size": 32,
-                    "queue_squash": true,
-                    "sys": "board",
-                    "table_assoc": 4,
-                    "table_entries": 64,
-                    "table_indexing_policy": {
-                        "type": "StridePrefetcherHashedSetAssociative",
-                        "cxx_class": "gem5::prefetch::StridePrefetcherHashedSetAssociative",
-                        "name": "table_indexing_policy",
-                        "path": "board.cache_hierarchy.vector-l2-cache-0.prefetcher.table_indexing_policy",
-                        "assoc": 4,
-                        "entry_size": 1,
-                        "eventq_index": 0,
-                        "size": 64
-                    },
-                    "table_replacement_policy": {
-                        "type": "RandomRP",
-                        "cxx_class": "gem5::replacement_policy::Random",
-                        "name": "table_replacement_policy",
-                        "path": "board.cache_hierarchy.vector-l2-cache-0.prefetcher.table_replacement_policy",
-                        "eventq_index": 0
-                    },
-                    "tag_prefetch": true,
-                    "throttle_control_percentage": 0,
-                    "use_cache_line_address": true,
-                    "use_requestor_id": true,
-                    "use_virtual_addresses": false
-                },
-                "replace_expansions": true,
-                "replacement_policy": {
-                    "type": "LRURP",
-                    "cxx_class": "gem5::replacement_policy::LRU",
-                    "name": "replacement_policy",
-                    "path": "board.cache_hierarchy.vector-l2-cache-0.replacement_policy",
-                    "eventq_index": 0
-                },
-                "response_latency": 1,
-                "sequential_access": false,
-                "size": 524288,
-                "system": "board",
-                "tag_latency": 10,
-                "tags": {
-                    "type": "BaseSetAssoc",
-                    "cxx_class": "gem5::BaseSetAssoc",
-                    "name": "tags",
-                    "path": "board.cache_hierarchy.vector-l2-cache-0.tags",
-                    "assoc": 16,
-                    "block_size": 64,
-                    "clk_domain": "board.clk_domain",
-                    "entry_size": 64,
-                    "eventq_index": 0,
-                    "indexing_policy": {
-                        "type": "TaggedSetAssociative",
-                        "cxx_class": "gem5::TaggedSetAssociative",
-                        "name": "indexing_policy",
-                        "path": "board.cache_hierarchy.vector-l2-cache-0.tags.indexing_policy",
-                        "assoc": 16,
-                        "entry_size": 64,
-                        "eventq_index": 0,
-                        "size": 524288
-                    },
-                    "partitioning_manager": null,
-                    "power_model": [],
-                    "power_state": {
-                        "type": "PowerState",
-                        "cxx_class": "gem5::PowerState",
-                        "name": "power_state",
-                        "path": "board.cache_hierarchy.vector-l2-cache-0.tags.power_state",
-                        "clk_gate_bins": 20,
-                        "clk_gate_max": 1000000000000,
-                        "clk_gate_min": 1000,
-                        "default_state": "UNDEFINED",
-                        "eventq_index": 0,
-                        "leaders": [],
-                        "possible_states": []
-                    },
-                    "replacement_policy": "board.cache_hierarchy.vector-l2-cache-0.replacement_policy",
-                    "sequential_access": false,
-                    "size": 524288,
-                    "system": "board",
-                    "tag_latency": 10,
-                    "warmup_percentage": 0
-                },
-                "tgts_per_mshr": 12,
-                "warmup_percentage": 0,
-                "write_allocator": null,
-                "write_buffers": 8,
-                "writeback_clean": false,
-                "cpu_side": {
-                    "role": "GEM5 RESPONDER",
-                    "peer": "board.cache_hierarchy.vector_l2buses.mem_side_ports[0]",
-                    "is_source": "False"
-                },
-                "mem_side": {
-                    "role": "GEM5 REQUESTOR",
-                    "peer": "board.cache_hierarchy.membus.cpu_side_ports[2]",
-                    "is_source": "True"
-                }
-            },
-            "vector_l2buses": [
-                {
-                    "type": "CoherentXBar",
-                    "cxx_class": "gem5::CoherentXBar",
-                    "name": "vector_l2buses",
-                    "path": "board.cache_hierarchy.vector_l2buses",
-                    "clk_domain": "board.clk_domain",
-                    "eventq_index": 0,
-                    "forward_latency": 0,
-                    "frontend_latency": 1,
-                    "header_latency": 1,
-                    "max_outstanding_snoops": 512,
-                    "max_routing_table_size": 512,
-                    "point_of_coherency": false,
-                    "point_of_unification": true,
-                    "power_model": [],
-                    "power_state": {
-                        "type": "PowerState",
-                        "cxx_class": "gem5::PowerState",
-                        "name": "power_state",
-                        "path": "board.cache_hierarchy.vector_l2buses.power_state",
-                        "clk_gate_bins": 20,
-                        "clk_gate_max": 1000000000000,
-                        "clk_gate_min": 1000,
-                        "default_state": "UNDEFINED",
-                        "eventq_index": 0,
-                        "leaders": [],
-                        "possible_states": []
-                    },
-                    "response_latency": 1,
-                    "snoop_filter": {
-                        "type": "SnoopFilter",
-                        "cxx_class": "gem5::SnoopFilter",
-                        "name": "snoop_filter",
-                        "path": "board.cache_hierarchy.vector_l2buses.snoop_filter",
-                        "eventq_index": 0,
-                        "lookup_latency": 0,
-                        "max_capacity": 8388608,
-                        "system": "board"
-                    },
-                    "snoop_response_latency": 1,
-                    "system": "board",
-                    "use_default_range": false,
-                    "width": 32,
-                    "cpu_side_ports": {
-                        "role": "GEM5 RESPONDER",
-                        "peer": [
-                            "board.cache_hierarchy.vector-l1d-cache-0.mem_side"
-                        ],
-                        "is_source": "False"
-                    },
-                    "mem_side_ports": {
-                        "role": "GEM5 REQUESTOR",
-                        "peer": [
-                            "board.cache_hierarchy.vector-l2-cache-0.cpu_side"
-                        ],
-                        "is_source": "True"
-                    }
-                }
-            ]
+            }
         },
         "clk_domain": {
             "type": "SrcClockDomain",
@@ -3429,7 +2999,7 @@
                         "renameToIEWDelay": 2,
                         "renameToROBDelay": 1,
                         "renameWidth": 2,
-                        "scalar_uncacheable": false,
+                        "scalar_uncacheable": true,
                         "simd_units": 2,
                         "simpoint_start_insts": [],
                         "smtCommitPolicy": "RoundRobin",
@@ -3469,7 +3039,7 @@
                                 "name": "workload",
                                 "path": "board.processor.cores.core.workload",
                                 "cmd": [
-                                    "./rvv/rvv_load_chain_test.bin",
+                                    "./tests/test-progs/custom/bin//stride1",
                                     "2048"
                                 ],
                                 "cwd": "/gem5",
@@ -3479,7 +3049,7 @@
                                 "errout": "cerr",
                                 "euid": 100,
                                 "eventq_index": 0,
-                                "executable": "./rvv/rvv_load_chain_test.bin",
+                                "executable": "./tests/test-progs/custom/bin//stride1",
                                 "gid": 100,
                                 "input": "cin",
                                 "kvmInSE": false,
@@ -3498,7 +3068,7 @@
                         ],
                         "dcache_port": {
                             "role": "GEM5 REQUESTOR",
-                            "peer": "board.cache_hierarchy.splitters.cpu_side_port",
+                            "peer": "board.cache_hierarchy.l1d-cache-0.cpu_side",
                             "is_source": "True"
                         },
                         "icache_port": {
