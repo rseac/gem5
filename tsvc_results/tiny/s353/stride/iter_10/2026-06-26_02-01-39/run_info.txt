@@ -1,0 +1,8 @@
+size=tiny
+kernel=s353
+prefetcher=stride
+iterations=10
+LEN_1D=15360
+LEN_2D=128
+run_label=2026-06-26_02-01-39
+source_outdir=/gem5/out/stride

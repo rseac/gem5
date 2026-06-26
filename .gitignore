@@ -12,7 +12,7 @@ cscope.out
 .*.swo
 m5out
 /out/
-/tsvc_results/
+/tsvc-gem5/
 /src/doxygen/html
 /docs/_build
 /ext/dramsim2/DRAMSim2

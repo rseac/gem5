@@ -1,0 +1,8 @@
+size=tiny
+kernel=s4117
+prefetcher=isb
+iterations=10
+LEN_1D=15360
+LEN_2D=128
+run_label=2026-06-26_02-14-49
+source_outdir=/gem5/out/isb

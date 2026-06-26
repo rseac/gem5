@@ -3,7 +3,7 @@ CC=/riscv/_install/bin/riscv64-unknown-elf-gcc -std=c99
 CXX=/riscv/_install/bin/riscv64-unknown-elf-g++
 OBJDUMP=/riscv/_install/bin/riscv64-unknown-elf-objdump
 FC=gfortran
-flags = -O3 -fstrict-aliasing -fivopts -flax-vector-conversions -march=rv64gcv_zfh_zvfh -mabi=lp64d -Wall
+flags = -mcmodel=medany -march=rv64gcv_zifencei -mabi=lp64d -I/ara/apps/common -static -O3 -fno-common -fno-builtin-printf -DNR_LANES=$(nr_lanes) -DVLEN=$(vlen) -ffunction-sections -fdata-sections -std=gnu99
 vecflags = -ftree-vectorize
 noscalvecflags = -ftree-vectorize
 novecflags = -fno-tree-vectorize

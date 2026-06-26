@@ -1,0 +1,8 @@
+size=tiny
+kernel=s4112
+prefetcher=stems
+iterations=5
+LEN_1D=15360
+LEN_2D=128
+run_label=2026-06-26_03-56-01
+source_outdir=/gem5/out/stems
