@@ -213,8 +213,11 @@ splitter.vector_side_port = vector_l1d.cpu_side
 
 Both chains use the same L2XBar-between-levels structure so L1→L2 latency
 is symmetric. The vector caches are the same stdlib `L1DCache`/`L2Cache`
-classes (which attach a `StridePrefetcher` by default and expose
-`PrefetcherCls` — the hook for custom vector-prefetcher experiments).
+classes. `incorporate_cache` now sets `prefetcher = NULL` on **every** cache
+it creates (scalar L1I/L1D/L2 and vector L1D/L2), overriding the stdlib
+`StridePrefetcher` default, and then attaches an optional, caller-supplied
+prefetcher to exactly one vector cache — see
+**Selectable Vector Prefetcher** below.
 
 ### 4. CLI (`rvv/riscv-rvv-se-ara-prefetcher.py`)
 
@@ -255,4 +258,122 @@ own hierarchy).
    and any later access on either side finds it via snooping.
 5. **O3/SE focus.** The steering tag is attached by the O3 LSQ; AraMinor
    would send untagged requests (everything lands scalar-side).
+
+# Selectable Vector Prefetcher
+
+Lets you pick and tune a hardware prefetcher from the command line and attach
+it to a single **vector** cache (vector L1D or vector L2), with prefetching
+disabled on every other cache. This is the configuration layer for vector
+prefetcher experiments; it is purely Python (no gem5 rebuild).
+
+## What gem5 does by default
+
+- A prefetcher is a SimObject parameter on the cache:
+  `prefetcher = Param.BasePrefetcher(NULL, "Prefetcher attached to cache")`
+  (`src/mem/cache/Cache.py:108`). `NULL` means *no prefetcher*. A cache
+  auto-registers whatever prefetcher SimObject it holds when the system is
+  instantiated — no manual probe wiring is needed for the queued prefetchers
+  used here (only PIF/FDP need `listenFromProbe`).
+- The stdlib component caches, however, are **not** NULL: `L1ICache`,
+  `L1DCache`, and `L2Cache` all default `PrefetcherCls=StridePrefetcher` and
+  run `self.prefetcher = PrefetcherCls()`
+  (`src/python/gem5/components/cachehierarchies/classic/caches/l1icache.py:56,67`,
+  `.../l1dcache.py:56,67`, `.../l2cache.py:55,67`). So a stock
+  `--vector-cache` run previously had a `StridePrefetcher` on **every** cache.
+- All prefetcher classes (`StridePrefetcher`, `IndirectMemoryPrefetcher`,
+  `IrregularStreamBufferPrefetcher`, `STeMSPrefetcher`) live in
+  `src/mem/cache/prefetch/Prefetcher.py`; every behavioral knob is a
+  `Param.*` on that class or inherited from `QueuedPrefetcher`/
+  `BasePrefetcher` (e.g. `queue_size` L139, `prefetch_on_access` L80).
+
+## New Features
+
+| Component | File |
+|---|---|
+| `prefetcher_factory.build(name, params)` → zero-arg factory; maps a CLI name (`none`/`stride`/`imp`/`isb`/`stems`) + `--pf-param` dict to `() -> fresh PrefetcherCls(**coerced)`; coerces each value `int → bool → str`; validates each param name against `cls._params` | `rvv/prefetcher_factory.py` (new) |
+| `vector_l1d_prefetcher` / `vector_l2_prefetcher` ctor kwargs (zero-arg factories); `incorporate_cache` sets `prefetcher = NULL` on **every** cache, then attaches the selected factory to one vector node (factory called once per core — a SimObject can't be shared) | `rvv/vector_cache_hierarchy.py` |
+| `--prefetcher {none,stride,imp,isb,stems}`, `--prefetcher-level {l1,l2}` (default `l2`), repeatable `--pf-param NAME=VALUE`; selecting a prefetcher forces `--vector-cache`; routes the factory to the level's kwarg | `rvv/riscv-rvv-se-ara-prefetcher.py` |
+
+Why a *factory* and not a prefetcher instance: a SimObject instance belongs to
+one parent, so each core's cache needs its own. The hierarchy calls the
+factory once per core inside its per-core loop.
+
+Why all-NULL-then-attach: it guarantees **at most one active prefetcher** —
+the one the CLI selects, on the cache it names — and a clean prefetcher-free
+baseline when no `--prefetcher` is given.
+
+### Behavior change (flag in comparisons)
+
+A `--vector-cache` run with **no** `--prefetcher` now has *no* prefetcher on
+any cache. Previously it inherited a `StridePrefetcher` on every cache. To
+reproduce the old everywhere-stride behavior, the caches would need their
+`PrefetcherCls` restored; for these experiments the clean isolation (one
+prefetcher under test, on the vector stream only) is the intended default.
+
+## Invocation
+
+```bash
+build/RISCV/gem5.opt -d <outdir> rvv/riscv-rvv-se-ara-prefetcher.py \
+    --prefetcher imp --prefetcher-level l2 \
+    --pf-param max_prefetch_distance=32 --pf-param streaming_distance=8 \
+    --vlen 512 --vector-timing-throughput 4 --simd-units 2 \
+    <workload-binary> [workload args]
+```
+
+`-d <outdir>` is gem5's **output-directory** option and must come **before**
+the script name — it is parsed by gem5 itself (`src/python/m5/main.py:101`),
+not the config script. (The script reuses `-d` for `--l1d` cache size, a
+pre-existing flag, so a `-d` placed *after* the script name sets the scalar
+L1D size instead.)
+
+`--prefetcher-level l1` attaches the same prefetcher to the vector L1D
+instead. Omitting `--prefetcher` (or `--prefetcher none`) leaves every cache
+prefetcher-free.
+
+## `--pf-param` reference (defaults parenthesized)
+
+The factory applies any `Param.*` on the chosen class, so this is a curated
+convenience list, not an enforcing allowlist — to expose a new knob just pass
+it; to stop tuning one, omit it (its built-in default applies). A typo'd name
+fails with a clear `unknown --pf-param … valid: …` error.
+
+- **stride:** `degree(4)`, `distance(0)`, `confidence_threshold(50)`,
+  `confidence_counter_bits(3)`, `initial_confidence(4)`.
+- **imp** (`IndirectMemoryPrefetcher`): `max_prefetch_distance(16)`,
+  `streaming_distance(4)`, `stream_counter_threshold(4)`,
+  `prefetch_threshold(2)`, `num_indirect_counter_bits(3)`. Precondition (not
+  a knob): IMP `shift_values` must contain the element shift (e.g. 2 for
+  4-byte elements) or IMP won't match the gather.
+- **isb** (`IrregularStreamBufferPrefetcher`): `degree(4)`,
+  `chunk_size(256)`, `num_counter_bits(2)`.
+- **stems** (`STeMSPrefetcher`): `reconstruction_entries(256)`,
+  `spatial_region_size(2KiB)`, `add_duplicate_entries_to_rmob(True)`.
+- **all (inherited):** `queue_size(32)`, `prefetch_on_access(False)`. Keep
+  `on_miss=False`, `use_virtual_addresses=False`, `latency=1`.
+
+## Verifying correctness across prefetcher choices
+
+Prefetching is microarchitectural, so a kernel must compute the **same
+result** with or without any prefetcher. TSVC prints a per-kernel checksum on
+stdout; run the kernel once with no prefetcher and once with the prefetcher
+under test, then compare the checksum line:
+
+```bash
+diff <(grep <kernel> out/none/stdout.txt) <(grep <kernel> out/imp/stdout.txt) \
+    && echo MATCH
+```
+
+A mismatch means the wiring is altering results (wrong cache attached,
+address/translation handling) — a correctness bug to fix before trusting any
+timing number, not a legitimate performance result.
+
+## Caveats
+
+1. **At most one prefetcher.** Scalar L1I/L1D/L2 and the unselected vector
+   cache are all `NULL`. Confirm engagement in `stats.txt`: with level `l2`,
+   `…vector-l2-cache-0.prefetcher.pfIssued > 0`; with level `l1` the
+   `pfIssued` stat appears on `…vector-l1d-cache-0.prefetcher` instead. With
+   no `--prefetcher`, no cache reports a `prefetcher.pfIssued` stat.
+2. **Config-only.** Workload selection and data collection are out of scope;
+   this layer just selects and parameterizes the prefetcher.
 

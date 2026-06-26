@@ -207,8 +207,66 @@ parser.add_argument(
     default="512KiB",
     help="Size of the vector-side L2 cache (with --vector-cache)",
 )
+parser.add_argument(
+    "--prefetcher",
+    type=str,
+    default=None,
+    choices=["none", "stride", "imp", "isb", "stems"],
+    help="Attach a hardware prefetcher to one vector cache. Implies "
+    "(forces) --vector-cache. By default no cache has a prefetcher.",
+)
+parser.add_argument(
+    "--prefetcher-level",
+    type=str,
+    default="l2",
+    choices=["l1", "l2"],
+    help="Which vector cache the prefetcher attaches to: l1 = vector L1D, "
+    "l2 = vector L2 (default l2)",
+)
+parser.add_argument(
+    "--pf-param",
+    action="append",
+    default=None,
+    metavar="NAME=VALUE",
+    help="Tunable prefetcher parameter override (repeatable), e.g. "
+    "--pf-param max_prefetch_distance=32. NAME is any Param.* on the "
+    "selected prefetcher's class (see MEMORY_CONFIG.md).",
+)
 
 args = parser.parse_args()
+
+# --- Prefetcher selection (configuration only; builds on --vector-cache) ---
+# Parse repeated --pf-param NAME=VALUE into a dict of raw strings; the factory
+# coerces each value to the type the Param expects.
+pf_params = {}
+for item in args.pf_param or []:
+    if "=" not in item:
+        print(f"Error: --pf-param expects NAME=VALUE, got '{item}'")
+        sys.exit(1)
+    key, value = item.split("=", 1)
+    pf_params[key] = value
+
+prefetcher_active = args.prefetcher not in (None, "none")
+if pf_params and not prefetcher_active:
+    print("Error: --pf-param requires --prefetcher (and not 'none')")
+    sys.exit(1)
+
+vector_l1d_prefetcher = None
+vector_l2_prefetcher = None
+if prefetcher_active:
+    # The split hierarchy hosts the vector prefetcher, so it is required.
+    args.vector_cache = True
+    from prefetcher_factory import build as build_prefetcher
+
+    try:
+        factory = build_prefetcher(args.prefetcher, pf_params)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    if args.prefetcher_level == "l1":
+        vector_l1d_prefetcher = factory
+    else:
+        vector_l2_prefetcher = factory
 
 # Import the selected CPU model
 if args.cpu_type == "AraO3":
@@ -228,6 +286,8 @@ if args.vector_cache:
         l2_size=args.l2,
         vector_l1d_size=args.vector_l1d,
         vector_l2_size=args.vector_l2,
+        vector_l1d_prefetcher=vector_l1d_prefetcher,
+        vector_l2_prefetcher=vector_l2_prefetcher,
     )
 else:
     cache_hierarchy = PrivateL1PrivateL2CacheHierarchy(
@@ -295,6 +355,13 @@ if args.vector_cache:
     print(f"  Vector Caches:    ON (split hierarchy via VectorSplitter)")
     print(f"  Vector L1D Cache: {args.vector_l1d}")
     print(f"  Vector L2 Cache:  {args.vector_l2}")
+    if prefetcher_active:
+        level = "vector L1D" if args.prefetcher_level == "l1" else "vector L2"
+        print(f"  Prefetcher:       {args.prefetcher} on {level}")
+        if pf_params:
+            print(f"  PF Params:        {pf_params}")
+    else:
+        print(f"  Prefetcher:       none (all caches prefetcher-free)")
 else:
     print(f"  Vector Caches:    OFF (shared L1D/L2)")
 print("-" * 50)

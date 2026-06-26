@@ -64,7 +64,15 @@ Base::PrefetchInfo::PrefetchInfo(PacketPtr pkt, Addr addr, bool miss)
     paddress(pkt->req->getPaddr()), cacheMiss(miss)
 {
     unsigned int req_size = pkt->req->getSize();
-    if ((!write && miss) || !pkt->hasData()) {
+    // A read request carries no HasData command attribute, so pkt->hasData()
+    // is false even on a hit. But a satisfied demand-read hit already had the
+    // block's bytes copied into the packet by access() (setDataFromBlock), so
+    // the data IS present and readable here. Capture it so that data-reading
+    // prefetchers (e.g. IndirectMemory) can see the value instead of finding a
+    // null pointer. A read miss has no data yet; HW-prefetch reads have no
+    // CPU-allocated buffer, so exclude both.
+    bool read_hit_data = !miss && pkt->isRead() && !pkt->cmd.isHWPrefetch();
+    if ((!write && miss) || (!pkt->hasData() && !read_hit_data)) {
         data = nullptr;
     } else {
         data = new uint8_t[req_size];
