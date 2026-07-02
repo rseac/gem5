@@ -83,6 +83,9 @@ class RVVCore(BaseCPUCore):
         core.vector_timing_throughput = vector_timing_throughput
         core.simd_units = simd_units
         
+        from m5.objects import ExeTracer
+        core.tracer = ExeTracer()
+        
         # --- MODULAR LATENCY MODEL ---
         # The AraO3CPU constructor automatically sets up the AraLatencyModel.
         # This provides a hook for researchers to swap in different timing models

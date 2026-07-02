@@ -63,9 +63,10 @@ ExeTracerRecord::traceInst(const StaticInstPtr &inst, bool ran)
     std::stringstream outs;
 
     const bool in_user_mode = thread->getIsaPtr()->inUserMode();
-    if (in_user_mode && !debug::ExecUser)
+    bool force_vector_trace = debug::ExecVector && inst->isVector();
+    if (in_user_mode && !debug::ExecUser && !force_vector_trace)
         return;
-    if (!in_user_mode && !debug::ExecKernel)
+    if (!in_user_mode && !debug::ExecKernel && !force_vector_trace)
         return;
 
     if (debug::ExecAsid) {
@@ -172,7 +173,8 @@ ExeTracerRecord::dump()
              macroStaticInst && staticInst->isLastMicroop()))) {
         traceInst(macroStaticInst, false);
     }
-    if (debug::ExecMicro || !staticInst->isMicroop()) {
+    if (debug::ExecMicro || !staticInst->isMicroop() ||
+        (debug::ExecVector && staticInst->isVector())) {
         traceInst(staticInst, true);
     }
 }

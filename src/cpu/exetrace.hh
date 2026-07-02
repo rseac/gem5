@@ -46,6 +46,7 @@
 #include "cpu/static_inst.hh"
 #include "cpu/thread_context.hh"
 #include "debug/ExecEnable.hh"
+#include "debug/ExecVector.hh"
 #include "params/ExeTracer.hh"
 #include "sim/insttracer.hh"
 
@@ -90,7 +91,10 @@ class ExeTracer : public InstTracer
             const StaticInstPtr staticInst, const PCStateBase &pc,
             const StaticInstPtr macroStaticInst=nullptr) override
     {
-        if (!debug::ExecEnable)
+        bool do_trace = debug::ExecEnable ||
+            (debug::ExecVector && staticInst->isVector());
+
+        if (!do_trace)
             return NULL;
 
         return new ExeTracerRecord(when, tc,
