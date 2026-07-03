@@ -3628,6 +3628,30 @@ real_t s4117(struct args_t * func_args)
     return calc_checksum(__func__);
 }
 
+// %4.11
+
+real_t s4117_modified(struct args_t * func_args)
+{
+
+//    indirect addressing
+//    seq function
+
+    initialise_arrays(__func__);
+    ROI_BEGIN(func_args);
+
+    for (int nl = 0; nl < iterations; nl++) {
+        for (int i = 0; i < LEN_1D/2; i++) {
+            for (int j = 0; j < 2; j++) {
+                a[2*i+j] = b[2*i+j] + c[i] * d[2*i+j];
+            }
+        }
+        dummy(a, b, c, d, e, aa, bb, cc, 0.);
+    }
+
+    ROI_END(func_args);
+    return calc_checksum(__func__);
+}
+
 // %4.12
 
 real_t f(real_t a, real_t b){
@@ -4181,6 +4205,7 @@ int main(int argc, char ** argv){
     RUN_KERNEL(s4115, ip);
     RUN_KERNEL(s4116, &(struct{int * a; int b; int c;}){ip, LEN_2D/2, n1});
     RUN_KERNEL(s4117, NULL);
+    RUN_KERNEL(s4117_modified, NULL);
     RUN_KERNEL(s4121, NULL);
     RUN_KERNEL(va, NULL);
     RUN_KERNEL(vag, ip);

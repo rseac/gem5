@@ -710,6 +710,11 @@ int initialise_arrays(const char* name)
         set_1d_array(b, LEN_1D, one,unit);
         set_1d_array(c, LEN_1D, any,frac);
         set_1d_array(d, LEN_1D, any,frac);
+        } else if (!strcmp(name, "s4117_modified")) {
+        set_1d_array(a, LEN_1D,zero,unit);
+        set_1d_array(b, LEN_1D, one,unit);
+        set_1d_array(c, LEN_1D, any,frac);
+        set_1d_array(d, LEN_1D, any,frac);
     } else if (!strcmp(name, "s4121")) {
         set_1d_array(a, LEN_1D, one,unit);
         set_1d_array(b, LEN_1D, any,frac);
@@ -1006,6 +1011,8 @@ real_t calc_checksum(const char * name)
     } else if (!strcmp(name, "s4114")) {
         return sum_a();
     } else if (!strcmp(name, "s4117")) {
+        return sum_a();
+    } else if (!strcmp(name, "s4117_modified")) {
         return sum_a();
     } else if (!strcmp(name, "s4121")) {
         return sum_a();

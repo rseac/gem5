@@ -47,6 +47,7 @@ DebugFlag('Decode')
 DebugFlag('DynInst')
 DebugFlag('ExecEnable',
         'Filter: Enable exec tracing (no tracing without this)')
+DebugFlag('ExecVector', 'Filter: Trace vector instructions')
 DebugFlag('ExecCPSeq', 'Format: Instruction sequence number')
 DebugFlag('ExecEffAddr', 'Format: Include effective address')
 DebugFlag('ExecFaulting', 'Trace faulting instructions')
