@@ -262,9 +262,17 @@ own hierarchy).
 # Selectable Vector Prefetcher
 
 Lets you pick and tune a hardware prefetcher from the command line and attach
-it to a single **vector** cache (vector L1D or vector L2), with prefetching
-disabled on every other cache. This is the configuration layer for vector
-prefetcher experiments; it is purely Python (no gem5 rebuild).
+it to a single cache, chosen across two axes: **side** (scalar vs vector
+chain, `--prefetcher-side`) and **level** (L1D vs L2, `--prefetcher-level`),
+with prefetching disabled on every other cache. This is the configuration
+layer for prefetcher experiments; it is purely Python (no gem5 rebuild).
+
+The four placements are: scalar L1D, scalar L2, vector L1D, vector L2.
+`--prefetcher-side` defaults to `vector`, so runs that predate this flag are
+unchanged. Selecting a prefetcher still forces `--vector-cache` (the split
+hierarchy is what hosts the prefetcher on either chain), so the scalar side
+here is the scalar L1D/L2 of the split hierarchy, with vector accesses steered
+to their own prefetcher-free chain.
 
 ## What gem5 does by default
 
@@ -291,8 +299,8 @@ prefetcher experiments; it is purely Python (no gem5 rebuild).
 | Component | File |
 |---|---|
 | `prefetcher_factory.build(name, params)` → zero-arg factory; maps a CLI name (`none`/`stride`/`imp`/`isb`/`stems`) + `--pf-param` dict to `() -> fresh PrefetcherCls(**coerced)`; coerces each value `int → bool → str`; validates each param name against `cls._params` | `rvv/prefetcher_factory.py` (new) |
-| `vector_l1d_prefetcher` / `vector_l2_prefetcher` ctor kwargs (zero-arg factories); `incorporate_cache` sets `prefetcher = NULL` on **every** cache, then attaches the selected factory to one vector node (factory called once per core — a SimObject can't be shared) | `rvv/vector_cache_hierarchy.py` |
-| `--prefetcher {none,stride,imp,isb,stems}`, `--prefetcher-level {l1,l2}` (default `l2`), repeatable `--pf-param NAME=VALUE`; selecting a prefetcher forces `--vector-cache`; routes the factory to the level's kwarg | `rvv/riscv-rvv-se-ara-prefetcher.py` |
+| `scalar_l1d_prefetcher` / `scalar_l2_prefetcher` / `vector_l1d_prefetcher` / `vector_l2_prefetcher` ctor kwargs (zero-arg factories); `incorporate_cache` sets `prefetcher = NULL` on **every** cache, then attaches the selected factory to the one chosen node — scalar or vector, L1D or L2 (factory called once per core — a SimObject can't be shared) | `rvv/vector_cache_hierarchy.py` |
+| `--prefetcher {none,stride,imp,isb,stems}`, `--prefetcher-side {scalar,vector}` (default `vector`), `--prefetcher-level {l1,l2}` (default `l2`), repeatable `--pf-param NAME=VALUE`; selecting a prefetcher forces `--vector-cache`; `(side, level)` route the single factory to one of the four `*_prefetcher` kwargs | `rvv/riscv-rvv-se-ara-prefetcher.py` |
 
 Why a *factory* and not a prefetcher instance: a SimObject instance belongs to
 one parent, so each core's cache needs its own. The hierarchy calls the
@@ -326,9 +334,19 @@ not the config script. (The script reuses `-d` for `--l1d` cache size, a
 pre-existing flag, so a `-d` placed *after* the script name sets the scalar
 L1D size instead.)
 
-`--prefetcher-level l1` attaches the same prefetcher to the vector L1D
-instead. Omitting `--prefetcher` (or `--prefetcher none`) leaves every cache
-prefetcher-free.
+`--prefetcher-level l1` attaches the same prefetcher to the L1D instead of the
+L2. `--prefetcher-side scalar` attaches it to the scalar chain instead of the
+vector chain — e.g. `--prefetcher-side scalar --prefetcher-level l1` puts it on
+the scalar L1D. Omitting `--prefetcher` (or `--prefetcher none`) leaves every
+cache prefetcher-free.
+
+```bash
+# Same prefetcher, but on the scalar L2 instead of the vector L2:
+build/RISCV/gem5.opt -d <outdir> rvv/riscv-rvv-se-ara-prefetcher.py \
+    --prefetcher imp --prefetcher-side scalar --prefetcher-level l2 \
+    --vlen 512 --vector-timing-throughput 4 --simd-units 2 \
+    <workload-binary> [workload args]
+```
 
 ## `--pf-param` reference (defaults parenthesized)
 

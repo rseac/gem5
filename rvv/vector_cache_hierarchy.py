@@ -55,15 +55,17 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
     The vector caches are the same stdlib L1DCache/L2Cache classes as the
     scalar side. Prefetching is *disabled on every cache by default* (the
     stdlib classes attach a StridePrefetcher; incorporate_cache overrides
-    each one to NULL), then the optional vector_l1d_prefetcher /
-    vector_l2_prefetcher factory is attached to exactly one vector cache.
-    The net effect is at most one active prefetcher, on the cache the caller
-    selects, and none at all when no factory is passed.
+    each one to NULL), then the optional prefetcher factory is attached to
+    exactly one cache, chosen by the caller across both axes: scalar vs
+    vector chain (scalar_*/vector_* argument) and L1D vs L2 (*_l1d/*_l2
+    argument). The net effect is at most one active prefetcher, on the cache
+    the caller selects, and none at all when no factory is passed.
 
-    vector_l1d_prefetcher / vector_l2_prefetcher are each a zero-arg factory
-    (callable -> a fresh prefetcher SimObject); the factory is invoked once
-    per core because a SimObject cannot be shared between caches. See
-    rvv/prefetcher_factory.py.
+    scalar_l1d_prefetcher / scalar_l2_prefetcher / vector_l1d_prefetcher /
+    vector_l2_prefetcher are each a zero-arg factory (callable -> a fresh
+    prefetcher SimObject); the factory is invoked once per core because a
+    SimObject cannot be shared between caches. The config script only ever
+    passes one of the four non-None. See rvv/prefetcher_factory.py.
     """
 
     def __init__(
@@ -74,6 +76,8 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         vector_l1d_size: str,
         vector_l2_size: str,
         membus=None,
+        scalar_l1d_prefetcher=None,
+        scalar_l2_prefetcher=None,
         vector_l1d_prefetcher=None,
         vector_l2_prefetcher=None,
     ) -> None:
@@ -85,6 +89,8 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         )
         self._vector_l1d_size = vector_l1d_size
         self._vector_l2_size = vector_l2_size
+        self._scalar_l1d_prefetcher = scalar_l1d_prefetcher
+        self._scalar_l2_prefetcher = scalar_l2_prefetcher
         self._vector_l1d_prefetcher = vector_l1d_prefetcher
         self._vector_l2_prefetcher = vector_l2_prefetcher
 
@@ -115,13 +121,20 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
                 f"l1d-cache-{i}", L1DCache(size=self._l1d_size)
             )
 
-            # Disable prefetching on every scalar cache (the stdlib L1I/L1D/L2
-            # classes attach a StridePrefetcher by default). The vector chain
-            # below sets its own baseline and attaches the selected prefetcher,
-            # so at most one prefetcher is ever active.
+            # Baseline: disable prefetching on every scalar cache (the stdlib
+            # L1I/L1D/L2 classes attach a StridePrefetcher by default), then
+            # attach the selected prefetcher to a scalar cache if the caller
+            # chose the scalar side. The vector chain below does the same for
+            # the vector side, so at most one prefetcher is ever active.
             l2_node.cache.prefetcher = NULL
             l1i_node.cache.prefetcher = NULL
             l1d_node.cache.prefetcher = NULL
+
+            # The factory is called once per core so each gets a fresh SimObject.
+            if self._scalar_l2_prefetcher is not None:
+                l2_node.cache.prefetcher = self._scalar_l2_prefetcher()
+            if self._scalar_l1d_prefetcher is not None:
+                l1d_node.cache.prefetcher = self._scalar_l1d_prefetcher()
 
             self.l2buses[i].mem_side_ports = l2_node.cache.cpu_side
             self.membus.cpu_side_ports = l2_node.cache.mem_side

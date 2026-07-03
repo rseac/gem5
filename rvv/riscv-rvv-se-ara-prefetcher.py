@@ -212,16 +212,26 @@ parser.add_argument(
     type=str,
     default=None,
     choices=["none", "stride", "imp", "isb", "stems"],
-    help="Attach a hardware prefetcher to one vector cache. Implies "
-    "(forces) --vector-cache. By default no cache has a prefetcher.",
+    help="Attach a hardware prefetcher to one cache. Implies "
+    "(forces) --vector-cache. By default no cache has a prefetcher. "
+    "Use --prefetcher-side and --prefetcher-level to place it.",
+)
+parser.add_argument(
+    "--prefetcher-side",
+    type=str,
+    default="vector",
+    choices=["scalar", "vector"],
+    help="Which cache chain the prefetcher attaches to: vector = the "
+    "vector-only L1D/L2 chain (default), scalar = the scalar L1D/L2 "
+    "chain. Combine with --prefetcher-level to pick L1 vs L2.",
 )
 parser.add_argument(
     "--prefetcher-level",
     type=str,
     default="l2",
     choices=["l1", "l2"],
-    help="Which vector cache the prefetcher attaches to: l1 = vector L1D, "
-    "l2 = vector L2 (default l2)",
+    help="Which cache the prefetcher attaches to on the chosen side: "
+    "l1 = L1D, l2 = L2 (default l2)",
 )
 parser.add_argument(
     "--pf-param",
@@ -251,10 +261,13 @@ if pf_params and not prefetcher_active:
     print("Error: --pf-param requires --prefetcher (and not 'none')")
     sys.exit(1)
 
+scalar_l1d_prefetcher = None
+scalar_l2_prefetcher = None
 vector_l1d_prefetcher = None
 vector_l2_prefetcher = None
 if prefetcher_active:
-    # The split hierarchy hosts the vector prefetcher, so it is required.
+    # The split hierarchy hosts the prefetcher on whichever chain is
+    # selected, so it is required.
     args.vector_cache = True
     from prefetcher_factory import build as build_prefetcher
 
@@ -263,10 +276,17 @@ if prefetcher_active:
     except ValueError as exc:
         print(f"Error: {exc}")
         sys.exit(1)
-    if args.prefetcher_level == "l1":
-        vector_l1d_prefetcher = factory
+    # Route the single factory to one of four caches: {scalar,vector} x {l1,l2}.
+    if args.prefetcher_side == "scalar":
+        if args.prefetcher_level == "l1":
+            scalar_l1d_prefetcher = factory
+        else:
+            scalar_l2_prefetcher = factory
     else:
-        vector_l2_prefetcher = factory
+        if args.prefetcher_level == "l1":
+            vector_l1d_prefetcher = factory
+        else:
+            vector_l2_prefetcher = factory
 
 # Import the selected CPU model
 if args.cpu_type == "AraO3":
@@ -286,6 +306,8 @@ if args.vector_cache:
         l2_size=args.l2,
         vector_l1d_size=args.vector_l1d,
         vector_l2_size=args.vector_l2,
+        scalar_l1d_prefetcher=scalar_l1d_prefetcher,
+        scalar_l2_prefetcher=scalar_l2_prefetcher,
         vector_l1d_prefetcher=vector_l1d_prefetcher,
         vector_l2_prefetcher=vector_l2_prefetcher,
     )
@@ -356,8 +378,9 @@ if args.vector_cache:
     print(f"  Vector L1D Cache: {args.vector_l1d}")
     print(f"  Vector L2 Cache:  {args.vector_l2}")
     if prefetcher_active:
-        level = "vector L1D" if args.prefetcher_level == "l1" else "vector L2"
-        print(f"  Prefetcher:       {args.prefetcher} on {level}")
+        side = "vector" if args.prefetcher_side == "vector" else "scalar"
+        cache = "L1D" if args.prefetcher_level == "l1" else "L2"
+        print(f"  Prefetcher:       {args.prefetcher} on {side} {cache}")
         if pf_params:
             print(f"  PF Params:        {pf_params}")
     else:

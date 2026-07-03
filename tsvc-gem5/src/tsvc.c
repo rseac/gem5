@@ -3461,6 +3461,35 @@ real_t s4112(struct args_t * func_args)
 
 // %4.11
 
+//int s4112_modified(int* __restrict__ ip, real_t s)
+real_t s4112_modified(struct args_t * func_args)
+{
+
+//    indirect addressing
+//    sparse saxpy
+//    gather is required
+//    modified version of s4112 to test IMP pattern detection
+
+    struct{int * __restrict__ a;real_t b;} * x = func_args->arg_info;
+    int * __restrict__ ip = x->a;
+    real_t s = x->b;
+
+    initialise_arrays(__func__);
+    ROI_BEGIN(func_args);
+
+    for (int nl = 0; nl < iterations; nl++) {
+        for (int i = 0; i < LEN_1D; i++) {
+            a[i] += b[ip[i]] * s;
+        }
+        dummy(a, b, c, d, e, aa, bb, cc, 0.);
+    }
+
+    ROI_END(func_args);
+    return calc_checksum(__func__);
+}
+
+// %4.11
+
 //int s4113(int* __restrict__ ip)
 real_t s4113(struct args_t * func_args)
 {
@@ -4146,6 +4175,7 @@ int main(int argc, char ** argv){
     RUN_KERNEL(s482, NULL);
     RUN_KERNEL(s491, ip);
     RUN_KERNEL(s4112, &(struct{int*a;real_t b;}){ip, s1});
+    RUN_KERNEL(s4112_modified, &(struct{int*a;real_t b;}){ip, s1}); 
     RUN_KERNEL(s4113, ip);
     RUN_KERNEL(s4114, &(struct{int*a;int b;}){ip, n1});
     RUN_KERNEL(s4115, ip);
