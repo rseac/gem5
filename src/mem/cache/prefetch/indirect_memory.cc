@@ -28,6 +28,8 @@
 
 #include "mem/cache/prefetch/indirect_memory.hh"
 
+#include "base/trace.hh"
+#include "debug/IMP.hh"
 #include "params/IndirectMemoryPrefetcher.hh"
 #include "sim/system.hh"
 
@@ -183,18 +185,32 @@ IndirectMemory::allocateOrUpdateIPDEntry(
             ipd_entry->idx2 = index;
             ipd_entry->secondIndexSet = true;
             ipdEntryTrackingMisses = ipd_entry;
+            DPRINTF(IMP, "IPD: PT %#x armed: idx1=%#x idx2=%#x, "
+                    "tracking misses\n", ipd_entry_addr, ipd_entry->idx1,
+                    ipd_entry->idx2);
         } else {
             // Third access! no pattern has been found so far,
             // release the IPD entry
+            DPRINTF(IMP, "IPD: PT %#x DROPPED: third index read "
+                    "(idx1=%#x idx2=%#x) without a pattern match\n",
+                    ipd_entry_addr, ipd_entry->idx1, ipd_entry->idx2);
             ipd.invalidate(ipd_entry);
             ipdEntryTrackingMisses = nullptr;
         }
     } else {
         ipd_entry = ipd.findVictim(key);
         assert(ipd_entry != nullptr);
+        if (ipd_entry->isValid()) {
+            DPRINTF(IMP, "IPD: PT %#x DROPPED: evicted for PT %#x "
+                    "(idx1=%#x, secondIndexSet=%d)\n", ipd_entry->getTag(),
+                    ipd_entry_addr, ipd_entry->idx1,
+                    ipd_entry->secondIndexSet);
+        }
         ipd.insertEntry(key, ipd_entry);
         ipd_entry->idx1 = index;
         ipdEntryTrackingMisses = ipd_entry;
+        DPRINTF(IMP, "IPD: PT %#x allocated: idx1=%#x, tracking misses\n",
+                ipd_entry_addr, index);
     }
 }
 
@@ -214,6 +230,9 @@ IndirectMemory::trackMissIndex1(Addr miss_addr)
     entry->numMisses += 1;
     if (entry->numMisses == entry->baseAddr.size()) {
         // stop tracking misses once we have tracked enough
+        DPRINTF(IMP, "IPD: PT %#x idx1 window full (%d misses recorded), "
+                "tracking paused until idx2\n", entry->getTag(),
+                entry->numMisses);
         ipdEntryTrackingMisses = nullptr;
     }
 }
@@ -239,6 +258,9 @@ IndirectMemory::trackMissIndex2(Addr miss_addr)
                 pt_entry->shift = shift;
                 pt_entry->enabled = true;
                 pt_entry->indirectCounter.reset();
+                DPRINTF(IMP, "IPD: PT %#x pattern DETECTED: baseAddr=%#x "
+                        "shift=%d, entry released\n", entry->getTag(),
+                        pt_entry->baseAddr, shift);
                 // Release the current IPD Entry
                 ipd.invalidate(entry);
                 // Do not track more misses
@@ -247,6 +269,22 @@ IndirectMemory::trackMissIndex2(Addr miss_addr)
             }
             idx += 1;
         }
+    }
+
+    // The IPD only pairs idx2 with the first few misses after the idx2
+    // read, symmetric with the idx1 window (IMP paper, Sec. 3.2.2: "IPD
+    // pairs later cache misses with idx2 to compute BaseAddrs, as it did
+    // with idx1"). Once that budget is exhausted without a match, release
+    // the entry; otherwise it would keep consuming every future miss and
+    // starve the stream detector for the rest of the run.
+    entry->numIdx2Misses += 1;
+    if (entry->numIdx2Misses >= (int) entry->baseAddr.size()) {
+        DPRINTF(IMP, "IPD: PT %#x DROPPED: idx2 miss budget exhausted "
+                "(%d compares, idx1=%#x idx2=%#x, no match)\n",
+                entry->getTag(), entry->numIdx2Misses, entry->idx1,
+                entry->idx2);
+        ipd.invalidate(entry);
+        ipdEntryTrackingMisses = nullptr;
     }
 }
 

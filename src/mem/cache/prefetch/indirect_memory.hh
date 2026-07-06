@@ -137,6 +137,8 @@ class IndirectMemory : public Queued
         bool secondIndexSet;
         /** Number of misses currently recorded */
         int numMisses;
+        /** Number of misses compared against idx2 without finding a match */
+        int numIdx2Misses;
         /**
          * Potential BaseAddr candidates for each recorded miss.
          * The number of candidates per miss is determined by the number of
@@ -148,7 +150,7 @@ class IndirectMemory : public Queued
                                      unsigned int num_shifts,
                                      TagExtractor ext)
           : TaggedEntry(), idx1(0), idx2(0), secondIndexSet(false),
-            numMisses(0),
+            numMisses(0), numIdx2Misses(0),
             baseAddr(num_addresses, std::vector<Addr>(num_shifts))
         {
             registerTagExtractor(ext);
@@ -162,6 +164,7 @@ class IndirectMemory : public Queued
             idx2 = 0;
             secondIndexSet = false;
             numMisses = 0;
+            numIdx2Misses = 0;
         }
     };
     /** Indirect Pattern Detector (IPD) table */

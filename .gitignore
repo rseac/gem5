@@ -13,6 +13,7 @@ cscope.out
 m5out
 /out/
 /tsvc-gem5/
+/tsvc_results/
 /src/doxygen/html
 /docs/_build
 /ext/dramsim2/DRAMSim2

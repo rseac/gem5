@@ -57,7 +57,39 @@ if ((!write && miss) || (!pkt->hasData() && !read_hit_data)) {
 - `pkt->isRead()` — writes already carry data and are handled by the existing `hasData()` branch.
 - `!pkt->cmd.isHWPrefetch()` — a demand read has a CPU-allocated data buffer; a hardware-prefetch read does not, so reading from it would dereference an unallocated pointer.
 
-This is the one **core-file** change on this branch. It is low-risk because IMP is the only prefetcher that reads `PrefetchInfo.data` — every other prefetcher ignores it, so their behavior is unchanged.
+This is one of two **core-file** changes on this branch (the other is the IPD idx2 bound below). It is low-risk because IMP is the only prefetcher that reads `PrefetchInfo.data` — every other prefetcher ignores it, so their behavior is unchanged.
+
+## IMP IPD idx2 Miss-Tracking Bound (`IndirectMemoryPrefetcher`)
+
+IMP's Indirect Pattern Detector (IPD) confirms a candidate `A[B[i]]` pattern in two phases: record candidate base addresses from the misses following the first index read (`idx1`), then compare the misses following the second index read (`idx2`) against those candidates.
+
+### Original problem
+
+**What gem5 did.** Phase 1 is bounded: `trackMissIndex1` counts misses and stops tracking after `addr_array_len` (= `baseAddr.size()`, default 4) of them (`src/mem/cache/prefetch/indirect_memory.cc:215-218`). Phase 2 was **not**: `trackMissIndex2` compared each miss against the recorded candidates and, on no-match, simply returned — no counter, no limit, `ipdEntryTrackingMisses` left armed. Since every miss is diverted into the tracking branch while that pointer is set (`indirect_memory.cc:80`), a phase-2 entry that never finds a match consumes **every subsequent miss forever**, starving the stream detector. The only other exits are a pattern match or a *third* index read (`allocateOrUpdateIPDEntry`) — and on the vector hierarchy, index reads are only observed on hits to prefetched lines (`prefetch_on_pf_hit`, see `src/mem/cache/prefetch/base.cc:181-186`), which stop arriving as soon as issuing stops. Deadlock: no prefetches → no observed index reads → no release → no prefetches. The garbage "indices" that arm this state are gather-element data values (see the data-read fix above), so RVV gather workloads hit it readily.
+
+**What the paper says.** The design intends both windows to be short and symmetric (IMP paper, Sec. 3.2.2): "IPD only tracks the first few misses after the idx1 access" and "IPD pairs later cache misses with idx2 to compute BaseAddrs, **as it did with idx1**"; false patterns are limited by "only considering cache misses **soon after** the index access". The unbounded phase 2 was a gem5 implementation gap, masked in the paper's scalar setting where a third index read always arrives within a couple of loop iterations.
+
+### Fix
+
+`trackMissIndex2` now has the same miss budget as phase 1: a per-entry counter `numIdx2Misses` (`src/mem/cache/prefetch/indirect_memory.hh:141`) increments on every no-match comparison, and when it reaches `baseAddr.size()` the IPD entry is invalidated and miss tracking released (`src/mem/cache/prefetch/indirect_memory.cc:252-263`). A released index stream can re-allocate a fresh IPD entry on its next index read, matching the paper's "the index array can keep allocating IPD entries in the future". Detection episodes are therefore always bounded: at most `addr_array_len` misses per phase, after which the stream engine resumes.
+
+**Known remaining deviation** (not fixed): gem5 routes each miss to *either* the IPD *or* the prefetch/stream table (the if/else at `indirect_memory.cc:80`), whereas in the paper (Fig. 3) the IPD is a side structure and the stream table sees every access. With the idx2 bound the hijack now lasts at most ~8 misses per episode instead of forever, but the structural serialization remains.
+
+### `IMP` debug flag (IPD lifecycle tracing)
+
+Stock IMP has no `DPRINTF`s at all — every conclusion about IPD behavior previously had to be inferred from `HWPrefetch` candidate-trace signatures. A dedicated `IMP` debug flag (`src/mem/cache/SConscript:62`) now traces every IPD entry lifecycle transition in `indirect_memory.cc`:
+
+| event | message |
+|---|---|
+| entry allocated (first index read) | `IPD: PT <id> allocated: idx1=...` |
+| second index read | `IPD: PT <id> armed: idx1=... idx2=..., tracking misses` |
+| idx1 miss window full (4 misses) | `IPD: PT <id> idx1 window full ..., tracking paused until idx2` |
+| pattern match → promoted to PT | `IPD: PT <id> pattern DETECTED: baseAddr=... shift=...` |
+| **dropped**: third index read, no match | `IPD: PT <id> DROPPED: third index read ...` |
+| **dropped**: idx2 miss budget exhausted | `IPD: PT <id> DROPPED: idx2 miss budget exhausted ...` |
+| **dropped**: evicted by replacement | `IPD: PT <id> DROPPED: evicted for PT <id2> ...` |
+
+`PT <id>` is the prefetch-table-entry identity the IPD entry is keyed by, stable across one entry's lifetime. Usage: `--debug-flags=IMP` (combine with `HWPrefetch` to correlate detector state with issued candidates). Output volume is tiny compared to `HWPrefetch` — one line per detector transition, none per prefetch.
 
 # Building
 
