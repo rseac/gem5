@@ -67,8 +67,7 @@ CMD+=("$BINARY")
 
 # Extract ROI stats from stats.txt if they exist
 # In this setup, stats are dumped twice: 
-# 1st dump: Program Start -> ROI_BEGIN (Initialization)
-# 2nd dump: ROI_BEGIN -> ROI_END (Kernel/Loop execution)
+# 1st dump: ROI_BEGIN -> ROI_END (Kernel/Loop execution)
 STATS_FILE="m5out/stats.txt"
 if [ -f "$STATS_FILE" ]; then
     # Get all occurrences of the stats
