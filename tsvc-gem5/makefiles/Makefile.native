@@ -1,0 +1,27 @@
+# Makefile.native
+# Configuration for local host execution (x86_64)
+
+CC=gcc -std=gnu99
+CXX=g++
+OBJDUMP=objdump
+FC=gfortran
+
+# Standard x86_64 optimization flags
+flags = -O3 -fno-common -ffunction-sections -fdata-sections -Wall
+vecflags = -ftree-vectorize
+noscalvecflags = -ftree-vectorize
+novecflags = -fno-tree-vectorize
+omp_flags = -fopenmp
+
+# Disable gem5 m5ops for native execution
+NO_M5OPS=1
+flags += -DNO_M5OPS
+
+# Cycle counter is handled by the portability fix in common.h
+# but we can force RDCYCLE mode logic to use our x86 rdtsc
+flags += -DRDCYCLE
+
+# Compile-time kernel whitelist: make KERNELS="s000 s111 va"
+ifdef KERNELS
+flags += -DTSVC_KERNELS='"$(KERNELS)"'
+endif
