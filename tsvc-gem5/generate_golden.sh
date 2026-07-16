@@ -13,7 +13,7 @@ chmod 777 "$TARGET_DIR"
 
 # Function to run command in docker
 run_in_docker() {
-    docker exec -w /gem5/tsvc-gem5 jovial_curran bash -c "$1"
+    docker exec -w /gem5/tsvc-gem5 nice_wu bash -c "$1"
 }
 
 echo "Generating golden checksums for CONFIG=$CONFIG (NATIVE inside docker)..."
@@ -38,7 +38,7 @@ for i in "${ITERATIONS[@]}"; do
     
     # Run and process inside docker. 
     # Use a single-quoted string for the inner command to prevent host shell expansion.
-    docker exec -w /gem5/tsvc-gem5 jovial_curran bash -c "./$BINARY -i $i | awk '
+    docker exec -w /gem5/tsvc-gem5 nice_wu bash -c "./$BINARY -i $i | awk '
     /^[[:space:]]*(s[0-9]+|v[a-z]+)/ {
         if (\$2 == \"cycles:\" || \$2 == \"start\" || \$2 == \"end\") next;
         kernel = \$1;

@@ -62,8 +62,8 @@ static inline uint64_t read_cycles() {
 
 #ifdef USE_M5OPS
 #include <gem5/m5ops.h>
-#define ROI_BEGIN(fa) do { m5_reset_stats(0, 0); (fa)->c1 = read_cycles(); } while (0)
-#define ROI_END(fa)   do { (fa)->c2 = read_cycles(); m5_dump_reset_stats(0, 0); } while (0)
+#define ROI_BEGIN(fa) do { m5_work_begin(0, 0); m5_reset_stats(0, 0); (fa)->c1 = read_cycles(); } while (0)
+#define ROI_END(fa)   do { (fa)->c2 = read_cycles(); m5_dump_reset_stats(0, 0); m5_work_end(0, 0); } while (0)
 #define ROI_PRINT(fa) do { printf("cycles: %" PRIu64 " [M5_OPS]\n", (fa)->c2 - (fa)->c1); } while (0)
 #else
 #define ROI_BEGIN(fa) do { (fa)->c1 = read_cycles(); } while (0)

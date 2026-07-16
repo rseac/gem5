@@ -166,13 +166,27 @@ ExeTracerRecord::dump()
      * finishes. Macroops then behave like regular instructions and don't
      * complete/print when they fault.
      */
-    if (debug::ExecMacro && staticInst->isMicroop() &&
-        ((debug::ExecMicro &&
-            macroStaticInst && staticInst->isFirstMicroop()) ||
-            (!debug::ExecMicro &&
-             macroStaticInst && staticInst->isLastMicroop()))) {
-        traceInst(macroStaticInst, false);
+    // Print macro-op context header when appropriate.
+    // Original logic: ExecMacro prints the macroop before micro-ops (if
+    // ExecMicro is on) or after the last micro-op (if ExecMicro is off).
+    // Extension: ExecVector also prints the macro-op on the first vector
+    // micro-op so that the parent instruction is visible in vector traces.
+    if (staticInst->isMicroop() && macroStaticInst) {
+        bool print_macro = false;
+        if (debug::ExecMacro) {
+            if (debug::ExecMicro && staticInst->isFirstMicroop())
+                print_macro = true;
+            else if (!debug::ExecMicro && staticInst->isLastMicroop())
+                print_macro = true;
+        }
+        if (debug::ExecVector && staticInst->isVector() &&
+            staticInst->isFirstMicroop()) {
+            print_macro = true;
+        }
+        if (print_macro)
+            traceInst(macroStaticInst, false);
     }
+
     if (debug::ExecMicro || !staticInst->isMicroop() ||
         (debug::ExecVector && staticInst->isVector())) {
         traceInst(staticInst, true);

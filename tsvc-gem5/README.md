@@ -65,9 +65,57 @@ make
 | `--simd-units N` | Number of SIMD lanes |
 | `--vector-timing-throughput N` | Issue throughput for vector instructions |
 | `--enable-chaining` | Enable vector instruction chaining |
+| `--roi-trace` | Enable vector instruction tracing only during the ROI (see below) |
 
 To run only a specific kernel, compile with `KERNELS="s000"` (see above) and
 use the resulting binary directly — no extra arguments are needed at run time.
+
+### ROI-gated vector tracing (`--roi-trace`)
+
+By default, gem5's `ExecVector` debug flag traces every vector instruction for
+the entire simulation (including setup, libc init, etc.). The `--roi-trace`
+option restricts tracing to the Region of Interest only — between
+`m5_work_begin()` and `m5_work_end()` calls in the binary (embedded in the
+`ROI_BEGIN`/`ROI_END` macros in `src/common.h`).
+
+**Usage:**
+
+```bash
+# Direct invocation — no --debug-flags needed:
+build/RISCV/gem5.opt --quiet rvv/riscv-rvv-se-ara.py \
+    --roi-trace \
+    --enable-chaining \
+    --vlen 4096 \
+    --vector-timing-throughput 4 \
+    ./bin/GNU/tsvc_vec_TINY
+```
+
+```bash
+# Via run.sh wrapper:
+TRACE_VEC=1 ./run.sh bin/GNU/tsvc_vec_TINY s000
+```
+
+```bash
+# Via run-s000.sh (TRACE_VEC=1 is set by default):
+./run-s000.sh TINY
+```
+
+**How it works:**
+
+1. The `--roi-trace` flag tells the simulation script to register exit event
+   handlers for `m5_work_begin` / `m5_work_end`.
+2. The `ExecVector` debug flag starts **disabled**.
+3. When the binary hits `ROI_BEGIN` → `m5_work_begin()` fires → the handler
+   enables `ExecVector` and resets stats.
+4. When the binary hits `ROI_END` → `m5_work_end()` fires → the handler
+   disables `ExecVector` and dumps stats.
+5. Trace output (macro-ops + micro-ops) appears in `m5out/debug.trace` only
+   for instructions executed within the ROI.
+
+**Note:** Do NOT pass `--debug-flags=ExecVector` on the gem5 command line when
+using `--roi-trace`. That would pre-enable the flag from tick 0, causing
+tracing before the ROI starts. The `--roi-trace` mechanism handles flag
+activation entirely from Python.
 
 ## Output
 

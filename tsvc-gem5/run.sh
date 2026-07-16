@@ -28,16 +28,12 @@ TRACE_VEC=${TRACE_VEC:-0}
 
 echo "Running $BINARY with L1D=$L1D_SIZE, L2=$L2_SIZE, VLEN=$VLEN, ELEN=$ELEN, CPU=$CPU_TYPE, LANES=$LANES, ITERATIONS=$ITERATIONS"
 if [ "$TRACE_VEC" -eq 1 ]; then
-    echo "Vector execution tracing ENABLED"
+    echo "Vector execution tracing ENABLED (ROI only)"
 fi
 echo "Kernels: ${KERNELS:-all}"
 
 # Build the command
 CMD=("$GEM5_BIN" "--quiet")
-
-if [ "$TRACE_VEC" -eq 1 ]; then
-    CMD+=("--debug-flags=ExecVector")
-fi
 
 CMD+=("$CONFIG_SCRIPT" \
     --cpu-type "$CPU_TYPE" \
@@ -48,6 +44,10 @@ CMD+=("$CONFIG_SCRIPT" \
     -2 "$L2_SIZE" \
     -v "$VLEN" \
     -e "$ELEN")
+
+if [ "$TRACE_VEC" -eq 1 ]; then
+    CMD+=("--roi-trace")
+fi
 
 # Program parameters (kernel names and iterations)
 PROG_ARGS=""
