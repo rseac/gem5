@@ -125,6 +125,14 @@ Stride::allocateNewContext(int context)
 }
 
 void
+Stride::resetLearnedState()
+{
+    for (auto &context_table : pcTables) {
+        context_table.second->clear();
+    }
+}
+
+void
 Stride::calculatePrefetch(const PrefetchInfo &pfi,
                                     std::vector<AddrPriority> &addresses,
                                     const CacheAccessor &cache)

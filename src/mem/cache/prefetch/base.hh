@@ -241,6 +241,48 @@ class Base : public ClockedObject
         }
 
         /**
+         * Returns true if the event captured the request's data, i.e.
+         * get() can be used on it.
+         * @return true if the request data is available
+         */
+        bool hasData() const
+        {
+            return data != nullptr;
+        }
+
+        /**
+         * Gets the i-th element of the associated data, treating the
+         * payload as an array of elements of type T. Used by prefetchers
+         * that inspect wide (e.g. vector) payloads carrying several values
+         * of interest, where the plain get() only reaches the first one.
+         * @param endian Byte ordering of the stored data
+         * @param index element index into the data
+         * @return the element value
+         */
+        template <typename T>
+        inline T
+        get(ByteOrder endian, unsigned int index) const
+        {
+            if (data == nullptr) {
+                panic("PrefetchInfo::get called with a request with no data.");
+            }
+            if ((index + 1) * sizeof(T) > size) {
+                panic("PrefetchInfo::get index out of the request's bounds.");
+            }
+            T value = *(reinterpret_cast<const T*>(data) + index);
+            switch (endian) {
+                case ByteOrder::big:
+                    return betoh(value);
+
+                case ByteOrder::little:
+                    return letoh(value);
+
+                default:
+                    panic("Illegal byte order in PrefetchInfo::get()\n");
+            };
+        }
+
+        /**
          * Check for equality
          * @param pfi PrefetchInfo to compare against
          * @return True if this object and the provided one are equal
@@ -398,6 +440,16 @@ class Base : public ClockedObject
 
     /** Notify prefetcher of cache eviction */
     virtual void notifyEvict(const EvictionInfo &info)
+    {}
+
+    /**
+     * Discard all learned state (training tables, confidence counters,
+     * learned correlations). Invoked on every stats reset — e.g. the
+     * m5_reset_stats / m5_dump_reset_stats calls marking ROI boundaries —
+     * so each ROI starts with an untrained prefetcher while the caches
+     * stay warm.
+     */
+    virtual void resetLearnedState()
     {}
 
     virtual PacketPtr getPacket() = 0;

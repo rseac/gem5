@@ -283,6 +283,153 @@ class IndirectMemoryPrefetcher(QueuedPrefetcher):
     )
 
 
+class VectorIndirectMemoryPrefetcher(QueuedPrefetcher):
+    """Indirect memory prefetcher for vectorized (chunked) index streams.
+
+    Generalizes IndirectMemoryPrefetcher to index arrays walked one vector
+    register at a time (e.g. RVV unit-stride loads feeding vluxei gathers):
+    streams are detected at chunk granularity (next address == previous
+    address + previous request size), every chunk payload is sliced into
+    index_size-byte elements, and one indirect prefetch is generated per
+    index of the chunk. See mem/cache/prefetch/vector_indirect_memory.hh.
+    """
+
+    type = "VectorIndirectMemoryPrefetcher"
+    cxx_class = "gem5::prefetch::VectorIndirectMemory"
+    cxx_header = "mem/cache/prefetch/vector_indirect_memory.hh"
+
+    # Vector index loads are data reads; ignore instruction accesses.
+    on_inst = False
+    # Chunk payloads are only readable on hits, and in steady state the
+    # index loads hit on lines this prefetcher itself streamed in, so all
+    # accesses must be observed rather than only misses.
+    prefetch_on_access = True
+    # Indirect targets are scattered across pages; train on virtual
+    # addresses and translate the targets through the registered MMU
+    # (call registerMMU() on this object in the config script).
+    use_virtual_addresses = True
+    # One chunk can legally generate tens of candidates (targets + stream).
+    queue_size = 64
+
+    pt_table_entries = Param.MemorySize(
+        "16", "Number of entries of the Prefetch Table"
+    )
+    pt_table_assoc = Param.Unsigned(16, "Associativity of the Prefetch Table")
+    pt_table_indexing_policy = Param.TaggedIndexingPolicy(
+        TaggedSetAssociative(
+            entry_size=1,
+            assoc=Parent.pt_table_assoc,
+            size=Parent.pt_table_entries,
+        ),
+        "Indexing policy of the pattern table",
+    )
+    pt_table_replacement_policy = Param.BaseReplacementPolicy(
+        LRURP(), "Replacement policy of the pattern table"
+    )
+    num_indirect_counter_bits = Param.Unsigned(
+        3, "Number of bits of the indirect counter"
+    )
+    ipd_table_entries = Param.MemorySize(
+        "4", "Number of entries of the Indirect Pattern Detector"
+    )
+    ipd_table_assoc = Param.Unsigned(
+        4, "Associativity of the Indirect Pattern Detector"
+    )
+    ipd_table_indexing_policy = Param.TaggedIndexingPolicy(
+        TaggedSetAssociative(
+            entry_size=1,
+            assoc=Parent.ipd_table_assoc,
+            size=Parent.ipd_table_entries,
+        ),
+        "Indexing policy of the Indirect Pattern Detector",
+    )
+    ipd_table_replacement_policy = Param.BaseReplacementPolicy(
+        LRURP(), "Replacement policy of the Indirect Pattern Detector"
+    )
+    shift_values = VectorParam.Int(
+        [0, 1, 2, 3, 4], "Shift values to evaluate"
+    )
+    addr_array_len = Param.Unsigned(
+        4, "Recent tracked misses kept per IPD entry for pair matching"
+    )
+    ipd_chunk_history = Param.Unsigned(
+        16,
+        "Recent chunks whose leading indices an IPD entry keeps; must "
+        "cover how far the OoO core runs index reads ahead of the "
+        "corresponding gather misses",
+    )
+    confidence_chunk_history = Param.Unsigned(
+        16,
+        "Recent chunks whose indices an enabled entry keeps for "
+        "confidence matching; must cover the same index-read-to-miss "
+        "lag as ipd_chunk_history, or confirming accesses only ever "
+        "get checked against newer, disjoint chunks and confidence "
+        "never builds",
+    )
+    demotion_chunks = Param.Unsigned(
+        16,
+        "Consecutive zero-confidence chunks before an enabled entry is "
+        "demoted and may retrain (0 disables demotion)",
+    )
+    prefetch_threshold = Param.Unsigned(
+        2, "Counter threshold to start the indirect prefetching"
+    )
+    stream_counter_threshold = Param.Unsigned(
+        4, "Counter threshold to enable the chunk-stream prefetcher"
+    )
+    streaming_distance = Param.Unsigned(
+        4, "Number of chunks prefetched ahead in the index array"
+    )
+    stream_dedup = Param.Bool(
+        True,
+        "Emit each stream-prefetch line only once per walk (per-entry "
+        "high-water mark, reset on discontinuity). The streaming window "
+        "advances one chunk per access but spans streaming_distance "
+        "chunks, so without this every access re-emits an almost "
+        "identical window; the duplicates are dropped by the queue or "
+        "issue anyway and count as pfLate in-cache hits.",
+    )
+    index_size = Param.Unsigned(
+        4, "Size in bytes of one index element inside a chunk (EEW/8)"
+    )
+    index_signed = Param.Bool(
+        True, "Sign-extend index elements (else zero-extend)"
+    )
+    max_indices_per_chunk = Param.Unsigned(
+        64, "Maximum number of index elements sliced out of one chunk"
+    )
+    ipd_indices_per_chunk = Param.Unsigned(
+        8, "Number of leading chunk indices used for IPD correlation"
+    )
+    max_indirect_targets = Param.Unsigned(
+        32, "Maximum indirect prefetches generated per chunk access"
+    )
+    ipd_train_on_hits = Param.Bool(
+        False,
+        "Correlate IPD candidates on observed hits too, not only misses "
+        "(useful when the target array mostly hits the attached cache)",
+    )
+    indirect_delta = Param.Unsigned(
+        0,
+        "Lookahead distance, in chunks, for indirect target prefetches. "
+        "0 issues the current chunk's targets from its own payload. N>0 "
+        "captures the index lines returned by this prefetcher's own "
+        "index-array prefetches when they fill the cache, and issues "
+        "their targets once the demand stream is within N chunks. The "
+        "effective lookahead is bounded by streaming_distance (index "
+        "lines only fill that far ahead).",
+    )
+    pending_fill_entries = Param.Unsigned(
+        32,
+        "Expected-fill table entries: index lines awaiting capture "
+        "(delta mode)",
+    )
+    pending_index_sets = Param.Unsigned(
+        8,
+        "Captured index-line sets buffered per stream entry (delta mode)",
+    )
+
+
 class SignaturePathPrefetcher(QueuedPrefetcher):
     type = "SignaturePathPrefetcher"
     cxx_class = "gem5::prefetch::SignaturePath"

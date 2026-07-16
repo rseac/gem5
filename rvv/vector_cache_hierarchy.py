@@ -66,6 +66,13 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
     prefetcher SimObject); the factory is invoked once per core because a
     SimObject cannot be shared between caches. The config script only ever
     passes one of the four non-None. See rvv/prefetcher_factory.py.
+
+    prefetcher_needs_mmu registers the core's MMU on the attached
+    prefetcher (BasePrefetcher.registerMMU). Prefetchers that train on
+    virtual addresses (use_virtual_addresses=True, e.g. vimp) need this to
+    translate page-crossing prefetch targets; without an MMU the queued
+    prefetcher drops every candidate outside the trigger's page
+    (Queued::insert in src/mem/cache/prefetch/queued.cc).
     """
 
     def __init__(
@@ -80,6 +87,20 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         scalar_l2_prefetcher=None,
         vector_l1d_prefetcher=None,
         vector_l2_prefetcher=None,
+        prefetcher_needs_mmu: bool = False,
+        # MSHR counts bound the miss-level parallelism of each cache;
+        # tgts_per_mshr bounds how many demands can coalesce on one
+        # outstanding line (relevant for gathers, where many elements of
+        # one vluxei hit the same missing line). Defaults match the
+        # stdlib L1DCache/L2Cache classes.
+        l1d_mshrs: int = 16,
+        l2_mshrs: int = 20,
+        vector_l1d_mshrs: int = 16,
+        vector_l2_mshrs: int = 20,
+        l1d_tgts_per_mshr: int = 20,
+        l2_tgts_per_mshr: int = 12,
+        vector_l1d_tgts_per_mshr: int = 20,
+        vector_l2_tgts_per_mshr: int = 12,
     ) -> None:
         super().__init__(
             l1d_size=l1d_size,
@@ -89,10 +110,19 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         )
         self._vector_l1d_size = vector_l1d_size
         self._vector_l2_size = vector_l2_size
+        self._l1d_mshrs = l1d_mshrs
+        self._l2_mshrs = l2_mshrs
+        self._vector_l1d_mshrs = vector_l1d_mshrs
+        self._vector_l2_mshrs = vector_l2_mshrs
+        self._l1d_tgts_per_mshr = l1d_tgts_per_mshr
+        self._l2_tgts_per_mshr = l2_tgts_per_mshr
+        self._vector_l1d_tgts_per_mshr = vector_l1d_tgts_per_mshr
+        self._vector_l2_tgts_per_mshr = vector_l2_tgts_per_mshr
         self._scalar_l1d_prefetcher = scalar_l1d_prefetcher
         self._scalar_l2_prefetcher = scalar_l2_prefetcher
         self._vector_l1d_prefetcher = vector_l1d_prefetcher
         self._vector_l2_prefetcher = vector_l2_prefetcher
+        self._prefetcher_needs_mmu = prefetcher_needs_mmu
 
     @overrides(AbstractCacheHierarchy)
     def incorporate_cache(self, board: AbstractBoard) -> None:
@@ -112,13 +142,23 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         for i, cpu in enumerate(board.get_processor().get_cores()):
             # Scalar chain, identical to PrivateL1PrivateL2CacheHierarchy.
             l2_node = self.add_root_child(
-                f"l2-cache-{i}", L2Cache(size=self._l2_size)
+                f"l2-cache-{i}",
+                L2Cache(
+                    size=self._l2_size,
+                    mshrs=self._l2_mshrs,
+                    tgts_per_mshr=self._l2_tgts_per_mshr,
+                ),
             )
             l1i_node = l2_node.add_child(
                 f"l1i-cache-{i}", L1ICache(size=self._l1i_size)
             )
             l1d_node = l2_node.add_child(
-                f"l1d-cache-{i}", L1DCache(size=self._l1d_size)
+                f"l1d-cache-{i}",
+                L1DCache(
+                    size=self._l1d_size,
+                    mshrs=self._l1d_mshrs,
+                    tgts_per_mshr=self._l1d_tgts_per_mshr,
+                ),
             )
 
             # Baseline: disable prefetching on every scalar cache (the stdlib
@@ -133,8 +173,12 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
             # The factory is called once per core so each gets a fresh SimObject.
             if self._scalar_l2_prefetcher is not None:
                 l2_node.cache.prefetcher = self._scalar_l2_prefetcher()
+                if self._prefetcher_needs_mmu:
+                    l2_node.cache.prefetcher.registerMMU(cpu.core.mmu)
             if self._scalar_l1d_prefetcher is not None:
                 l1d_node.cache.prefetcher = self._scalar_l1d_prefetcher()
+                if self._prefetcher_needs_mmu:
+                    l1d_node.cache.prefetcher.registerMMU(cpu.core.mmu)
 
             self.l2buses[i].mem_side_ports = l2_node.cache.cpu_side
             self.membus.cpu_side_ports = l2_node.cache.mem_side
@@ -144,11 +188,20 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
 
             # Vector chain: private L1D + L2, no L1I.
             vl2_node = self.add_root_child(
-                f"vector-l2-cache-{i}", L2Cache(size=self._vector_l2_size)
+                f"vector-l2-cache-{i}",
+                L2Cache(
+                    size=self._vector_l2_size,
+                    mshrs=self._vector_l2_mshrs,
+                    tgts_per_mshr=self._vector_l2_tgts_per_mshr,
+                ),
             )
             vl1d_node = vl2_node.add_child(
                 f"vector-l1d-cache-{i}",
-                L1DCache(size=self._vector_l1d_size),
+                L1DCache(
+                    size=self._vector_l1d_size,
+                    mshrs=self._vector_l1d_mshrs,
+                    tgts_per_mshr=self._vector_l1d_tgts_per_mshr,
+                ),
             )
 
             # Baseline: no prefetcher on either vector cache, overriding the
@@ -160,8 +213,12 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
             # factory is called once per core so each gets a fresh SimObject.
             if self._vector_l2_prefetcher is not None:
                 vl2_node.cache.prefetcher = self._vector_l2_prefetcher()
+                if self._prefetcher_needs_mmu:
+                    vl2_node.cache.prefetcher.registerMMU(cpu.core.mmu)
             if self._vector_l1d_prefetcher is not None:
                 vl1d_node.cache.prefetcher = self._vector_l1d_prefetcher()
+                if self._prefetcher_needs_mmu:
+                    vl1d_node.cache.prefetcher.registerMMU(cpu.core.mmu)
 
             self.vector_l2buses[i].mem_side_ports = vl2_node.cache.cpu_side
             self.membus.cpu_side_ports = vl2_node.cache.mem_side

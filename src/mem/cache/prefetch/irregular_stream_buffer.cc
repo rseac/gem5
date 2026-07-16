@@ -71,6 +71,15 @@ IrregularStreamBuffer::IrregularStreamBuffer(
 }
 
 void
+IrregularStreamBuffer::resetLearnedState()
+{
+    trainingUnit.clear();
+    psAddressMappingCache.clear();
+    spAddressMappingCache.clear();
+    structuralAddressCounter = 0;
+}
+
+void
 IrregularStreamBuffer::calculatePrefetch(const PrefetchInfo &pfi,
     std::vector<AddrPriority> &addresses,
     const CacheAccessor &cache)

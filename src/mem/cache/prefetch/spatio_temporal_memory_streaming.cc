@@ -66,6 +66,15 @@ STeMS::STeMS(const STeMSPrefetcherParams &p)
 }
 
 void
+STeMS::resetLearnedState()
+{
+    activeGenerationTable.clear();
+    patternSequenceTable.clear();
+    rmob.flush();
+    lastTriggerCounter = 0;
+}
+
+void
 STeMS::checkForActiveGenerationsEnd(const CacheAccessor &cache)
 {
     // This prefetcher operates attached to the L1 and it observes all

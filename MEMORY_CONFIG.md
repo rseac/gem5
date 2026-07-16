@@ -229,7 +229,15 @@ build/RISCV/gem5.opt rvv/riscv-rvv-se-ara-prefetcher.py \
 ```
 
 `--vector-cache` selects the split hierarchy; `--vector-l1d`/`--vector-l2`
-size the vector chain (scalar sizes stay on `-d`/`-2`). Without the flag
+size the vector chain (scalar sizes stay on `-d`/`-2`). Each cache's MSHRs
+are also flags: `--{l1d,l2,vector-l1d,vector-l2}-mshrs` (defaults 16/20/
+16/20, the stdlib values) bound how many outstanding line misses that
+cache overlaps, and `--{l1d,l2,vector-l1d,vector-l2}-tgts-per-mshr`
+(defaults 20/12/20/12) bound how many demands coalesce on one outstanding
+line (gathers park many same-line element accesses on one MSHR). Lowering
+`--vector-l1d-mshrs` (e.g. 4) chokes the miss-level parallelism that hides
+gather-element miss latency — a cheap way to make gathers latency-bound
+without growing the working set past L2. Without the flag
 the original single hierarchy is used, untouched. Combining with
 `--scalar-uncacheable` is possible but pointless (scalars would skip their
 own hierarchy).
@@ -298,9 +306,9 @@ to their own prefetcher-free chain.
 
 | Component | File |
 |---|---|
-| `prefetcher_factory.build(name, params)` → zero-arg factory; maps a CLI name (`none`/`stride`/`imp`/`isb`/`stems`) + `--pf-param` dict to `() -> fresh PrefetcherCls(**coerced)`; coerces each value `int → bool → str`; validates each param name against `cls._params` | `rvv/prefetcher_factory.py` (new) |
-| `scalar_l1d_prefetcher` / `scalar_l2_prefetcher` / `vector_l1d_prefetcher` / `vector_l2_prefetcher` ctor kwargs (zero-arg factories); `incorporate_cache` sets `prefetcher = NULL` on **every** cache, then attaches the selected factory to the one chosen node — scalar or vector, L1D or L2 (factory called once per core — a SimObject can't be shared) | `rvv/vector_cache_hierarchy.py` |
-| `--prefetcher {none,stride,imp,isb,stems}`, `--prefetcher-side {scalar,vector}` (default `vector`), `--prefetcher-level {l1,l2}` (default `l2`), repeatable `--pf-param NAME=VALUE`; selecting a prefetcher forces `--vector-cache`; `(side, level)` route the single factory to one of the four `*_prefetcher` kwargs | `rvv/riscv-rvv-se-ara-prefetcher.py` |
+| `prefetcher_factory.build(name, params)` → zero-arg factory; maps a CLI name (`none`/`stride`/`imp`/`vimp`/`isb`/`stems`) + `--pf-param` dict to `() -> fresh PrefetcherCls(**coerced)`; coerces each value `int → bool → str`; validates each param name against `cls._params`. `needs_mmu(name, params)` reports whether the selection trains on virtual addresses (vimp by default, or explicit `use_virtual_addresses=true`) | `rvv/prefetcher_factory.py` (new) |
+| `scalar_l1d_prefetcher` / `scalar_l2_prefetcher` / `vector_l1d_prefetcher` / `vector_l2_prefetcher` ctor kwargs (zero-arg factories); `incorporate_cache` sets `prefetcher = NULL` on **every** cache, then attaches the selected factory to the one chosen node — scalar or vector, L1D or L2 (factory called once per core — a SimObject can't be shared). `prefetcher_needs_mmu=True` additionally calls `registerMMU(cpu.core.mmu)` on the attached prefetcher so page-crossing prefetch targets get translated instead of dropped | `rvv/vector_cache_hierarchy.py` |
+| `--prefetcher {none,stride,imp,vimp,isb,stems}`, `--prefetcher-side {scalar,vector}` (default `vector`), `--prefetcher-level {l1,l2}` (default `l2`), repeatable `--pf-param NAME=VALUE`; selecting a prefetcher forces `--vector-cache`; `(side, level)` route the single factory to one of the four `*_prefetcher` kwargs; the MMU is registered automatically when `needs_mmu` says so (shown as `PF MMU:` in the config banner) | `rvv/riscv-rvv-se-ara-prefetcher.py` |
 
 Why a *factory* and not a prefetcher instance: a SimObject instance belongs to
 one parent, so each core's cache needs its own. The hierarchy calls the
@@ -362,12 +370,39 @@ fails with a clear `unknown --pf-param … valid: …` error.
   `prefetch_threshold(2)`, `num_indirect_counter_bits(3)`. Precondition (not
   a knob): IMP `shift_values` must contain the element shift (e.g. 2 for
   4-byte elements) or IMP won't match the gather.
+- **vimp** (`VectorIndirectMemoryPrefetcher`, this fork — see
+  DOCUMENTATION.MD): `index_size(4)` = bytes per index element in the chunk
+  payload (the EEW/8 of the index load, e.g. 4 for `vle32`-loaded `int`
+  indices), `index_signed(True)`, `streaming_distance(4)` chunks ahead on the
+  index array, `stream_dedup(True)` = emit each stream line once per walk
+  (high-water mark; `false` restores the stock re-emit-the-whole-window
+  behavior, which inflates `pfLate` with in-cache duplicate hits),
+  `stream_counter_threshold(4)`, `prefetch_threshold(2)`,
+  `max_indirect_targets(32)` per chunk event, `ipd_indices_per_chunk(8)`,
+  `max_indices_per_chunk(64)`, `addr_array_len(4)` (recent-miss FIFO for
+  pair matching), `ipd_chunk_history(16)` (chunk index-set history — the
+  OoO lag tolerance of the detector), `demotion_chunks(16)` (0 = sticky
+  enabled state), `num_indirect_counter_bits(3)`,
+  `ipd_train_on_hits(False)`.
+  `indirect_delta(0)` = lookahead in chunks for the indirect targets: 0
+  issues the current chunk's targets from its own payload; N>0 captures
+  index lines at cache-fill time and issues their targets once the demand
+  stream is within N chunks (effective lookahead is capped by
+  `streaming_distance`; sizing knobs `pending_fill_entries(32)` and
+  `pending_index_sets(8)`). Class defaults
+  that differ from the other prefetchers: `use_virtual_addresses(True)`
+  (requires the MMU, registered automatically), `prefetch_on_access(True)`
+  (index payloads are only readable on hits), `queue_size(64)`.
+  `shift_values([0,1,2,3,4])` must contain the target element shift (2 for
+  4-byte, 3 for 8-byte elements) — it is a `VectorParam`, so it is not
+  settable via `--pf-param`.
 - **isb** (`IrregularStreamBufferPrefetcher`): `degree(4)`,
   `chunk_size(256)`, `num_counter_bits(2)`.
 - **stems** (`STeMSPrefetcher`): `reconstruction_entries(256)`,
   `spatial_region_size(2KiB)`, `add_duplicate_entries_to_rmob(True)`.
 - **all (inherited):** `queue_size(32)`, `prefetch_on_access(False)`. Keep
-  `on_miss=False`, `use_virtual_addresses=False`, `latency=1`.
+  `on_miss=False`, `use_virtual_addresses=False`, `latency=1` — except for
+  `vimp`, whose class defaults override the first two as listed above.
 
 ## Verifying correctness across prefetcher choices
 

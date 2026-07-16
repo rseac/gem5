@@ -62,6 +62,16 @@ IndirectMemory::IndirectMemory(const IndirectMemoryPrefetcherParams &p)
 }
 
 void
+IndirectMemory::resetLearnedState()
+{
+    prefetchTable.clear();
+    ipd.clear();
+    // The tracking pointer refers into the IPD; it must not survive the
+    // clear, otherwise the prefetcher keeps feeding misses to a dead entry
+    ipdEntryTrackingMisses = nullptr;
+}
+
+void
 IndirectMemory::calculatePrefetch(const PrefetchInfo &pfi,
     std::vector<AddrPriority> &addresses,
     const CacheAccessor &cache)

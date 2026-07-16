@@ -119,6 +119,7 @@ Base::Base(const BasePrefetcherParams &p)
       prefetchStats(this), issuedPrefetches(0),
       usefulPrefetches(0), mmu(nullptr)
 {
+    statistics::registerResetCallback([this]() { resetLearnedState(); });
 }
 
 void

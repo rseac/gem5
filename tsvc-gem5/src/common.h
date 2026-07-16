@@ -9,6 +9,15 @@
 //#define LEN_1D 32000
 //#define LEN_2D 256
 
+// Closed form of the stock ip[] initialisation in common.c: each aligned
+// 5-block holds {i+4, i+2, i, i+3, i+1} — (4 + 3*r) % 5 = {4,2,0,3,1} for
+// r = 0..4 — and the partial final block (when LEN_1D % 5 != 0) is the
+// identity. Lets the non-indexed kernel rewrites reproduce an ip[] value
+// with pure arithmetic on i, i.e. without any memory read of ip[]. Invalid
+// if the randomized Fisher-Yates init in common.c is enabled.
+#define IP_STOCK(i) ((i) < LEN_1D - LEN_1D % 5 \
+                     ? (i) - (i) % 5 + (4 + 3 * ((i) % 5)) % 5 : (i))
+
 #include <stdint.h>
 #include <stdio.h>
 #include <inttypes.h>

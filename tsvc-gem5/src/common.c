@@ -157,14 +157,40 @@ void set_2d_array(real_t arr[LEN_2D][LEN_2D], real_t value, int stride)
 void init(int** ip, real_t* s1, real_t* s2){
     xx = (real_t*) memalign(ARRAY_ALIGNMENT, LEN_1D*sizeof(real_t));
     *ip = (int *) memalign(ARRAY_ALIGNMENT, LEN_1D*sizeof(real_t));
-
-    for (int i = 0; i < LEN_1D; i = i+5){
+    
+    for (int i = 0; i + 4 < LEN_1D; i = i+5){
         (*ip)[i]   = (i+4);
         (*ip)[i+1] = (i+2);
         (*ip)[i+2] = (i);
         (*ip)[i+3] = (i+3);
         (*ip)[i+4] = (i+1);
     }
+    // Partial final block when LEN_1D is not a multiple of 5: identity
+    // mapping, so ip[] stays an in-bounds permutation. The stock loop above
+    // would both write past the end of ip[] and store indices >= LEN_1D.
+    for (int i = LEN_1D - LEN_1D % 5; i < LEN_1D; i++) {
+        (*ip)[i] = i;
+    }
+    
+    // Randomized ip[]: Fisher-Yates shuffle of the 0..LEN_1D-1 ramp with a
+    // fixed seed (deterministic across runs). The stock init above only
+    // permutes within 5-element blocks, so b[ip[i]] still walks cache lines
+    // sequentially and a stream prefetcher covers it; a full shuffle makes
+    // the gathers genuinely indirect. Still a permutation, so every element
+    // is touched exactly once. To enable, uncomment this block (the ramp
+    // loop above is overwritten, so it can stay).
+    /*
+    srand(12345);
+    for (int i = 0; i < LEN_1D; i++) {
+         (*ip)[i] = i;
+    }
+     for (int i = LEN_1D - 1; i > 0; i--) {
+         int j = rand() % (i + 1);
+         int tmp = (*ip)[i];
+         (*ip)[i] = (*ip)[j];
+         (*ip)[j] = tmp;
+    }
+    */
 
     set_1d_array(a, LEN_1D, 1.,1);
     set_1d_array(b, LEN_1D, 1.,1);
@@ -707,7 +733,12 @@ int initialise_arrays(const char* name)
         set_1d_array(b, LEN_1D, one,unit);
         set_1d_array(c, LEN_1D, any,frac);
         set_1d_array(d, LEN_1D, any,frac);
-        } else if (!strcmp(name, "s4117_modified")) {
+    } else if (!strcmp(name, "s4117_modified")) {
+        set_1d_array(a, LEN_1D,zero,unit);
+        set_1d_array(b, LEN_1D, one,unit);
+        set_1d_array(c, LEN_1D, any,frac);
+        set_1d_array(d, LEN_1D, any,frac);
+    } else if (!strcmp(name, "s4117_vrgather")) {
         set_1d_array(a, LEN_1D,zero,unit);
         set_1d_array(b, LEN_1D, one,unit);
         set_1d_array(c, LEN_1D, any,frac);
@@ -1008,6 +1039,8 @@ real_t calc_checksum(const char * name)
     } else if (!strcmp(name, "s4117")) {
         return sum_a();
     } else if (!strcmp(name, "s4117_modified")) {
+        return sum_a();
+    } else if (!strcmp(name, "s4117_vrgather")) {
         return sum_a();
     } else if (!strcmp(name, "s4121")) {
         return sum_a();

@@ -208,13 +208,69 @@ parser.add_argument(
     help="Size of the vector-side L2 cache (with --vector-cache)",
 )
 parser.add_argument(
+    "--l1d-mshrs",
+    type=int,
+    default=16,
+    help="MSHR count of the scalar L1D (with --vector-cache); bounds "
+    "how many outstanding line misses the cache can overlap",
+)
+parser.add_argument(
+    "--l2-mshrs",
+    type=int,
+    default=20,
+    help="MSHR count of the scalar L2 (with --vector-cache)",
+)
+parser.add_argument(
+    "--vector-l1d-mshrs",
+    type=int,
+    default=16,
+    help="MSHR count of the vector L1D (with --vector-cache). Lowering "
+    "this chokes the miss-level parallelism that hides gather-element "
+    "miss latency, making gathers latency-bound",
+)
+parser.add_argument(
+    "--vector-l2-mshrs",
+    type=int,
+    default=20,
+    help="MSHR count of the vector L2 (with --vector-cache)",
+)
+parser.add_argument(
+    "--l1d-tgts-per-mshr",
+    type=int,
+    default=20,
+    help="Demand targets that can coalesce on one scalar-L1D MSHR "
+    "(with --vector-cache)",
+)
+parser.add_argument(
+    "--l2-tgts-per-mshr",
+    type=int,
+    default=12,
+    help="Demand targets per scalar-L2 MSHR (with --vector-cache)",
+)
+parser.add_argument(
+    "--vector-l1d-tgts-per-mshr",
+    type=int,
+    default=20,
+    help="Demand targets per vector-L1D MSHR (with --vector-cache); "
+    "gathers coalesce many same-line element accesses on one MSHR",
+)
+parser.add_argument(
+    "--vector-l2-tgts-per-mshr",
+    type=int,
+    default=12,
+    help="Demand targets per vector-L2 MSHR (with --vector-cache)",
+)
+parser.add_argument(
     "--prefetcher",
     type=str,
     default=None,
-    choices=["none", "stride", "imp", "isb", "stems"],
+    choices=["none", "stride", "imp", "vimp", "isb", "stems"],
     help="Attach a hardware prefetcher to one cache. Implies "
     "(forces) --vector-cache. By default no cache has a prefetcher. "
-    "Use --prefetcher-side and --prefetcher-level to place it.",
+    "Use --prefetcher-side and --prefetcher-level to place it. "
+    "'vimp' is this fork's vector indirect memory prefetcher; it "
+    "trains on virtual addresses, so the CPU MMU is registered on it "
+    "automatically (override with --pf-param use_virtual_addresses=false).",
 )
 parser.add_argument(
     "--prefetcher-side",
@@ -265,17 +321,22 @@ scalar_l1d_prefetcher = None
 scalar_l2_prefetcher = None
 vector_l1d_prefetcher = None
 vector_l2_prefetcher = None
+prefetcher_mmu = False
 if prefetcher_active:
     # The split hierarchy hosts the prefetcher on whichever chain is
     # selected, so it is required.
     args.vector_cache = True
     from prefetcher_factory import build as build_prefetcher
+    from prefetcher_factory import needs_mmu as prefetcher_needs_mmu
 
     try:
         factory = build_prefetcher(args.prefetcher, pf_params)
     except ValueError as exc:
         print(f"Error: {exc}")
         sys.exit(1)
+    # Virtual-address prefetchers (vimp by default) need the CPU MMU to
+    # translate page-crossing prefetch targets.
+    prefetcher_mmu = prefetcher_needs_mmu(args.prefetcher, pf_params)
     # Route the single factory to one of four caches: {scalar,vector} x {l1,l2}.
     if args.prefetcher_side == "scalar":
         if args.prefetcher_level == "l1":
@@ -310,6 +371,15 @@ if args.vector_cache:
         scalar_l2_prefetcher=scalar_l2_prefetcher,
         vector_l1d_prefetcher=vector_l1d_prefetcher,
         vector_l2_prefetcher=vector_l2_prefetcher,
+        prefetcher_needs_mmu=prefetcher_mmu,
+        l1d_mshrs=args.l1d_mshrs,
+        l2_mshrs=args.l2_mshrs,
+        vector_l1d_mshrs=args.vector_l1d_mshrs,
+        vector_l2_mshrs=args.vector_l2_mshrs,
+        l1d_tgts_per_mshr=args.l1d_tgts_per_mshr,
+        l2_tgts_per_mshr=args.l2_tgts_per_mshr,
+        vector_l1d_tgts_per_mshr=args.vector_l1d_tgts_per_mshr,
+        vector_l2_tgts_per_mshr=args.vector_l2_tgts_per_mshr,
     )
 else:
     cache_hierarchy = PrivateL1PrivateL2CacheHierarchy(
@@ -381,6 +451,10 @@ if args.vector_cache:
         side = "vector" if args.prefetcher_side == "vector" else "scalar"
         cache = "L1D" if args.prefetcher_level == "l1" else "L2"
         print(f"  Prefetcher:       {args.prefetcher} on {side} {cache}")
+        print(
+            f"  PF MMU:           "
+            f"{'registered (VA training, page-crossing OK)' if prefetcher_mmu else 'none (PA training, page-crossing dropped)'}"
+        )
         if pf_params:
             print(f"  PF Params:        {pf_params}")
     else:

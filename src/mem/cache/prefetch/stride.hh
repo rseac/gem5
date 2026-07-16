@@ -177,6 +177,8 @@ class Stride : public Queued
     void calculatePrefetch(const PrefetchInfo &pfi,
                            std::vector<AddrPriority> &addresses,
                            const CacheAccessor &cache) override;
+
+    void resetLearnedState() override;
 };
 
 } // namespace prefetch

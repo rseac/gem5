@@ -1,14 +1,16 @@
 """
 Selectable, tunable prefetcher factory for vector-cache experiments.
 
-Maps a CLI prefetcher name (``none``/``stride``/``imp``/``isb``/``stems``) plus
-a dict of ``--pf-param NAME=VALUE`` overrides to a *zero-arg factory* that
-builds one fresh prefetcher SimObject per call. ``VectorSplitCacheHierarchy``
-(``vector_cache_hierarchy.py``) calls the factory once per core, because a
-single SimObject instance cannot be shared between caches.
+Maps a CLI prefetcher name (``none``/``stride``/``imp``/``vimp``/``isb``/
+``stems``) plus a dict of ``--pf-param NAME=VALUE`` overrides to a *zero-arg
+factory* that builds one fresh prefetcher SimObject per call.
+``VectorSplitCacheHierarchy`` (``vector_cache_hierarchy.py``) calls the
+factory once per core, because a single SimObject instance cannot be shared
+between caches.
 
-The prefetcher classes themselves are stock gem5
-(``src/mem/cache/prefetch/Prefetcher.py``); this module only *selects* and
+The prefetcher classes themselves live in
+``src/mem/cache/prefetch/Prefetcher.py`` (all stock gem5 except ``vimp``,
+this fork's VectorIndirectMemoryPrefetcher); this module only *selects* and
 *parameterizes* one from the command line. Every tunable knob is just a
 ``Param.*`` declared on the chosen class (or inherited from
 ``QueuedPrefetcher``/``BasePrefetcher``), so any such name is a valid
@@ -20,6 +22,7 @@ from m5.objects import (
     IrregularStreamBufferPrefetcher,
     STeMSPrefetcher,
     StridePrefetcher,
+    VectorIndirectMemoryPrefetcher,
 )
 from m5.params import NULL
 
@@ -28,6 +31,7 @@ PREFETCHERS = {
     "none": None,
     "stride": StridePrefetcher,
     "imp": IndirectMemoryPrefetcher,
+    "vimp": VectorIndirectMemoryPrefetcher,
     "isb": IrregularStreamBufferPrefetcher,
     "stems": STeMSPrefetcher,
 }
@@ -51,6 +55,28 @@ def _coerce(value):
     if value in ("False", "false"):
         return False
     return value
+
+
+# Prefetchers whose class default is use_virtual_addresses=True. These train
+# on virtual addresses, so the CPU MMU must be registered on the prefetcher
+# (BasePrefetcher.registerMMU) or every page-crossing prefetch target is
+# silently dropped (Queued::insert requires an MMU to cross a page).
+VA_PREFETCHERS = {"vimp"}
+
+
+def needs_mmu(name, params=None):
+    """True when the selected prefetcher trains on virtual addresses and
+    therefore needs the CPU MMU registered for cross-page translation.
+
+    An explicit ``--pf-param use_virtual_addresses=...`` overrides the
+    class default, so PA-mode baselines keep their legacy behavior
+    (page-crossing prefetches dropped) unless the user opts in.
+    """
+    params = params or {}
+    raw = params.get("use_virtual_addresses")
+    if raw is not None:
+        return bool(_coerce(raw))
+    return name in VA_PREFETCHERS
 
 
 def build(name, params=None):
