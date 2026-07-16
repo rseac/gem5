@@ -141,6 +141,8 @@ parser.add_argument("--enable-chaining", action="store_true", default=True, help
 parser.add_argument("--disable-chaining", action="store_false", dest="enable_chaining", help="Disable vector chaining")
 parser.add_argument("--vector-timing-throughput", type=int, default=4, help="Number of elements per cycle for timing model")
 parser.add_argument("--simd-units", type=int, default=2, help="Number of physical SIMD lanes")
+parser.add_argument("--roi-trace", action="store_true", default=False,
+                    help="Enable ExecVector tracing only during ROI (m5_work_begin/m5_work_end)")
 
 # Cache/Memory Calibration Parameters
 parser.add_argument("--l1d-lat", type=int, default=8, help="L1D hit latency")
@@ -253,6 +255,7 @@ print(f"  ELEN:             {args.elen} bits")
 print(f"  Vector Chaining:  {'ENABLED' if args.enable_chaining else 'DISABLED'}")
 print(f"  Throughput:       {args.vector_timing_throughput} elements/cycle")
 print(f"  SIMD Units:       {args.simd_units} parallel units")
+print(f"  ROI Trace:        {'ENABLED' if args.roi_trace else 'DISABLED'}")
 print(f"  L1D Cache:        {args.l1d}")
 print(f"  L2 Cache:         {args.l2}")
 print("-" * 50)
@@ -263,7 +266,43 @@ print("=" * 50)
 board.set_se_binary_workload(binary, arguments=args.parms.split())
 
 import m5 # For curTick()
-simulator = Simulator(board=board, full_system=False)
+from m5 import debug as m5_debug
+from gem5.simulate.exit_event import ExitEvent
+
+# --- ROI-gated ExecVector tracing ---
+# When --roi-trace is used, ExecVector is enabled only between
+# m5_work_begin() and m5_work_end() calls in the simulated binary.
+
+def workbegin_handler():
+    """Enable ExecVector tracing and reset stats at ROI start."""
+    while True:
+        m5_debug.flags["ExecVector"].enable()
+        m5.stats.reset()
+        print("[ROI] Work begin: ExecVector tracing ENABLED, stats reset")
+        yield False
+
+def workend_handler():
+    """Disable ExecVector tracing and dump stats at ROI end."""
+    while True:
+        m5_debug.flags["ExecVector"].disable()
+        m5.stats.dump()
+        print("[ROI] Work end: ExecVector tracing DISABLED, stats dumped")
+        yield False
+
+if args.roi_trace:
+    # Ensure ExecVector starts disabled — it will be enabled by workbegin
+    if "ExecVector" in m5_debug.flags:
+        m5_debug.flags["ExecVector"].disable()
+    simulator = Simulator(
+        board=board,
+        full_system=False,
+        on_exit_event={
+            ExitEvent.WORKBEGIN: workbegin_handler(),
+            ExitEvent.WORKEND: workend_handler(),
+        },
+    )
+else:
+    simulator = Simulator(board=board, full_system=False)
 
 simulator.run()
 
