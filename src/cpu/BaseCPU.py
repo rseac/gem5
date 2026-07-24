@@ -174,6 +174,12 @@ class BaseCPU(ClockedObject):
     icache_port = RequestPort("Instruction Port")
     dcache_port = RequestPort("Data Port")
     latency_model = Param.LatencyModel(NULL, "Optional vector latency provider")
+    tyche_table = Param.TycheChainTable(
+        NULL, "Optional dependency chain table (Tyche prefetcher channel)"
+    )
+    gdp_table = Param.GdpChainTable(
+        NULL, "Optional vector chain/link table (GDP prefetcher channel)"
+    )
     _cached_ports = ["icache_port", "dcache_port"]
 
     _uncached_interrupt_response_ports = []

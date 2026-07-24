@@ -139,6 +139,8 @@ BaseCPU::BaseCPU(const Params &p, bool is_checker)
       simdUnits(p.simd_units),
       scalarUncacheable(p.scalar_uncacheable), system(p.system),
       latencyModel(p.latency_model),
+      tycheTable(p.tyche_table),
+      gdpTable(p.gdp_table),
       previousCycle(0), previousState(CPU_STATE_SLEEP),
       functionTraceStream(nullptr), currentFunctionStart(0),
       currentFunctionEnd(0), functionEntryTick(0),

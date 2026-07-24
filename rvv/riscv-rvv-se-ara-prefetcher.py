@@ -264,13 +264,20 @@ parser.add_argument(
     "--prefetcher",
     type=str,
     default=None,
-    choices=["none", "stride", "imp", "vimp", "isb", "stems"],
+    choices=["none", "stride", "imp", "vimp", "gdp",
+             "isb", "stems", "tyche"],
     help="Attach a hardware prefetcher to one cache. Implies "
     "(forces) --vector-cache. By default no cache has a prefetcher. "
     "Use --prefetcher-side and --prefetcher-level to place it. "
-    "'vimp' is this fork's vector indirect memory prefetcher; it "
-    "trains on virtual addresses, so the CPU MMU is registered on it "
-    "automatically (override with --pf-param use_virtual_addresses=false).",
+    "'vimp' (chunk-trained indirect), 'gdp' (Gather Dataflow "
+    "Prefetcher: architectural transform-chain replay, exact "
+    "A[f(B[i])] plus vector streaming) "
+    "and 'tyche' (scalar dependency-chain replay) are this "
+    "fork's prefetchers; they train on virtual addresses, so the CPU "
+    "MMU is registered automatically (override with --pf-param "
+    "use_virtual_addresses=false). gdp needs --prefetcher-side "
+    "vector; tyche needs --prefetcher-side scalar (it decodes scalar "
+    "instructions, which never reach the vector caches).",
 )
 parser.add_argument(
     "--prefetcher-side",
@@ -298,6 +305,28 @@ parser.add_argument(
     "--pf-param max_prefetch_distance=32. NAME is any Param.* on the "
     "selected prefetcher's class (see MEMORY_CONFIG.md).",
 )
+parser.add_argument(
+    "--scalar-prefetcher",
+    type=str,
+    default=None,
+    choices=["none", "stride", "imp", "isb", "stems", "tyche"],
+    help="Attach a SECOND, independent prefetcher to the scalar L1D, "
+    "alongside whatever --prefetcher places on the vector side. Implies "
+    "--vector-cache. For a scalar-only prefetcher either use this with "
+    "--prefetcher none, or use the existing --prefetcher-side scalar "
+    "(combining --prefetcher-side scalar with this option is an error: "
+    "both would claim the scalar chain). gdp is not accepted "
+    "here (its CPU-side records only reach vector-side caches); "
+    "tyche is (it is a scalar-side design).",
+)
+parser.add_argument(
+    "--scalar-pf-param",
+    action="append",
+    default=None,
+    metavar="NAME=VALUE",
+    help="Tunable parameter override for --scalar-prefetcher "
+    "(repeatable), same semantics as --pf-param.",
+)
 
 args = parser.parse_args()
 
@@ -317,18 +346,43 @@ if pf_params and not prefetcher_active:
     print("Error: --pf-param requires --prefetcher (and not 'none')")
     sys.exit(1)
 
+scalar_pf_params = {}
+for item in args.scalar_pf_param or []:
+    if "=" not in item:
+        print(f"Error: --scalar-pf-param expects NAME=VALUE, got '{item}'")
+        sys.exit(1)
+    key, value = item.split("=", 1)
+    scalar_pf_params[key] = value
+
+scalar_prefetcher_active = args.scalar_prefetcher not in (None, "none")
+if scalar_pf_params and not scalar_prefetcher_active:
+    print("Error: --scalar-pf-param requires --scalar-prefetcher "
+          "(and not 'none')")
+    sys.exit(1)
+if scalar_prefetcher_active and prefetcher_active and \
+        args.prefetcher_side == "scalar":
+    print("Error: --scalar-prefetcher and '--prefetcher-side scalar' both "
+          "target the scalar chain; place the main prefetcher on the "
+          "vector side or drop one of them")
+    sys.exit(1)
+
 scalar_l1d_prefetcher = None
 scalar_l2_prefetcher = None
 vector_l1d_prefetcher = None
 vector_l2_prefetcher = None
 prefetcher_mmu = False
-if prefetcher_active:
+prefetcher_tyche_table = False
+prefetcher_gdp_table = False
+if prefetcher_active or scalar_prefetcher_active:
     # The split hierarchy hosts the prefetcher on whichever chain is
     # selected, so it is required.
     args.vector_cache = True
     from prefetcher_factory import build as build_prefetcher
+    from prefetcher_factory import needs_chain_table
+    from prefetcher_factory import needs_gdp_table
     from prefetcher_factory import needs_mmu as prefetcher_needs_mmu
 
+if prefetcher_active:
     try:
         factory = build_prefetcher(args.prefetcher, pf_params)
     except ValueError as exc:
@@ -337,6 +391,24 @@ if prefetcher_active:
     # Virtual-address prefetchers (vimp by default) need the CPU MMU to
     # translate page-crossing prefetch targets.
     prefetcher_mmu = prefetcher_needs_mmu(args.prefetcher, pf_params)
+    # Tyche decodes scalar instructions; the vector caches never see
+    # scalar accesses in the split hierarchy.
+    prefetcher_tyche_table = needs_chain_table(args.prefetcher)
+    if prefetcher_tyche_table and args.prefetcher_side != "scalar":
+        print(f"Error: --prefetcher {args.prefetcher} requires "
+              "--prefetcher-side scalar (it observes scalar loads, "
+              "which the VectorSplitter never routes to the vector "
+              "caches)")
+        sys.exit(1)
+    # GDP's CPU-side records are extracted from vector loads; those
+    # only reach a vector-side cache in the split hierarchy.
+    prefetcher_gdp_table = needs_gdp_table(args.prefetcher)
+    if prefetcher_gdp_table and args.prefetcher_side != "vector":
+        print(f"Error: --prefetcher {args.prefetcher} requires "
+              "--prefetcher-side vector (its CPU-side records come "
+              "from vector loads, which the VectorSplitter never "
+              "routes to the scalar caches)")
+        sys.exit(1)
     # Route the single factory to one of four caches: {scalar,vector} x {l1,l2}.
     if args.prefetcher_side == "scalar":
         if args.prefetcher_level == "l1":
@@ -348,6 +420,26 @@ if prefetcher_active:
             vector_l1d_prefetcher = factory
         else:
             vector_l2_prefetcher = factory
+
+if scalar_prefetcher_active:
+    # Second, independent prefetcher on the scalar L1D (dual configs:
+    # e.g. stride on the scalar side next to gdp/vimp on the vector
+    # side). The argparse choices already exclude gdp.
+    try:
+        scalar_factory = build_prefetcher(
+            args.scalar_prefetcher, scalar_pf_params
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    scalar_l1d_prefetcher = scalar_factory
+    # The MMU flag is hierarchy-global but harmless on PA prefetchers.
+    prefetcher_mmu = prefetcher_mmu or prefetcher_needs_mmu(
+        args.scalar_prefetcher, scalar_pf_params
+    )
+    prefetcher_tyche_table = prefetcher_tyche_table or needs_chain_table(
+        args.scalar_prefetcher
+    )
 
 # Import the selected CPU model
 if args.cpu_type == "AraO3":
@@ -372,6 +464,8 @@ if args.vector_cache:
         vector_l1d_prefetcher=vector_l1d_prefetcher,
         vector_l2_prefetcher=vector_l2_prefetcher,
         prefetcher_needs_mmu=prefetcher_mmu,
+        prefetcher_needs_chain_table=prefetcher_tyche_table,
+        prefetcher_needs_gdp_table=prefetcher_gdp_table,
         l1d_mshrs=args.l1d_mshrs,
         l2_mshrs=args.l2_mshrs,
         vector_l1d_mshrs=args.vector_l1d_mshrs,
@@ -458,7 +552,11 @@ if args.vector_cache:
         if pf_params:
             print(f"  PF Params:        {pf_params}")
     else:
-        print(f"  Prefetcher:       none (all caches prefetcher-free)")
+        print(f"  Prefetcher:       none on the vector side")
+    if scalar_prefetcher_active:
+        print(f"  Scalar Prefetcher: {args.scalar_prefetcher} on scalar L1D")
+        if scalar_pf_params:
+            print(f"  Scalar PF Params: {scalar_pf_params}")
 else:
     print(f"  Vector Caches:    OFF (shared L1D/L2)")
 print("-" * 50)

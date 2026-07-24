@@ -45,6 +45,8 @@
 #include <vector>
 
 #include "base/logging.hh"
+#include "cpu/gdp_table.hh"
+#include "cpu/tyche_table.hh"
 #include "cpu/o3/dyn_inst.hh"
 #include "cpu/o3/fu_pool.hh"
 #include "cpu/o3/limits.hh"
@@ -669,6 +671,19 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
     DPRINTF(IQ, "Adding instruction [sn:%llu] PC %s to the IQ.\n",
             new_inst->seqNum, new_inst->pcState());
 
+    // Tyche chain construction: scalar instructions only (see
+    // cpu/tyche_table.hh).
+    if (cpu->tycheTable && !new_inst->isVector()) {
+        cpu->tycheTable->dispatch(new_inst->staticInst.get(),
+                                  new_inst->pcState().instAddr());
+    }
+    // GDP chain construction: vector instructions, in program order so
+    // register provenance is exact (see cpu/gdp_table.hh).
+    if (cpu->gdpTable && new_inst->isVector()) {
+        cpu->gdpTable->dispatch(new_inst->staticInst.get(),
+                                new_inst->pcState().instAddr());
+    }
+
     instList[new_inst->threadNumber].push_back(new_inst);
 
     auto iq = findIQ(new_inst);
@@ -713,6 +728,17 @@ InstructionQueue::insertNonSpec(const DynInstPtr &new_inst)
             "Adding non-speculative instruction [sn:%llu] PC %s "
             "to the IQ.\n",
             new_inst->seqNum, new_inst->pcState());
+
+    // Tyche chain construction (see insert() above).
+    if (cpu->tycheTable && !new_inst->isVector()) {
+        cpu->tycheTable->dispatch(new_inst->staticInst.get(),
+                                  new_inst->pcState().instAddr());
+    }
+    // GDP chain construction (see insert() above).
+    if (cpu->gdpTable && new_inst->isVector()) {
+        cpu->gdpTable->dispatch(new_inst->staticInst.get(),
+                                new_inst->pcState().instAddr());
+    }
 
     instList[new_inst->threadNumber].push_back(new_inst);
 
@@ -913,6 +939,49 @@ InstructionQueue::scheduleReadyInsts()
             ++iqStats.squashedInstsIssued;
 
             continue;
+        }
+
+        // GDP: sources are ready at issue — snoop the gather's rs1
+        // (base) or a .vx transform's scalar operand off the operand
+        // read it is already doing (see cpu/gdp_table.hh).
+        if (cpu->gdpTable && issuing_inst->isVector()) {
+            const StaticInst *si = issuing_inst->staticInst.get();
+            const Addr g_pc = issuing_inst->pcState().instAddr();
+            const bool is_gather = si->gdpInstInfo().kind ==
+                StaticInst::GdpInstInfo::IndexedLoad;
+            if (is_gather || cpu->gdpTable->wantsScalar(g_pc)) {
+                for (int i = 0; i < si->numSrcRegs(); i++) {
+                    if (si->srcRegIdx(i).is(IntRegClass)) {
+                        const uint64_t v =
+                            issuing_inst->getRegOperand(si, i);
+                        if (is_gather) {
+                            cpu->gdpTable->armBase(si, g_pc, v);
+                        } else {
+                            cpu->gdpTable->captureScalar(g_pc, v);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Tyche: the chain link at this PC needs its constant register
+        // operand's value; sources are ready at issue, so read it and
+        // run the stability training (see cpu/tyche_table.hh).
+        if (cpu->tycheTable && !issuing_inst->isVector()) {
+            const Addr t_pc = issuing_inst->pcState().instAddr();
+            const int want = cpu->tycheTable->wantsConstant(t_pc);
+            if (want >= 0) {
+                const StaticInst *si = issuing_inst->staticInst.get();
+                for (int i = 0; i < si->numSrcRegs(); i++) {
+                    const RegId &r = si->srcRegIdx(i);
+                    if (r.is(IntRegClass) && (int)r.index() == want) {
+                        cpu->tycheTable->captureConstant(t_pc,
+                            issuing_inst->getRegOperand(si, i));
+                        break;
+                    }
+                }
+            }
         }
 
         int idx = FUPool::NoNeedFU;

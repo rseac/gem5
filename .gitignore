@@ -44,3 +44,9 @@ configs/dram/lowp_sweep.cfg
 .vscode
 typings
 .DS_Store
+
+# ARA/prefetcher experiment tree (rvv/): run scripts, test .c sources,
+# built test binaries/dumps, and gem5 output dirs. Only gem5 source is
+# tracked. NOTE: files already tracked in rvv/ stay tracked regardless
+# (same as /tsvc-gem5/); use git rm --cached to untrack them.
+/rvv/

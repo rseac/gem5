@@ -157,7 +157,7 @@ void set_2d_array(real_t arr[LEN_2D][LEN_2D], real_t value, int stride)
 void init(int** ip, real_t* s1, real_t* s2){
     xx = (real_t*) memalign(ARRAY_ALIGNMENT, LEN_1D*sizeof(real_t));
     *ip = (int *) memalign(ARRAY_ALIGNMENT, LEN_1D*sizeof(real_t));
-    
+    /*
     for (int i = 0; i + 4 < LEN_1D; i = i+5){
         (*ip)[i]   = (i+4);
         (*ip)[i+1] = (i+2);
@@ -165,13 +165,15 @@ void init(int** ip, real_t* s1, real_t* s2){
         (*ip)[i+3] = (i+3);
         (*ip)[i+4] = (i+1);
     }
+    */
     // Partial final block when LEN_1D is not a multiple of 5: identity
     // mapping, so ip[] stays an in-bounds permutation. The stock loop above
     // would both write past the end of ip[] and store indices >= LEN_1D.
+    /*
     for (int i = LEN_1D - LEN_1D % 5; i < LEN_1D; i++) {
         (*ip)[i] = i;
     }
-    
+    */
     // Randomized ip[]: Fisher-Yates shuffle of the 0..LEN_1D-1 ramp with a
     // fixed seed (deterministic across runs). The stock init above only
     // permutes within 5-element blocks, so b[ip[i]] still walks cache lines
@@ -179,7 +181,7 @@ void init(int** ip, real_t* s1, real_t* s2){
     // the gathers genuinely indirect. Still a permutation, so every element
     // is touched exactly once. To enable, uncomment this block (the ramp
     // loop above is overwritten, so it can stay).
-    /*
+    
     srand(12345);
     for (int i = 0; i < LEN_1D; i++) {
          (*ip)[i] = i;
@@ -190,7 +192,7 @@ void init(int** ip, real_t* s1, real_t* s2){
          (*ip)[i] = (*ip)[j];
          (*ip)[j] = tmp;
     }
-    */
+    
 
     set_1d_array(a, LEN_1D, 1.,1);
     set_1d_array(b, LEN_1D, 1.,1);

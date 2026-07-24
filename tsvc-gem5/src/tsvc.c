@@ -2985,7 +2985,7 @@ real_t s353(struct args_t * func_args)
 
     real_t alpha = c[0];
     for (int nl = 0; nl < iterations; nl++) {
-        /*
+        
         for (int i = 0; i < LEN_1D; i += 5) {
             a[i] += alpha * b[ip[i]];
             a[i + 1] += alpha * b[ip[i + 1]];
@@ -2993,7 +2993,7 @@ real_t s353(struct args_t * func_args)
             a[i + 3] += alpha * b[ip[i + 3]];
             a[i + 4] += alpha * b[ip[i + 4]];
         }
-        */
+        
         // Non-indexed equivalent. Valid ONLY for the stock ip[] init
         // (common.c: each aligned 5-block holds {i+4, i+2, i, i+3, i+1});
         // wrong if the randomized Fisher-Yates init is enabled. Size-
@@ -3003,7 +3003,7 @@ real_t s353(struct args_t * func_args)
         // directly; only that tail still reads ip[]. Expected codegen:
         // unit-stride / segment (vlseg5) / strided (vlse) vector memory
         // ops, no vluxei/vsuxei — verify in the .dump.
-
+        /*
         int lim = LEN_1D - LEN_1D % 5;
         for (int i = 0; i < lim; i += 5) {
             a[i]     += alpha * b[i + 4];
@@ -3015,7 +3015,7 @@ real_t s353(struct args_t * func_args)
         for (int i = lim; i < LEN_1D; i++) {
             a[i] += alpha * b[ip[i]];
         }
-        
+        */
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
@@ -3446,18 +3446,18 @@ real_t s491(struct args_t * func_args)
     ROI_BEGIN(func_args);
 
     for (int nl = 0; nl < iterations; nl++) {
-        /*
+        
         for (int i = 0; i < LEN_1D; i++) {
             a[ip[i]] = b[i] + c[i] * d[i];
         }
-        */
+        
         // Non-indexed equivalent (stock block-5 ip[] only, see s353 note;
         // 5-aligned prefix + scalar ip[] tail makes it LEN_1D-agnostic).
         // Scatter rewritten through the inverse permutation {2,4,1,3,0}:
         // stores become unit-stride and the RHS elements are the permuted
         // ones. Store order within a block differs from the original, but
         // the five targets are disjoint, so the final a[] is identical.
-
+        /*
         int lim = LEN_1D - LEN_1D % 5;
         for (int i = 0; i < lim; i += 5) {
             a[i]     = b[i + 2] + c[i + 2] * d[i + 2];
@@ -3469,7 +3469,7 @@ real_t s491(struct args_t * func_args)
         for (int i = lim; i < LEN_1D; i++) {
             a[ip[i]] = b[i] + c[i] * d[i];
         }
-        
+        */
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
@@ -3495,15 +3495,15 @@ real_t s4112(struct args_t * func_args)
     ROI_BEGIN(func_args);
 
     for (int nl = 0; nl < iterations; nl++) {
-        /*
+        
         for (int i = 0; i < LEN_1D; i++) {
             a[i] += b[ip[i]] * s;
         }
-        */
+        
         // Non-indexed equivalent (stock block-5 ip[] only, see s353 note;
         // 5-aligned prefix + scalar ip[] tail makes it LEN_1D-agnostic).
         // Same rewrite as s353, rolled form.
-
+        /*
         int lim = LEN_1D - LEN_1D % 5;
         for (int i = 0; i < lim; i += 5) {
             a[i]     += b[i + 4] * s;
@@ -3515,7 +3515,7 @@ real_t s4112(struct args_t * func_args)
         for (int i = lim; i < LEN_1D; i++) {
             a[i] += b[ip[i]] * s;
         }
-        
+        */
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
@@ -3539,17 +3539,17 @@ real_t s4113(struct args_t * func_args)
     ROI_BEGIN(func_args);
 
     for (int nl = 0; nl < iterations; nl++) {
-        /*
+        
         for (int i = 0; i < LEN_1D; i++) {
             a[ip[i]] = b[ip[i]] + c[i];
         }
-        */
+        
         // Non-indexed equivalent (stock block-5 ip[] only, see s353 note;
         // 5-aligned prefix + scalar ip[] tail makes it LEN_1D-agnostic).
         // Change of variable j = ip[i]: a[j] = b[j] + c[ipinv(j)], so both
         // the gather and the scatter disappear — a and b are unit-stride and
         // only c is read through the inverse permutation {2,4,1,3,0}.
-
+        /*
         int lim = LEN_1D - LEN_1D % 5;
         for (int i = 0; i < lim; i += 5) {
             a[i]     = b[i]     + c[i + 2];
@@ -3561,7 +3561,7 @@ real_t s4113(struct args_t * func_args)
         for (int i = lim; i < LEN_1D; i++) {
             a[ip[i]] = b[ip[i]] + c[i];
         }
-        
+        */
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
@@ -3588,13 +3588,13 @@ real_t s4114(struct args_t * func_args)
 
     int k;
     for (int nl = 0; nl < iterations; nl++) {
-        /*
+        
         for (int i = n1-1; i < LEN_1D; i++) {
             k = ip[i];
             a[i] = b[i] + c[LEN_1D-k+1-2] * d[i];
             k += 5;
         }
-        */
+        
         // Non-indexed equivalent (stock block-5 ip[] only, see s353 note).
         // Size- and n1-independent, and ip[] is never read. Intrinsics
         // (precedent: s4117_vrgather) because c's 5-element window walks
@@ -3608,7 +3608,7 @@ real_t s4114(struct args_t * func_args)
         // straddle a register; head/leftovers run scalar via IP_STOCK,
         // pinned with novector so no gather can reappear. Note: like
         // s4117_vrgather, the novec build of this kernel stays vector code.
-
+        /*
         int beg = n1 - 1;
         int first = beg + (5 - beg % 5) % 5;
         if (first > LEN_1D) first = LEN_1D;
@@ -3644,7 +3644,7 @@ real_t s4114(struct args_t * func_args)
         for (; i < LEN_1D; i++) {
             a[i] = b[i] + c[LEN_1D - IP_STOCK(i) + 1 - 2] * d[i];
         }
-        
+        */
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
@@ -3670,11 +3670,11 @@ real_t s4115(struct args_t * func_args)
     real_t sum;
     for (int nl = 0; nl < iterations; nl++) {
         sum = 0.;
-        /*
+        
         for (int i = 0; i < LEN_1D; i++) {
             sum += a[i] * b[ip[i]];
         }
-        */
+        
         // Non-indexed equivalent (stock block-5 ip[] only, see s353 note).
         // Intrinsics (precedent: s4117_vrgather): without -ffast-math the
         // autovectorizer must keep the sum in exact i-order, which zigzags
@@ -3686,7 +3686,7 @@ real_t s4115(struct args_t * func_args)
         // Leftovers (only when VL does not divide the trip count) run
         // scalar via IP_STOCK, pinned novector. Note: like s4117_vrgather,
         // the novec build of this kernel stays vector code.
-
+        /*
         int lim = LEN_1D - LEN_1D % 5;
         int i = 0;
         size_t vlmax = __riscv_vsetvlmax_e32m1();
@@ -3712,7 +3712,7 @@ real_t s4115(struct args_t * func_args)
         for (; i < LEN_1D; i++) {
             sum += a[i] * b[IP_STOCK(i)];
         }
-        
+        */
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
@@ -3743,20 +3743,20 @@ real_t s4116(struct args_t * func_args)
     // vrgather selector for the block permutation (same as s4115), hoisted
     // out of the 100-rep timing loop.
     size_t vlmax = __riscv_vsetvlmax_e32m1();
-    size_t VL = vlmax - vlmax % 5;
-    uint32_t selbuf[vlmax];
+    //size_t VL = vlmax - vlmax % 5;
+    //uint32_t selbuf[vlmax];
     // novector: see s4114 selbuf note (gem5 vnsrl panic).
-    #pragma GCC novector
-    for (size_t t = 0; t < VL; t++)
-        selbuf[t] = (t - t % 5) + (4 + 3 * (t % 5)) % 5;
+    //#pragma GCC novector
+    //for (size_t t = 0; t < VL; t++)
+        //selbuf[t] = (t - t % 5) + (4 + 3 * (t % 5)) % 5;
     for (int nl = 0; nl < 100*iterations; nl++) {
         sum = 0.;
-        /*
+        
         for (int i = 0; i < LEN_2D-1; i++) {
             off = inc + i;
             sum += a[off] * aa[j-1][ip[i]];
         }
-        */
+        
         // Non-indexed equivalent (stock block-5 ip[] only, see s353 note).
         // Same intrinsics shape as s4115 applied to row aa[j-1]; the
         // ordered vfredosum keeps the sum bitwise in i-order. Two per-rep
@@ -3768,7 +3768,7 @@ real_t s4116(struct args_t * func_args)
         // only the two straddle elements run scalar (via IP_STOCK, which
         // reproduces the original's read past LEN_2D-1 there). off drops
         // out. Note: the novec build of this kernel stays vector code.
-
+        /*
         real_t * row = aa[j-1];
         int lim = (LEN_2D-1) - (LEN_2D-1) % 5;
         int i = 0;
@@ -3788,7 +3788,7 @@ real_t s4116(struct args_t * func_args)
         for (; i < LEN_2D-1; i++) {
             sum += a[inc + i] * row[IP_STOCK(i)];
         }
-
+        */
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 

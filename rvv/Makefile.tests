@@ -12,8 +12,11 @@ CHAINING_TEST    = rvv_chaining_test
 SCALAR_TEST      = scalar_wakeup_test
 LOAD_CHAIN_TEST  = rvv_load_chain_test
 LATENCY_TEST     = rvv_ara_latency_test
+GDP_TEST         = gdp_test
+TYCHE_TEST       = tyche_test
+GDP_EXT_TEST     = gdp_ext_test
 
-all: $(CHAINING_TEST).bin $(SCALAR_TEST).bin $(LOAD_CHAIN_TEST).bin $(LATENCY_TEST).bin 
+all: $(CHAINING_TEST).bin $(SCALAR_TEST).bin $(LOAD_CHAIN_TEST).bin $(LATENCY_TEST).bin $(GDP_TEST).bin $(TYCHE_TEST).bin
 
 %.bin: %.c
 	$(CC) $(CFLAGS) -o $@ $<
@@ -26,6 +29,23 @@ $(LOAD_CHAIN_TEST).bin: $(LOAD_CHAIN_TEST).c
 $(LATENCY_TEST).bin: $(LATENCY_TEST).c
 	$(CC) $(CFLAGS) -o $@ $< -lm
 	$(OBJDUMP) -d $@ > $(LATENCY_TEST).dump
+
+# Built with the bare-metal toolchain: riscv64-unknown-linux-gnu-gcc is
+# broken on this machine (missing cc1); static newlib binaries run fine
+# in gem5 SE mode.
+$(GDP_TEST).bin: $(GDP_TEST).c
+	riscv64-unknown-elf-gcc $(CFLAGS) -o $@ $<
+	riscv64-unknown-elf-objdump -d $@ > $(GDP_TEST).dump
+
+# -fno-tree-vectorize: the kernels must stay scalar — Tyche decodes
+# scalar RV64 instructions (the vectorized form is GDP's test).
+$(TYCHE_TEST).bin: $(TYCHE_TEST).c
+	riscv64-unknown-elf-gcc $(CFLAGS) -fno-tree-vectorize -o $@ $<
+	riscv64-unknown-elf-objdump -d $@ > $(TYCHE_TEST).dump
+
+$(GDP_EXT_TEST).bin: $(GDP_EXT_TEST).c
+	riscv64-unknown-elf-gcc $(CFLAGS) -o $@ $<
+	riscv64-unknown-elf-objdump -d $@ > $(GDP_EXT_TEST).dump
 
 clean:
 	rm -f *.bin *.dump

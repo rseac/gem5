@@ -396,6 +396,44 @@ fails with a clear `unknown --pf-param … valid: …` error.
   `shift_values([0,1,2,3,4])` must contain the target element shift (2 for
   4-byte, 3 for 8-byte elements) — it is a `VectorParam`, so it is not
   settable via `--pf-param`.
+- **gdp** (`GDPPrefetcher`, this fork — see DOCUMENTATION.MD): the
+  Gather Dataflow Prefetcher, built on Tyche's skeleton — records the
+  vsext/vsll/vadd ops between a unit-stride producer load and its
+  gather and replays them on index lines captured from its own
+  stream's fills, so `A[f(B[i])]` (incl. +c biases) prefetches
+  exactly; unit-stride producers with no gather attached stream too
+  (subsumes a vector stream prefetcher: next chunk = `addr + size`,
+  exact on varying partial-vl walks). No confidence/kill/training,
+  one-iteration arming. Vector side only (`--prefetcher-side vector`;
+  per-core `GdpChainTable` wired automatically).
+  `streaming_distance(8)` lines — sets indirect lookahead too; full
+  indirect timeliness needs distance x cadence >= 2 memory
+  round-trips, so sweep 16-32, `stream_only(False)` ablation (stream
+  without capture/replay), `slice_buffer_entries(2)` entries in the
+  slice buffer in front of each replay pipeline (watch
+  `bufferBusyDrops`; poisson3Db knee at 4), `pipelines(2)`
+  concurrently configured producers, `routing_entries(32)` Index
+  Routing Table capacity. Table knobs on the SimObject (not
+  `--pf-param`): `dct_entries(8)`, `max_transform_stages(4)`. Class
+  defaults as vimp: `use_virtual_addresses(True)` (MMU registered
+  automatically), `prefetch_on_access(True)`, `queue_size(64)`.
+- **tyche** (`TychePrefetcher`, this fork — see DOCUMENTATION.MD): port
+  of the Tyche dependency-chain indirect prefetcher (ChampSim artifact)
+  for SCALAR code — it decodes scalar RV64 instructions, so it requires
+  the scalar side (`--prefetcher-side scalar`, or `--scalar-prefetcher
+  tyche` in dual configs; the per-core `TycheChainTable` is wired
+  automatically). Chains root at IP-stride loads; recorded ALU ops
+  replay on captured fill values, so any `A[f(B[i])]` the chain ALU
+  expresses is covered — the scalar-side sibling of gdp's
+  transform-chain replay. `stride_distance(32)` head lookahead iterations,
+  `stride_only(False)` = IP-stride prefetches only (the artifact's
+  only_stride ablation), `walk_entries(16)` in-flight walk steps
+  (AGQ_SIZE), `successors_per_wakeup(4)` (ISQ_WRITE_PORT),
+  `max_chain_hops(16)`, `pending_target_entries(32)`. Table knobs are
+  on the SimObject, not `--pf-param`: `dct_entries(24)`,
+  `ipt_entries(32)`, `dense_threshold(115)`. Class defaults as vimp:
+  `use_virtual_addresses(True)` (MMU registered automatically),
+  `prefetch_on_access(True)`, `queue_size(64)`.
 - **isb** (`IrregularStreamBufferPrefetcher`): `degree(4)`,
   `chunk_size(256)`, `num_counter_bits(2)`.
 - **stems** (`STeMSPrefetcher`): `reconstruction_entries(256)`,

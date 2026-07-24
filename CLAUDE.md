@@ -37,9 +37,19 @@ Finally, the code you write should be as simple as possible. It should be reason
 
 Always remember to ask clarifying questions when there is any doubt on your end.
 
+## Running the Docker Container
+
+docker run -it --rm \
+-v /home/parkw/gem5:/gem5 \
+-v /home/parkw/.cache/gem5:/tmp/gem5-cache \
+-v /home/parkw/riscv-vectorized-benchmark-suite:/riscv-vectorized-benchmark-suite \
+-e GEM5_RESOURCE_DIR=/tmp/gem5-cache \
+-w /gem5 \
+ghcr.io/gem5/ubuntu-22.04_all-dependencies:v23-0 /bin/bash
+
 ## Build
 
-Whenever any files are edited in the src directory, I will build it myself in my docker shell. Do not run any build commands yourself, simply notify me when I need to run a build.
+Whenever any files are edited in the src directory, I will build it myself in my docker shell (unless otherwise specified). If I specify you should build after making changes, run "scons build/RISCV/gem5.opt -j$(nproc) --ignore-style". Refer to above for setting up the docker container.
 
 ## Running an ARA simulation
 

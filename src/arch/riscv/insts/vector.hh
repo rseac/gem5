@@ -506,6 +506,19 @@ class VleMicroInst : public VectorMicroInst
     std::string
     generateDisassembly(Addr pc,
                         const loader::SymbolTable *symtab) const override;
+
+  public:
+    // GDP: a unit-stride vector load is an index-stream producer
+    // candidate; expose its element width (encoded EEW) for chunk
+    // slicing (see cpu/gdp_table.hh).
+    GdpInstInfo
+    gdpInstInfo() const override
+    {
+        GdpInstInfo info;
+        info.kind = GdpInstInfo::UnitStrideLoad;
+        info.elemBytes = width_EEW(machInst.width) / 8;
+        return info;
+    }
 };
 
 class VseMicroInst : public VectorMicroInst
@@ -723,6 +736,21 @@ class VlIndexMicroInst : public VectorMemMicroInst
     std::string
     generateDisassembly(Addr pc,
                         const loader::SymbolTable *symtab) const override;
+
+  public:
+    // GDP: an indexed vector load is the gather whose base (rs1) is
+    // snooped at issue; expose its data element width (vtype SEW -> the
+    // index-to-byte-offset shift) and the architectural register this
+    // element micro reads its offsets from (see cpu/gdp_table.hh).
+    GdpInstInfo
+    gdpInstInfo() const override
+    {
+        GdpInstInfo info;
+        info.kind = GdpInstInfo::IndexedLoad;
+        info.elemBytes = vtype_SEW(machInst.vtype8) / 8;
+        info.srcVReg = vs2RegIdx;
+        return info;
+    }
 };
 
 class VsIndexMacroInst : public VectorMemMacroInst

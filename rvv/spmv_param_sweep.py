@@ -74,6 +74,8 @@ FIXED_PF_PARAMS = {
     "stride": {"prefetch_on_pf_hit": "false"},
     "imp": {"prefetch_on_pf_hit": "false"},
     "vimp": {"prefetch_on_pf_hit": "false", "index_size": "8"},
+    # gdp has no kill switch and no training; nothing to pin.
+    "gdp": {"prefetch_on_pf_hit": "false"},
 }
 
 # Swept combos, mirroring tsvc_results/prefetcher_params.xlsx.
@@ -92,6 +94,56 @@ VIMP_COMBOS = [
     (8, 2, 4, 8, 8),
     (0, 2, 4, 4, 4),
     (0, 2, 4, 4, 16),
+]
+
+# GDP sweep (added 2026-07-22 as gdp2; renamed 2026-07-24): the
+# Tyche-skeleton transform-chain design (see DOCUMENTATION.MD).
+# streaming_distance sets BOTH the stream and the indirect lookahead
+# (index lines are captured from the stream's own fills), and full
+# indirect timeliness needs
+# distance x chunk-cadence >= TWO memory round-trips (index line, then
+# target line) — so the sweep reaches deep.
+# slice_buffer_entries bounds capture concurrency — the depth of
+# the one slice buffer in front of each replay pipeline (gdp_test
+# validation saw ~18% bufferBusyDrops at the default 2; sb1 probes the
+# floor, 4/8 the knee). stream_only=true is the ablation: architectural
+# streaming with capture/replay disabled.
+GDP_COMBOS = [
+    # (streaming_distance, slice_buffer_entries, stream_only)
+    (8, 2, "false"),
+    (16, 2, "false"),
+    (24, 2, "false"),
+    (32, 2, "false"),
+    (16, 1, "false"),
+    (16, 4, "false"),
+    (16, 8, "false"),
+    (32, 4, "false"),
+    (32, 8, "false"),
+    (8, 2, "true"),
+    (16, 2, "true"),
+    (32, 2, "true"),
+]
+GDP_KEYS = ("streaming_distance", "slice_buffer_entries", "stream_only")
+
+# Dual-prefetcher configs (added 2026-07-19): stride on the scalar L1D
+# (via the run script's --scalar-prefetcher) combined with each vector-L1
+# prefetcher at its best-found parameters from the sweeps above:
+#   stride: deg32/dist0        (best Stride row by cycles)
+#   vimp:   id8_pt2_sct4_sd8_ipc8 (best VIMP row)
+#   gdp:    sd16_sb4              (best GDP row: poisson3Db 1.617x)
+# The scalar side uses the same best stride params (deg32/dist0).
+DUAL_SCALAR_STRIDE = {"degree": 32, "distance": 0,
+                      "prefetch_on_pf_hit": "false"}
+DUAL_CONFIGS = [
+    # (name, vector prefetcher, vector params)
+    ("dual_vnone", "none", {}),
+    ("dual_vvimp", "vimp", {"indirect_delta": 8, "prefetch_threshold": 2,
+                            "stream_counter_threshold": 4,
+                            "streaming_distance": 8,
+                            "ipd_indices_per_chunk": 8}),
+    ("dual_vstride", "stride", {"degree": 32, "distance": 0}),
+    ("dual_vgdp", "gdp", {"streaming_distance": 16,
+                          "slice_buffer_entries": 4}),
 ]
 
 STRIDE_KEYS = ("degree", "distance")
@@ -115,6 +167,16 @@ def build_configs():
         params = dict(zip(VIMP_KEYS, combo))
         name = "vimp_id{}_pt{}_sct{}_sd{}_ipc{}".format(*combo)
         configs.append((name, "vimp", params))
+    for name, vec_pf, vec_params in DUAL_CONFIGS:
+        # 4-tuple: the extra dict is the scalar-L1D stride's params.
+        configs.append((name, vec_pf, vec_params,
+                        dict(DUAL_SCALAR_STRIDE)))
+    for combo in GDP_COMBOS:
+        params = dict(zip(GDP_KEYS, combo))
+        name = "gdp_sd{}_sb{}".format(combo[0], combo[1])
+        if combo[2] == "true":
+            name += "_streamonly"
+        configs.append((name, "gdp", params))
     return configs
 
 
@@ -127,7 +189,10 @@ def log(logfile, msg):
 
 def run_one(cfg, input_name, outroot, logfile, timeout_s):
     """Run one config in docker; returns (name, 'done'|'skipped'|'failed')."""
-    name, prefetcher, params = cfg
+    name, prefetcher, params = cfg[:3]
+    # Optional 4th element: params of a stride prefetcher on the scalar
+    # L1D (dual configs, via the run script's --scalar-prefetcher).
+    scalar_params = cfg[3] if len(cfg) > 3 else None
     outdir = os.path.join(outroot, name)
     done = os.path.join(GEM5_ROOT, outdir, "DONE")
     failed = os.path.join(GEM5_ROOT, outdir, "FAILED")
@@ -143,6 +208,10 @@ def run_one(cfg, input_name, outroot, logfile, timeout_s):
     if prefetcher != "none":
         for k, v in {**FIXED_PF_PARAMS[prefetcher], **params}.items():
             pf_args += ["--pf-param", f"{k}={v}"]
+    if scalar_params is not None:
+        pf_args += ["--scalar-prefetcher", "stride"]
+        for k, v in scalar_params.items():
+            pf_args += ["--scalar-pf-param", f"{k}={v}"]
 
     cmd = DOCKER + [
         "build/RISCV/gem5.opt", "-re", "-d", outdir,
@@ -210,6 +279,45 @@ STAT_PATTERNS = {
     "patternsDetected": r"\.prefetcher\.patternsDetected\s+(\S+)",
     "confidenceMatches": r"\.prefetcher\.confidenceMatches\s+(\S+)",
     "chunksSliced": r"\.prefetcher\.chunksSliced\s+(\S+)",
+    "chunksObserved": r"\.prefetcher\.chunksObserved\s+(\S+)",
+    "fillsCaptured": r"\.prefetcher\.fillsCaptured\s+(\S+)",
+    # gdp-specific ("capturesRegistered\s" cannot match the Miss
+    # variant: no whitespace follows "Registered" there).
+    "pfLate": r"\.prefetcher\.pfLate\s+(\S+)",
+    "chainDispatches": r"\.prefetcher\.chainDispatches\s+(\S+)",
+    "capturesRegistered": r"\.prefetcher\.capturesRegistered\s+(\S+)",
+    "capturesRegisteredMiss":
+        r"\.prefetcher\.capturesRegisteredMiss\s+(\S+)",
+    "bufferBusyDrops": r"\.prefetcher\.bufferBusyDrops\s+(\S+)",
+    "targetsGenerated": r"\.prefetcher\.targetsGenerated\s+(\S+)",
+    "linksFormed": r"\.gdp_table\.linksFormed\s+(\S+)",
+    # Side-specific patterns for dual-prefetcher runs. The generic
+    # patterns above match the FIRST prefetcher in the stats dump, which
+    # in a dual run is the scalar one (l1d-cache-0 precedes
+    # vector-l1d-cache-0); these anchor the full cache name. Note
+    # "l1d-cache-0" is a substring of "vector-l1d-cache-0", so the
+    # scalar patterns anchor on the preceding dot of cache_hierarchy.
+    "ScalL1Accesses":
+        r"^board\.cache_hierarchy\.l1d-cache-0\."
+        r"overallAccesses::total\s+(\S+)",
+    "ScalL1Misses":
+        r"^board\.cache_hierarchy\.l1d-cache-0\."
+        r"overallMisses::total\s+(\S+)",
+    "ScalIssued":
+        r"^board\.cache_hierarchy\.l1d-cache-0\.prefetcher\."
+        r"pfIssued\s+(\S+)",
+    "ScalUseful":
+        r"^board\.cache_hierarchy\.l1d-cache-0\.prefetcher\."
+        r"pfUseful\s+(\S+)",
+    "VecIssued":
+        r"^board\.cache_hierarchy\.vector-l1d-cache-0\.prefetcher\."
+        r"pfIssued\s+(\S+)",
+    "VecUseful":
+        r"^board\.cache_hierarchy\.vector-l1d-cache-0\.prefetcher\."
+        r"pfUseful\s+(\S+)",
+    "VecDemandMshrMisses":
+        r"^board\.cache_hierarchy\.vector-l1d-cache-0\.prefetcher\."
+        r"demandMshrMisses\s+(\S+)",
 }
 
 
@@ -245,8 +353,41 @@ def metric_row(s):
 
 METRIC_HDR = ["Instructions", "Cycles", "IPC", "VL1 Miss Rate", "Issued",
               "Accuracy", "Coverage", "ROI Host Seconds"]
+
+
+def dual_metric_row(s):
+    """Row for the DUAL sheet: core metrics plus per-side prefetcher
+    stats (the generic Issued/Accuracy would report the scalar
+    prefetcher, the first in the stats dump)."""
+    insts, cycles = s.get("Instructions"), s.get("Cycles")
+    vacc, vmiss = s.get("VL1Accesses"), s.get("VL1Misses")
+    sacc, smiss = s.get("ScalL1Accesses"), s.get("ScalL1Misses")
+    vi, vu = s.get("VecIssued"), s.get("VecUseful")
+    vdmm = s.get("VecDemandMshrMisses")
+    si, su = s.get("ScalIssued"), s.get("ScalUseful")
+    return [
+        insts, cycles,
+        insts / cycles if insts and cycles else None,
+        vmiss / vacc if vacc else None,
+        smiss / sacc if sacc else None,
+        vi, vu / vi if vi else None,
+        vu / (vu + vdmm) if vu is not None and vdmm is not None
+        and (vu + vdmm) > 0 else None,
+        si, su / si if si else None,
+        s.get("WallClock"),
+    ]
+
+
+DUAL_HDR = ["Instructions", "Cycles", "IPC", "VL1 Miss Rate",
+            "ScalarL1 Miss Rate", "VecIssued", "VecAccuracy",
+            "VecCoverage", "ScalIssued", "ScalAccuracy",
+            "ROI Host Seconds"]
 VIMP_EXTRA = ["streamCandidates", "indirectCandidates", "patternsDetected",
               "confidenceMatches", "chunksSliced"]
+GDP_EXTRA = ["linksFormed", "chainDispatches", "chunksObserved",
+             "streamCandidates", "capturesRegistered",
+             "capturesRegisteredMiss", "fillsCaptured",
+             "bufferBusyDrops", "targetsGenerated", "pfLate"]
 
 
 def collect(configs, outroot, workbook, input_name):
@@ -259,6 +400,10 @@ def collect(configs, outroot, workbook, input_name):
         "IMP": ["Config"] + list(IMP_KEYS) + METRIC_HDR + ["Status"],
         "VIMP": ["Config"] + list(VIMP_KEYS) + METRIC_HDR + VIMP_EXTRA
                 + ["Status"],
+        "GDP": ["Config"] + list(GDP_KEYS) + METRIC_HDR + GDP_EXTRA
+               + ["Status"],
+        "DUAL": ["Config", "VectorPF", "VectorParams", "ScalarPF",
+                 "ScalarParams"] + DUAL_HDR + ["Status"],
     }
     for title, hdr in sheets.items():
         wb.create_sheet(title).append(hdr)
@@ -277,14 +422,21 @@ def collect(configs, outroot, workbook, input_name):
     ]:
         readme.append([line])
 
-    for name, prefetcher, params in configs:
+    for cfg in configs:
+        name, prefetcher, params = cfg[:3]
+        scalar_params = cfg[3] if len(cfg) > 3 else None
         host_outdir = os.path.join(GEM5_ROOT, outroot, name)
         stats_path = os.path.join(host_outdir, "stats.txt")
         status = "done" if os.path.exists(
             os.path.join(host_outdir, "DONE")) else "FAILED/missing"
         s = parse_roi_stats(stats_path) if os.path.exists(stats_path) else {}
         row = metric_row(s)
-        if prefetcher == "none":
+        if scalar_params is not None:
+            wb["DUAL"].append(
+                [name, prefetcher, str(params) if params else "",
+                 "stride", str(scalar_params)]
+                + dual_metric_row(s) + [status])
+        elif prefetcher == "none":
             wb["Base"].append([name] + row + [status])
         elif prefetcher == "stride":
             wb["Stride"].append(
@@ -296,6 +448,10 @@ def collect(configs, outroot, workbook, input_name):
             wb["VIMP"].append(
                 [name] + [params[k] for k in VIMP_KEYS] + row
                 + [s.get(k) for k in VIMP_EXTRA] + [status])
+        elif prefetcher == "gdp":
+            wb["GDP"].append(
+                [name] + [params[k] for k in GDP_KEYS] + row
+                + [s.get(k) for k in GDP_EXTRA] + [status])
 
     os.makedirs(os.path.dirname(workbook), exist_ok=True)
     wb.save(workbook)

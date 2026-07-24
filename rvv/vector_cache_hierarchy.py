@@ -88,6 +88,15 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         vector_l1d_prefetcher=None,
         vector_l2_prefetcher=None,
         prefetcher_needs_mmu: bool = False,
+        # Tyche: create one TycheChainTable per core and wire it to
+        # both the attached prefetcher (chain_table) and the core
+        # (tyche_table) — the CPU-to-prefetcher sideband channel. See
+        # src/cpu/tyche_table.hh and needs_chain_table().
+        prefetcher_needs_chain_table: bool = False,
+        # GDP: same wiring pattern for the GdpChainTable
+        # (prefetcher.link_table + core.gdp_table). See
+        # src/cpu/gdp_table.hh and needs_gdp_table().
+        prefetcher_needs_gdp_table: bool = False,
         # MSHR counts bound the miss-level parallelism of each cache;
         # tgts_per_mshr bounds how many demands can coalesce on one
         # outstanding line (relevant for gathers, where many elements of
@@ -123,6 +132,45 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         self._vector_l1d_prefetcher = vector_l1d_prefetcher
         self._vector_l2_prefetcher = vector_l2_prefetcher
         self._prefetcher_needs_mmu = prefetcher_needs_mmu
+        self._prefetcher_needs_chain_table = prefetcher_needs_chain_table
+        self._prefetcher_needs_gdp_table = prefetcher_needs_gdp_table
+
+    def _finish_prefetcher(self, prefetcher, cpu) -> None:
+        """Per-prefetcher post-attach wiring: register the core's MMU
+        (VA-training prefetchers) and/or create this core's sideband
+        table and hand it to both the prefetcher and the core (the
+        CPU-to-prefetcher channel; the core parents it)."""
+        if self._prefetcher_needs_mmu:
+            # Harmless for PA-mode prefetchers (registerMMU only enables
+            # cross-page translation when VA training is on), so no
+            # per-prefetcher check is needed in mixed configurations.
+            prefetcher.registerMMU(cpu.core.mmu)
+        if (
+            self._prefetcher_needs_chain_table
+            and "chain_table" in prefetcher._params
+        ):
+            # The _params check matters in dual-prefetcher configs (e.g.
+            # tyche on the scalar L1 + stride on the vector L1): the
+            # flag is hierarchy-global, but only the tyche prefetcher
+            # class has a chain_table param — assigning it on stride
+            # would error, and the core's tyche_table must be the table
+            # that prefetcher actually consumes.
+            from m5.objects import TycheChainTable
+
+            tbl = TycheChainTable()
+            cpu.core.tyche_table = tbl
+            prefetcher.chain_table = tbl
+        if (
+            self._prefetcher_needs_gdp_table
+            and "link_table" in prefetcher._params
+        ):
+            # Same _params guard: only the gdp class has a link_table
+            # param, so dual configs wire the right prefetcher.
+            from m5.objects import GdpChainTable
+
+            tbl = GdpChainTable()
+            cpu.core.gdp_table = tbl
+            prefetcher.link_table = tbl
 
     @overrides(AbstractCacheHierarchy)
     def incorporate_cache(self, board: AbstractBoard) -> None:
@@ -173,12 +221,10 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
             # The factory is called once per core so each gets a fresh SimObject.
             if self._scalar_l2_prefetcher is not None:
                 l2_node.cache.prefetcher = self._scalar_l2_prefetcher()
-                if self._prefetcher_needs_mmu:
-                    l2_node.cache.prefetcher.registerMMU(cpu.core.mmu)
+                self._finish_prefetcher(l2_node.cache.prefetcher, cpu)
             if self._scalar_l1d_prefetcher is not None:
                 l1d_node.cache.prefetcher = self._scalar_l1d_prefetcher()
-                if self._prefetcher_needs_mmu:
-                    l1d_node.cache.prefetcher.registerMMU(cpu.core.mmu)
+                self._finish_prefetcher(l1d_node.cache.prefetcher, cpu)
 
             self.l2buses[i].mem_side_ports = l2_node.cache.cpu_side
             self.membus.cpu_side_ports = l2_node.cache.mem_side
@@ -213,12 +259,10 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
             # factory is called once per core so each gets a fresh SimObject.
             if self._vector_l2_prefetcher is not None:
                 vl2_node.cache.prefetcher = self._vector_l2_prefetcher()
-                if self._prefetcher_needs_mmu:
-                    vl2_node.cache.prefetcher.registerMMU(cpu.core.mmu)
+                self._finish_prefetcher(vl2_node.cache.prefetcher, cpu)
             if self._vector_l1d_prefetcher is not None:
                 vl1d_node.cache.prefetcher = self._vector_l1d_prefetcher()
-                if self._prefetcher_needs_mmu:
-                    vl1d_node.cache.prefetcher.registerMMU(cpu.core.mmu)
+                self._finish_prefetcher(vl1d_node.cache.prefetcher, cpu)
 
             self.vector_l2buses[i].mem_side_ports = vl2_node.cache.cpu_side
             self.membus.cpu_side_ports = vl2_node.cache.mem_side

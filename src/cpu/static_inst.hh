@@ -415,6 +415,29 @@ class StaticInst : public RefCounted, public StaticInstFlags
     }
 
     /**
+     * Classification for the Gather Dataflow Prefetcher (GDP, see
+     * cpu/gdp_table.hh). Vector memory micro-ops override this to expose
+     * ISA fields the CPU-side hooks need without ISA-specific casts:
+     * unit-stride loads report their element width (EEW/8, the width the
+     * prefetcher slices index chunks at), indexed loads report their
+     * data element width (SEW/8, whose log2 is the index-to-byte-offset
+     * shift) and the architectural vector register they read offsets
+     * from. Everything else keeps the None default.
+     */
+    struct GdpInstInfo
+    {
+        enum Kind : uint8_t { None = 0, UnitStrideLoad, IndexedLoad };
+        Kind kind = None;
+        uint8_t elemBytes = 0;
+        uint8_t srcVReg = 0;
+    };
+    virtual GdpInstInfo
+    gdpInstInfo() const
+    {
+        return GdpInstInfo();
+    }
+
+    /**
      * Tag a memory request created for this instruction with metadata
      * about the instruction (an RVVExtension). The default attaches the
      * instruction's OpClass; strided vector microops override this to

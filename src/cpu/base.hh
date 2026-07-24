@@ -69,6 +69,8 @@ class CheckerCPU;
 class ThreadContext;
 class System;
 class LatencyModel;
+class TycheChainTable;
+class GdpChainTable;
 
 struct AddressMonitor
 {
@@ -432,6 +434,12 @@ class BaseCPU : public ClockedObject
     System *system;
 
     LatencyModel *latencyModel;
+
+    /** Optional Tyche dependency-chain table (see cpu/tyche_table.hh) */
+    TycheChainTable *tycheTable;
+
+    /** Optional GDP vector chain/link table (see cpu/gdp_table.hh) */
+    GdpChainTable *gdpTable;
 
     /**
      * Get the cache line size of the system.

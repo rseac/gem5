@@ -430,6 +430,129 @@ class VectorIndirectMemoryPrefetcher(QueuedPrefetcher):
     )
 
 
+class GDPPrefetcher(QueuedPrefetcher):
+    """Gather Dataflow Prefetcher (GDP): prefetches A[f(B[i])] vector
+    gathers with no training — the pattern is extracted
+    architecturally. The CPU side (cpu/gdp_table.hh) records the
+    transform chain between a unit-stride producer load and its gather
+    (DCT) and links them in one iteration (backward propagation at the
+    gather's dispatch); this prefetcher streams the index array ahead
+    architecturally, captures index-line fills by range membership in
+    the stream window, and replays each element through the recorded
+    transform ops + a dedicated base adder — so any A[f(B[i])] the
+    chain expresses is prefetched exactly. No confidence, no kill
+    switch, no training. Vector-side design (requires
+    --prefetcher-side vector). Wire ONE GdpChainTable per core to
+    both this prefetcher's link_table and the CPU's gdp_table.
+    See mem/cache/prefetch/gdp.hh."""
+
+    type = "GDPPrefetcher"
+    cxx_class = "gem5::prefetch::GDP"
+    cxx_header = "mem/cache/prefetch/gdp.hh"
+
+    # Index loads are data reads; ignore instruction accesses.
+    on_inst = False
+    # The stream walk needs every chunk event, hit or miss.
+    prefetch_on_access = True
+    # Chain values are virtual; train on VAs and translate targets
+    # through the registered MMU.
+    use_virtual_addresses = True
+    queue_size = 64
+
+    link_table = Param.GdpChainTable(
+        NULL,
+        "CPU-side chain/link table (must be the same instance as the "
+        "CPU's gdp_table param)",
+    )
+    streaming_distance = Param.Unsigned(
+        8,
+        "Index-array stream lookahead in lines. Also sets the indirect "
+        "lookahead (captures come from the stream's fills): full "
+        "indirect timeliness needs distance*chunk-cadence to cover TWO "
+        "memory round-trips (index line + target line), so expect "
+        "larger values than a plain stream prefetcher wants.",
+    )
+    stream_only = Param.Bool(
+        False,
+        "Ablation: stream the index arrays but never capture/replay "
+        "(isolates the architectural-stream contribution)",
+    )
+    slice_buffer_entries = Param.Unsigned(
+        2,
+        "Line entries in the slice buffer in front of each producer "
+        "replay pipeline: captured line payloads held until fully "
+        "replayed (or stale-aborted); a fill arriving with the buffer "
+        "full is dropped (bufferBusyDrops)",
+    )
+    pipelines = Param.Unsigned(
+        2, "Concurrently configured producer replay pipelines"
+    )
+    routing_entries = Param.Unsigned(
+        32, "Index Routing Table (IRT) capacity: index lines "
+        "registered for capture; a matching fill is routed to the "
+        "owning producer's slice buffer"
+    )
+
+
+class TychePrefetcher(QueuedPrefetcher):
+    """Dependency-chain indirect prefetcher, a gem5/RISC-V port of the
+    Tyche artifact (ChampSim/LoongArch). The CPU side
+    (cpu/tyche_table.hh) roots chains at IP-stride loads and records the
+    instructions between them and dependent loads (op + trained constant
+    operand); this prefetcher stride-prefetches each confident head
+    load, captures the fill, replays the recorded ALU ops on the loaded
+    value and prefetches the dependent loads' addresses — any A[f(B[i])]
+    the chain ALU can express. Scalar-side design: it decodes scalar
+    RV64 instructions, so attach it to the scalar L1D (--scalar-
+    prefetcher tyche). Wire ONE TycheChainTable per core to both this
+    prefetcher's chain_table and the CPU's tyche_table.
+    See mem/cache/prefetch/tyche.hh."""
+
+    type = "TychePrefetcher"
+    cxx_class = "gem5::prefetch::Tyche"
+    cxx_header = "mem/cache/prefetch/tyche.hh"
+
+    # Loads are data reads; ignore instruction accesses.
+    on_inst = False
+    # The IPT must be trained on every demand access, hit or miss.
+    prefetch_on_access = True
+    # Chain values are pointers/indices in virtual space; train on
+    # virtual addresses and translate the targets through the registered
+    # MMU (call registerMMU() on this object in the config script).
+    use_virtual_addresses = True
+    queue_size = 64
+
+    chain_table = Param.TycheChainTable(
+        NULL,
+        "CPU-side chain table (must be the same instance as the CPU's "
+        "tyche_table param)",
+    )
+    stride_distance = Param.Unsigned(
+        32,
+        "Head-load stride lookahead in iterations (artifact "
+        "L1_STRIDE_DISTANCE)",
+    )
+    stride_only = Param.Bool(
+        False,
+        "Disable the chain walk, keeping only the IP-stride prefetches "
+        "(the artifact's only_stride ablation)",
+    )
+    walk_entries = Param.Unsigned(
+        16, "In-flight walk-step capacity (artifact AGQ_SIZE)"
+    )
+    successors_per_wakeup = Param.Unsigned(
+        4,
+        "Chain successors woken per returned value (artifact "
+        "ISQ_WRITE_PORT)",
+    )
+    max_chain_hops = Param.Unsigned(
+        16, "Total ALU replays allowed per captured fill (cycle guard)"
+    )
+    pending_target_entries = Param.Unsigned(
+        32, "Buffered fill-computed chain target capacity"
+    )
+
+
 class SignaturePathPrefetcher(QueuedPrefetcher):
     type = "SignaturePathPrefetcher"
     cxx_class = "gem5::prefetch::SignaturePath"

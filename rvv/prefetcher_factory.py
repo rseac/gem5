@@ -18,10 +18,12 @@ this fork's VectorIndirectMemoryPrefetcher); this module only *selects* and
 """
 
 from m5.objects import (
+    GDPPrefetcher,
     IndirectMemoryPrefetcher,
     IrregularStreamBufferPrefetcher,
     STeMSPrefetcher,
     StridePrefetcher,
+    TychePrefetcher,
     VectorIndirectMemoryPrefetcher,
 )
 from m5.params import NULL
@@ -32,8 +34,10 @@ PREFETCHERS = {
     "stride": StridePrefetcher,
     "imp": IndirectMemoryPrefetcher,
     "vimp": VectorIndirectMemoryPrefetcher,
+    "gdp": GDPPrefetcher,
     "isb": IrregularStreamBufferPrefetcher,
     "stems": STeMSPrefetcher,
+    "tyche": TychePrefetcher,
 }
 
 
@@ -61,7 +65,29 @@ def _coerce(value):
 # on virtual addresses, so the CPU MMU must be registered on the prefetcher
 # (BasePrefetcher.registerMMU) or every page-crossing prefetch target is
 # silently dropped (Queued::insert requires an MMU to cross a page).
-VA_PREFETCHERS = {"vimp"}
+VA_PREFETCHERS = {"vimp", "gdp", "tyche"}
+
+# Prefetchers needing a per-core TycheChainTable wired to both the
+# prefetcher (chain_table) and the CPU (tyche_table); see
+# src/cpu/tyche_table.hh.
+CHAIN_TABLE_PREFETCHERS = {"tyche"}
+
+# Prefetchers needing a per-core GdpChainTable wired to both the
+# prefetcher (link_table) and the CPU (gdp_table); see
+# src/cpu/gdp_table.hh.
+GDP_TABLE_PREFETCHERS = {"gdp"}
+
+
+def needs_chain_table(name):
+    """True when the selected prefetcher is fed by the CPU-side
+    TycheChainTable channel."""
+    return name in CHAIN_TABLE_PREFETCHERS
+
+
+def needs_gdp_table(name):
+    """True when the selected prefetcher is fed by the CPU-side
+    GdpChainTable channel."""
+    return name in GDP_TABLE_PREFETCHERS
 
 
 def needs_mmu(name, params=None):

@@ -383,3 +383,367 @@ same pattern as `src/mem/probes/mem_footprint.cc:87`):
   and cache contents (the warm-cache ROI methodology is unchanged).
 - Any `m5_reset_stats` from any workload triggers the wipe — the hook is
   not TSVC-specific.
+
+## Removed: GDP v1 (descriptor extraction), VStride, and IMP2 (2026-07-24)
+
+Three earlier prefetchers were deleted once the transform-chain GDP (the
+section below, formerly named GDP2) superseded them:
+
+- **IMP2** (`--prefetcher imp2`): scalar-trained, region-keyed indirect
+  prefetcher — learned exact (baseAddr, shift) patterns from a manual
+  vl=1 software training preamble (warm pass + spread-out train pass
+  inside the ROI) and keyed them by the index array's address range.
+  Its role was the "software-supplied pattern" point on the
+  who-supplies-the-pattern axis (vimp = hardware learning, imp2 =
+  software training, gdp = architectural extraction); GDP achieves the
+  same exactness with no code changes, one-iteration arming, and
+  transform-chain generality, so the preamble contract stopped earning
+  its keep. Deleted: `src/mem/cache/prefetch/imp2.hh/.cc`,
+  `IMP2Prefetcher`, debug flag `IMP2`, `rvv/imp2_test.c`, and its
+  learned-state-reset hook.
+
+- **GDP v1** (`--prefetcher gdp` before 2026-07-24): extracted
+  {producer PC, index EEW, shift, base} descriptors via a Source Tag
+  Table + arming at issue (`GatherDescriptorTable`), assumed exact
+  `A[B[i]]`, and guarded that assumption with a zero-match kill
+  switch. The transform-chain design replays the actual vsext/vsll/
+  vadd chain instead, so the assumption (and its kill switch, and the
+  `A[B[i]+c]` blind spot) disappears; on poisson3Db it beat v1 1.617x
+  vs 1.434x. Deleted: `src/mem/cache/prefetch/gdp.hh/.cc` (old
+  version), `src/cpu/gdp_table.hh/.cc` + `GdpTable.py` (old
+  `GatherDescriptorTable`), the v1 dispatch/arming hooks in
+  `src/cpu/o3/inst_queue.cc`, and the `gdp_table` BaseCPU param's old
+  type. The `StaticInst::gdpInstInfo()` classification virtual
+  (static_inst.hh, vector.hh) SURVIVES — the current GDP table uses
+  the same channel.
+- **VStride** (`--prefetcher vstride`): confidence-free vector stream
+  prefetcher driven by v1's unit-stride-producer records. The current
+  GDP's architectural stream walk is the same mechanism (its
+  `stream_only=true` ablation is VStride, exactly), so the standalone
+  prefetcher was redundant. Deleted: `src/mem/cache/prefetch/
+  vstride.hh/.cc`, `VStridePrefetcher`, debug flag `VStride`,
+  `rvv/vstride_test.c`.
+
+The current-name mapping after the rename: `--prefetcher gdp` is the
+transform-chain design, class `GDPPrefetcher` / `gem5::prefetch::GDP`,
+CPU sideband `GdpChainTable` on BaseCPU param `gdp_table`, debug flag
+`GDP`. Old sweep rows recorded under `gdp_*`/`gdp_sap_*`/`gdp_skip*`
+(v1) and `vstride_*` names are historical.
+
+## Feature: Tyche — scalar dependency-chain indirect prefetcher (port)
+
+A gem5/RISC-V port of the Tyche prefetcher from its published artifact
+(`~/Tyche-Artifact`, a ChampSim/LoongArch implementation). Tyche roots
+dependency chains at IP-stride loads, records the instructions between
+the root load and dependent loads (op + one trained "constant" operand
+per link), and at runtime *replays* those instructions on prefetched
+values: stride-prefetch the head load, capture its fill, run the
+recorded ALU ops on the loaded value, prefetch the resulting dependent
+load address — so any `A[f(B[i])]` the chain ALU can express is
+covered, not just `A[B[i]]`. This is the scalar-code counterpart (and
+published-work baseline) to this fork's GDP: Tyche *trains* chains and
+constants from repeated observation, GDP *extracts* the gather pattern
+architecturally from RVV semantics.
+
+**Files:**
+
+- `src/cpu/tyche_table.hh/.cc`, `src/cpu/TycheTable.py` (new — the
+  `TycheChainTable` SimObject: IPT + PT + DCT, the CPU-to-prefetcher
+  sideband channel, same wiring pattern as `GdpChainTable`)
+- `src/mem/cache/prefetch/tyche.hh/.cc` (new — the cache-side
+  prefetcher: IPT training/trigger, walk registration, fill capture,
+  chain replay)
+- `src/mem/cache/prefetch/Prefetcher.py` (additive `TychePrefetcher`)
+- `src/cpu/BaseCPU.py`, `src/cpu/base.hh/.cc` (additive `tyche_table`
+  param, following `gdp_table`)
+- `src/cpu/o3/inst_queue.cc` (additive hooks next to the GDP ones:
+  scalar-instruction dispatch feed + issue-time constant capture)
+- `src/cpu/SConscript`, `src/mem/cache/prefetch/SConscript`
+  (registration; new `Tyche` debug flag)
+- `rvv/prefetcher_factory.py`, `rvv/vector_cache_hierarchy.py`,
+  `rvv/riscv-rvv-se-ara-prefetcher.py` (selection `tyche`, per-core
+  table wiring, `--prefetcher-side scalar` requirement)
+- `rvv/tyche_test.c` + `Makefile.tests` target (functional test)
+
+**What gem5 provides.** Nothing comparable: gem5's stock indirect
+prefetcher (IMP, `src/mem/cache/prefetch/indirect_memory.cc`) infers
+`base + index*shift` correlations purely from the address stream inside
+the cache, with no visibility into the instructions that computed the
+addresses. The artifact's Tyche lives inside ChampSim's decode stage
+with oracle access to a shadow register file and shadow memory — luxury
+gem5's timing-accurate O3 model does not offer, which drove the
+porting decisions below.
+
+**Structures (artifact names kept).**
+
+- *IPT* (32 entries): per-load-PC last address / stride / 2-bit
+  confidence, LRU + prefer-low-confidence replacement. Trained by the
+  prefetcher on every observed access (`observeAccess`, a verbatim port
+  of `tyche.cc:228-360` including the conf_trigger rule and the
+  ignore-zero-stride update). Read at dispatch (`iptConfident`,
+  conf>=3) to decide whether a load roots a chain.
+- *PT* (32 int arch regs): whether a register's current value descends
+  from a chain, and from which DCT link. Every dispatching scalar
+  instruction updates its destinations (unclassified instructions clear
+  them — stale infection must not outlive the value).
+- *DCT* (24 entries): per-PC chain links
+  `{op, constant, back-pointer, head/formed/dense, conf}`. Exactly one
+  chain-dependent register source + a known op inserts a link; a
+  dependent *load* triggers the `formed` backward walk. A link replays
+  only when `formed && conf==3 && dense` (`need_handle`). The table
+  clears wholesale when full (artifact `clear_dct`); a generation
+  counter lets the prefetcher discard walk state stranded by a clear.
+- *Walk list* (16 entries, the artifact's AGQ): in-flight walk steps
+  awaiting their prefetch's fill.
+
+**Runtime walk (cache side).** On an IPT trigger the head load is
+stride-prefetched `stride_distance` (32) iterations ahead; if the PC
+roots a replayable chain, that target address is registered as a walk
+step. Walk prefetches are virtual addresses translated by the queued
+prefetcher; the `getPacket()` override peeks each deferred packet as it
+issues — its PrefetchInfo holds the VA, its pkt the translated PA
+(the issued request itself is PA-only, `createPkt`) — and learns the
+line's *physical* address, which is what `notifyFill()` later sees. On
+the fill, the element value is read from the fill payload (replacing
+the artifact's shadow-memory read in `idm_load_return`), ALU links
+replay via `executeAlu` (a verbatim port of `execute_alu` semantics for
+the RV64 op subset), and each dependent load link emits
+`link constant + propagated value` (artifact `tyche.cc:99`) as a
+prefetch candidate — buffered and flushed by the next observed access,
+which supplies translation context (the same pattern GDP uses). Loads
+with further replayable successors register the next walk step
+(multi-hop).
+
+**Constant operands, RISC-V flavored.** The artifact samples the
+non-dependent operand's *value* at decode from its shadow regfile and
+trains a 2-bit stability counter on it. gem5 has no decode-time values,
+so: immediate constants (I-type ops, load offsets) are taken from the
+encoding at dispatch and saturate like the artifact's
+`source_registers[undepend_idx]==0` shortcut does; register constants
+are sampled at *issue* (all sources readable — the same hook GDP's
+`armGather` uses) and trained with the artifact's exact
+same-value++/different-- rule. x0 as the other operand is constant 0.
+
+**Instruction classification with no ISA edits.** The table decodes the
+raw instruction bits from `StaticInst::getEMI()` (RISC-V returns its
+`machInst`): RV64I loads + FP loads (chain terminals), addi/add/sub,
+shifts, and/or/xor, mul/mulw, Zba sh[123]add(.uw)/add.uw/slli.uw, and
+the common RVC forms (c.ld/c.lw/c.ldsp/c.lwsp/c.fld/c.fldsp, c.addi,
+c.addiw, c.mv, c.add, c.slli, c.srli, c.srai, c.andi, c.sub[w],
+c.addw, c.xor, c.or, c.and). Everything else is a chain breaker.
+
+**Deviations from the artifact (accepted, and why):**
+
+1. The software ALU runs synchronously at fill time instead of 2-3
+   cycles per op in a `cycle_operate` loop — a few cycles of optimism
+   against ~200-cycle miss latencies.
+2. `dense` counting happens at dispatch, not retire (no commit-stage
+   hook needed; wrong-path noise is tolerated by the >115/256 test).
+3. The walk list evicts its *oldest* entry when full (the artifact AGQ's
+   `pop_when_full` mode) rather than dropping the newest: in gem5 a
+   walk step whose prefetch never issues (line already cached, queue
+   squash) has no fill to retire it, so drop-newest would wedge
+   permanently.
+4. A walk dies silently if its intermediate prefetch never fills; the
+   artifact leaks the AGQ entry with the same net effect.
+5. Branch IDM ops are omitted (dead code in the artifact: branches have
+   no destination register, so its own decode guard never inserts
+   them).
+
+**Usage.** Scalar-side design — scalar instructions never reach the
+vector caches, so the config script enforces the placement:
+
+```bash
+# scalar-only run
+build/RISCV/gem5.opt rvv/riscv-rvv-se-ara-prefetcher.py \
+    --prefetcher tyche --prefetcher-side scalar --prefetcher-level l1 \
+    ... rvv/tyche_test.bin
+# or as the scalar half of a dual configuration
+    --prefetcher gdp --prefetcher-side vector --prefetcher-level l1 \
+    --scalar-prefetcher tyche ...
+```
+
+`--pf-param` knobs: `stride_distance` (32), `stride_only` (false, the
+artifact's only_stride ablation), `walk_entries` (16),
+`successors_per_wakeup` (4), `max_chain_hops` (16),
+`pending_target_entries` (32); on the table (fixed defaults):
+`dct_entries` 24, `ipt_entries` 32, `dense_threshold` 115.
+
+**Test.** `rvv/tyche_test.bin` (scalar, `-fno-tree-vectorize`): mode 1
+`x[idx[i]]` (chain: c.ld head -> c.slli 3 -> c.add base(reg-const) ->
+c.fld), mode 2 `x[idx[i]+8]` (extra addi imm link — the `+c` pattern
+the removed GDP v1 could not cover, replayed exactly here), mode 0
+streaming control. Expect `tyche_table.headsInserted>=1`, `linksInserted>=3`,
+`constsCaptured>0`, `prefetcher.fillsCaptured>0`,
+`prefetcher.chainCandidates>0` in modes 1/2.
+
+## Feature: GDP — Gather Dataflow Prefetcher (transform-chain replay)
+
+The Gather Dataflow Prefetcher, built on Tyche's skeleton
+(`--prefetcher gdp`, vector side only; named GDP2 until 2026-07-24,
+when the descriptor-extraction v1 was removed and this design took
+the name — see the Removed section above). Where the removed v1
+*assumed* the `A[B[i] << log2(SEW/8)]` shape and killed descriptors
+when it did not hold, this design *records* the transform
+instructions between the unit-stride producer load and the gather
+(vsext/vsll/vadd.vi/...) and *replays* them on captured index data —
+so any `A[f(B[i])]` the chain expresses is prefetched exactly,
+including `+c` biases. There is no confidence, no kill switch, and no
+training anywhere; arming still takes one iteration.
+
+**Files:**
+
+- `src/cpu/gdp_table.hh/.cc`, `src/cpu/GdpTable.py` (the
+  `GdpChainTable` SimObject: PT + DCT, the CPU-to-prefetcher
+  sideband, same wiring pattern as `TycheChainTable`)
+- `src/mem/cache/prefetch/gdp.hh/.cc` (the cache-side
+  prefetcher: architectural stream, range-based capture, replay)
+- `src/mem/cache/prefetch/Prefetcher.py` (`GDPPrefetcher`)
+- `src/cpu/BaseCPU.py`, `src/cpu/base.hh/.cc` (`gdp_table` param)
+- `src/cpu/o3/inst_queue.cc` (additive hooks next to the Tyche
+  ones: vector dispatch feed + issue-time base/scalar snooping)
+- SConscripts (registration; `GDP` debug flag);
+  `rvv/prefetcher_factory.py`, `rvv/vector_cache_hierarchy.py`,
+  `rvv/riscv-rvv-se-ara-prefetcher.py` (selection, per-core wiring —
+  the gdp param is `link_table`, distinct from tyche's `chain_table`
+  so the dual-config `_params` guards stay unambiguous)
+
+**CPU side (`GdpChainTable`), hardware widths in mind:**
+
+- *PT*: 32 vector arch regs -> {depend, 3-bit DCT ptr}. Forward
+  propagation at dispatch; same source-classification rules as v1's
+  STT (v0-mask skipped, in-place transforms extend the chain).
+- *DCT* (8 entries, wholesale clear-on-full + generation counter):
+  heads (unit-stride loads, EEW), transform links (op + scalar
+  operand), gather links (base). Transform ops are decoded from the
+  raw OP-V encoding via `StaticInst::getEMI()` (the tyche-port
+  technique — no ISA edits): vadd/vsub/vrsub, vand/vor/vxor,
+  vsll/vsrl/vsra, vmul.vx, vsext/vzext (source width from the vtype
+  vsew gem5 bakes into ExtMachInst). `.vi` immediates are valid from
+  the encoding; `.vx` scalars and gather bases are snooped at *issue*
+  off the operand read the instruction is already doing (armGather
+  precedent) and refreshed every execution. A tagged value flowing
+  into an undecodable op breaks the chain (chainsBroken).
+- *Gather-link state (the former GLT, eliminated 2026-07-23)*: lives
+  in the DCT's head rows as {consumer ptr (-1 = unlinked), EEW} — the
+  GLT was direct-mapped 1:1 to DCT slots, i.e. just extra columns for
+  head rows, and every other field proved redundant (valid ≡ DCT
+  head+valid; linked ≡ consumer present; pipeline ownership belongs
+  as producer tags on the pipelines). The gather's dispatch runs
+  *backward propagation* — walk back-pointers to the head, write the
+  consumer there. Done at dispatch because compilers alias vd with
+  vs2 (v1 bug #2 lesson). Re-walked every gather dispatch, so links
+  self-heal; the consumer pointers clear with their DCT rows, so a
+  wholesale clear leaves no dangling pointers. Hardware note: the
+  consumer field is sim-only bookkeeping (the lazy walk's anchor);
+  the hardware walk starts at the gather and holds this edge only
+  transiently. CPU side = PT + DCT, two structures.
+- *Field naming/width pass (2026-07-22)*: DCT flavor flags are `head`
+  / `tail` (tail = the gather terminating the chain); the operand
+  trio is `scalar` / `immType` (true = encoding immediate, false =
+  .vx rs1 snooped at issue) / `immValid` (operand has arrived — set
+  at insert for immediates, captureScalar for .vx, armBase for
+  bases). `lastDctPtr` is 3 bits in hardware: heads have no
+  predecessor, but every walker terminates on the `head` flag before
+  following the pointer, so a head's pointer bits are don't-care.
+  The dead per-DCT-entry EEW copy was deleted (the GLT holds the only
+  copy; direct-mapped 1:1, so the two could never disagree).
+
+**Cache side (`GDP`):**
+
+- *Architectural stream* per producer PC (high-water dedup, restart
+  on backward jump, no confidence — unit-stride identity comes from
+  the opcode, so the walk is exact from the first access).
+- *Chain dispatch, walk-on-demand* (revised again 2026-07-22,
+  superseding the latched-in-GLT scheme): the table stores NO copy of
+  the pipeline configuration. When a chunk event at a GLT-linked
+  producer adopts, `pipelineConfig()` walks the chain consumer->head
+  on demand (bounded by dct_entries) and the adopted copy in the
+  prefetcher's Stream Tracking Table (STT) entry is the only latched
+  one. Hardware reading: the backprop walk distributes each link's op
+  straight into the cache-side pipeline stage registers — DCT + stage
+  registers are the only copies, shrinking the GLT from ~340 to ~10
+  bits/entry. Side effect: operands read at adoption are the freshest
+  snooped values (the old latch's one-iteration .vx refresh lag is
+  gone). Per-producer pipelines, capped by `pipelines`; the walk only
+  returns valid once every scalar/base has been snooped
+  (chainNotReady counts triggers that found none). The prefetcher's
+  structures carry paper names now: STT (was pcStates; fields
+  `valid`/`lastAddr`/`limitAddr`/`configured`), Index Routing Table
+  IRT (was pendingCaptures, then briefly Prefetch Status Table PST —
+  fill-capture registrations whose producerPC routes a matching
+  fill's payload to that producer's slice buffer; the rename also
+  un-collides with upstream STeMS's Pattern Sequence Table PST),
+  Indirect Target Buffer ITB (was pendingTargets). New sizing stats:
+  `itbPeakOccupancy` (high-water) and `itbEvictions` (FIFO drops,
+  previously silent) justify quoting a hardware ITB depth smaller
+  than the sim's 64. The generation compare at fill is documented as
+  the lazy sim stand-in for a hardware invalidate pulse (zero stored
+  bits).
+- *Range-based capture* (no per-line watch tags, so nothing can
+  wedge): a prefetch issuing inside a configured producer's stream window —
+  the `getPacket()` override peeks the deferred packet, whose
+  PrefetchInfo holds the VA and whose pkt the translated PA (the
+  issued request itself is PA-only) — or a
+  demand miss at the producer PC (VA+PA from the access) registers the
+  line; `notifyFill` matches the PA and captures the payload. Because
+  captures come from the stream running `streaming_distance` ahead,
+  indirect targets inherit the stream's lookahead. Full timeliness
+  needs distance x chunk-cadence >= TWO memory round-trips (index line
+  and target line), so gdp wants larger distances than v1's stream
+  (16-32 at DRAM latencies).
+- *Replay (v2.1, 2026-07-23 — stall-on-full, demand-clocked)*: a
+  captured fill's payload is latched into a free entry of the
+  producer pipeline's slice buffer — each replay pipeline has one
+  slice buffer of `slice_buffer_entries` line entries (each entry =
+  512 b payload + VA tag + drain cursor + valid), and a fill arriving
+  with the buffer full is dropped — bufferBusyDrops, chunk-granular
+  shedding that matches vector-gather completion semantics. The drain runs at every observed access
+  (`drainReplay`): slice at producer EEW (zero-extended; explicit
+  vsext/vzext links handle sign), stream elements through the latched
+  ops + base adder, canonical-VA filter, per-payload line-dedup, and
+  emit into free prefetch-queue slots (room = queue_size − pfq −
+  pending-translation − this event's candidates) with a small
+  per-event floor (drainFloor=8) of bounded displacement when the
+  queue is full — the floor models hardware's CONTINUOUS queue drain,
+  which gem5's pull-only queue lacks (cache pulls starve exactly when
+  misses rise; a pure zero-room stall wedged the drain until the
+  staleness abort discarded everything — the first-cut v2.1
+  poisson3Db collapse, 13.9M cycles). When the budget runs out the
+  payload waits latched and resumes next access (replayDeferred),
+  mirroring Ara's addrgen stall-not-drop policy. A STALENESS ABORT
+  (stalenessAborts) flushes slice-buffer entries whose index line the
+  walk cursor has passed (strict <, so demand-miss captures of the
+  current chunk survive). Stream candidates are NEVER gated (lesson from the same
+  collapse: they are regenerable state and the engine's fuel —
+  gating them starves captures in a positive-feedback loop). The former Indirect Target
+  Buffer list and the timed drain model (`drain_pipe_depth`,
+  `pending_target_entries` params) are deleted — the hardware ITB is
+  a single conversion-stage output register (48 b), and buffering
+  lives in the slice buffers where a 512 b payload is denser than its
+  expanded targets.
+
+**Approximations (accepted, why):** replay computes at 64 bits (exact
+for the widening index chains compilers emit; SEW<32 wraparound
+differs), masked (vm=0) transforms ignore v0 (over-prefetch, never
+corruption), target emission is demand-clocked (v2.1: drained at the
+next observed access rather than at a modeled per-element pipeline
+rate — conservative in timing, and the 1-elem/cycle hardware pipe is
+faster than demand cadence anyway), and wrong-path dispatches update
+the tables (self-healing via the per-gather re-walk).
+
+**Validation:** no new test binary needed — `rvv/gdp_test.bin` covers
+both paths. Mode 1 (`x[idx[i]]`): expect `gdp_table.linksFormed>=1`,
+`prefetcher.chainDispatches>0`, `fillsCaptured>0`,
+`targetsGenerated>0`. Mode 0 (`x[idx[i]+8]`, the pattern v1 KILLS):
+the `vadd.vi v1,v1,8` becomes a recorded Add link — expect the same
+healthy stats (gdp has no kill switch), i.e. mode 0 flips from killed
+(the removed v1) to prefetched exactly. That flip is the design's
+thesis in one run.
+
+```bash
+build/RISCV/gem5.opt rvv/riscv-rvv-se-ara-prefetcher.py \
+    --prefetcher gdp --prefetcher-side vector --prefetcher-level l1 \
+    --vlen 512 --vector-timing-throughput 4 --simd-units 2 \
+    -p "0" rvv/gdp_test.bin
+```
