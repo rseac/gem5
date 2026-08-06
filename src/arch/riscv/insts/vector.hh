@@ -30,6 +30,7 @@
 #define __ARCH_RISCV_INSTS_VECTOR_HH__
 
 #include <string>
+#include <optional>
 
 #include "arch/riscv/faults.hh"
 #include "arch/riscv/insts/static_inst.hh"
@@ -199,18 +200,80 @@ class VectorMicroInst : public RiscvMicroInst
         this->flags[IsVector] = true;
     }
 
+  private:
+    inline int opOccupancy(gem5::BaseCPU *cpu) const 
+    {
+        unsigned NrLanes = cpu->vectorTimingThroughput;
+        panic_if(NrLanes == 0,
+                 "Vector timing throughput must be > 0");
+        panic_if(sew == 0 || sew > 64,
+                 "Unsupported SEW %u for ARA", sew);
+        // Ara sends ELEN (64) bits to alu per lane * cycle regardless of scalar element width (sew).
+        // The vector instruction occupies the unit just for the act of sending itself (ignoring pipeline latency)
+        unsigned bitsPerCycle = 64 * NrLanes;
+        unsigned microVlBits = microVl * sew;
+        // Equivalent to exact division with ceil(microVlBits / bitsPerCycle).
+        return std::max(1U, (microVlBits + bitsPerCycle - 1) / bitsPerCycle);
+    }
+
+  protected:
+    std::optional<Cycles>
+    dynamicIssueLatency(ThreadContext *tc) const override
+    {
+        switch (opClass()) {
+          case enums::SimdAdd:
+          case enums::SimdAddAcc:
+          case enums::SimdAlu:
+          case enums::SimdCmp:
+          case enums::SimdCvt:
+          case enums::SimdMisc:
+          case enums::SimdShift:
+          case enums::SimdShiftAcc:
+          case enums::SimdConfig:
+          case enums::SimdMult:
+          case enums::SimdMultAcc:
+          case enums::SimdMatMultAcc:
+          case enums::SimdFloatAdd:
+          case enums::SimdFloatAlu:
+          case enums::SimdFloatMult:
+          case enums::SimdFloatMultAcc:
+          case enums::SimdFloatMatMultAcc:
+          case enums::SimdFloatCmp:
+          case enums::SimdFloatMisc:
+          case enums::SimdFloatCvt:
+          case enums::SimdUnitStrideLoad:
+          case enums::SimdUnitStrideStore:
+          case enums::SimdUnitStrideMaskLoad:
+          case enums::SimdUnitStrideMaskStore:
+          case enums::SimdUnitStrideSegmentedLoad:
+          case enums::SimdUnitStrideSegmentedStore:
+          case enums::SimdWholeRegisterLoad:
+          case enums::SimdWholeRegisterStore:
+          case enums::SimdStridedLoad:
+          case enums::SimdStridedStore:
+          case enums::SimdIndexedLoad:
+          case enums::SimdIndexedStore:
+          case enums::SimdExt:
+          case enums::SimdFloatExt:
+          case enums::SimdReduceAdd:
+          case enums::SimdReduceAlu:
+          case enums::SimdReduceCmp:
+          case enums::SimdFloatReduceAdd:
+          case enums::SimdFloatReduceCmp:
+            break;
+          default:
+            return std::nullopt;
+        }
+
+        auto cpu = tc->getCpuPtr();
+        return Cycles(opOccupancy(cpu));
+    }
+
     Cycles
     dynamicOpLatency(ThreadContext *tc) const override
     {
         auto cpu = tc->getCpuPtr();
-        unsigned NrLanes = cpu->vectorTimingThroughput;
-        
-        // Calculate occupancy: how many cycles the lanes are busy.
-        // ARA processes ELEN (64) bits per cycle per lane.
-        int epc = NrLanes * (64 / sew);
-        if (epc == 0) epc = 1;
-
-        int occupancy = (microVl + epc - 1) / epc;
+        int occupancy = opOccupancy(cpu);
 
         if (cpu->latencyModel) {
             Cycles pipe_depth = cpu->latencyModel->getLatency(opClass(), vsew, microVl);
