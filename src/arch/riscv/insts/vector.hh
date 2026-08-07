@@ -201,24 +201,25 @@ class VectorMicroInst : public RiscvMicroInst
     }
 
   private:
-    inline int opOccupancy(gem5::BaseCPU *cpu) const 
+    inline int opOccupancy(gem5::BaseCPU *cpu, uint32_t elementWidth) const
     {
         unsigned NrLanes = cpu->vectorTimingThroughput;
         panic_if(NrLanes == 0,
                  "Vector timing throughput must be > 0");
-        panic_if(sew == 0 || sew > 64,
-                 "Unsupported SEW %u for ARA", sew);
-        // Ara sends ELEN (64) bits to alu per lane * cycle regardless of scalar element width (sew).
-        // The vector instruction occupies the unit just for the act of sending itself (ignoring pipeline latency)
+        panic_if(elementWidth == 0,
+                 "Unsupported element width %u for ARA", elementWidth);
+        // ARA sends ELEN (64) bits per lane per cycle regardless of element width.
+        // The vector instruction occupies the unit while its element
+        // payload is being streamed through the datapath, excluding pipeline
+        // latency to produce results.
         unsigned bitsPerCycle = 64 * NrLanes;
-        unsigned microVlBits = microVl * sew;
+        unsigned microVlBits = microVl * elementWidth;
         // Equivalent to exact division with ceil(microVlBits / bitsPerCycle).
         return std::max(1U, (microVlBits + bitsPerCycle - 1) / bitsPerCycle);
     }
 
-  protected:
-    std::optional<Cycles>
-    dynamicIssueLatency(ThreadContext *tc) const override
+    std::optional<uint32_t>
+    occupancyElementWidth() const
     {
         switch (opClass()) {
           case enums::SimdAdd:
@@ -229,7 +230,6 @@ class VectorMicroInst : public RiscvMicroInst
           case enums::SimdMisc:
           case enums::SimdShift:
           case enums::SimdShiftAcc:
-          case enums::SimdConfig:
           case enums::SimdMult:
           case enums::SimdMultAcc:
           case enums::SimdMatMultAcc:
@@ -241,6 +241,20 @@ class VectorMicroInst : public RiscvMicroInst
           case enums::SimdFloatCmp:
           case enums::SimdFloatMisc:
           case enums::SimdFloatCvt:
+          case enums::SimdExt:
+          case enums::SimdFloatExt:
+          case enums::SimdReduceAdd:
+          case enums::SimdReduceAlu:
+          case enums::SimdReduceCmp:
+          case enums::SimdFloatReduceAdd:
+          case enums::SimdFloatReduceCmp:
+            return sew;
+
+          // SimdConfig is used for bookkeeping micro-ops like fault-first
+          // trim-vl, which do not stream vector data through a datapath.
+          case enums::SimdConfig:
+            return std::nullopt;
+
           case enums::SimdUnitStrideLoad:
           case enums::SimdUnitStrideStore:
           case enums::SimdUnitStrideMaskLoad:
@@ -253,27 +267,38 @@ class VectorMicroInst : public RiscvMicroInst
           case enums::SimdStridedStore:
           case enums::SimdIndexedLoad:
           case enums::SimdIndexedStore:
-          case enums::SimdExt:
-          case enums::SimdFloatExt:
-          case enums::SimdReduceAdd:
-          case enums::SimdReduceAlu:
-          case enums::SimdReduceCmp:
-          case enums::SimdFloatReduceAdd:
-          case enums::SimdFloatReduceCmp:
-            break;
+            // Vector memory ops intentionally skip dynamic FU occupancy here.
+            // In gem5 O3 they already flow through the LSQ/LQ/SQ and cache
+            // timing once issued from IEW, while ARA's VLSU can queue several
+            // requests internally. Charging payload drain as IQ/FU occupancy
+            // would over-serialize loads/stores before they even reach the LSQ.
+            return std::nullopt;
+
           default:
             return std::nullopt;
         }
+    }
 
+  protected:
+    std::optional<Cycles>
+    dynamicIssueLatency(ThreadContext *tc) const override
+    {
         auto cpu = tc->getCpuPtr();
-        return Cycles(opOccupancy(cpu));
+        if (auto elementWidth = occupancyElementWidth()) {
+            return Cycles(opOccupancy(cpu, *elementWidth));
+        }
+
+        return std::nullopt;
     }
 
     Cycles
     dynamicOpLatency(ThreadContext *tc) const override
     {
         auto cpu = tc->getCpuPtr();
-        int occupancy = opOccupancy(cpu);
+        int occupancy = 0;
+        if (auto elementWidth = occupancyElementWidth()) {
+            occupancy = opOccupancy(cpu, *elementWidth);
+        }
 
         if (cpu->latencyModel) {
             Cycles pipe_depth = cpu->latencyModel->getLatency(opClass(), vsew, microVl);
