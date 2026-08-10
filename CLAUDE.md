@@ -81,15 +81,7 @@ Key binaries and their checkers:
 | `rvv_load_chain_test.bin` | `run_load_chain_test.py` | Load-to-compute chaining with/without `--enable-chaining` |
 | `rvv_chaining_test.bin` | — | Compute-to-compute chaining smoke test |
 
-gem5's own test infrastructure (see `TESTING.md`):
-
-```bash
-scons build/ALL/unittests.opt                          # all C++ unit tests
-scons build/ALL/base/bitunion.test.opt && \
-  ./build/ALL/base/bitunion.test.opt                   # single test binary
-./build/ALL/base/bitunion.test.opt --gtest_filter=X    # single test case
-./build/ALL/gem5.opt tests/run_pyunit.py               # Python unit tests
-```
+For gem5's own C++/Python unit tests, see `TESTING.md`.
 
 ## Architecture: where the ARA model lives
 
@@ -112,11 +104,3 @@ total = 1 (issue) + latencyModel->getLatency(opClass, vsew)
 ```
 
 `AraLatencyModel` reconciles gem5 with RTL by baking in a 7-cycle sequencer dispatch floor and the iterative compute times measured from `ara_pkg.sv`.
-
-## Upstream gem5 layout (orientation only)
-
-- `src/` — C++ source + Python SimObject definitions (`.py` next to `.cc/.hh`)
-- `configs/` — Python config scripts; `configs/example/` and `src/python/gem5/` for the standard library
-- `build/<ISA>/` — scons output; the binary you almost always want is `build/RISCV/gem5.opt`
-- `rvv/` — this fork's ARA test programs, config scripts, and checkers
-- `ext/`, `system/`, `util/` — third-party code, full-system disk/kernel assets, helper utilities
