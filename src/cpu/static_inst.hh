@@ -426,7 +426,13 @@ class StaticInst : public RefCounted, public StaticInstFlags
      */
     struct GdpInstInfo
     {
-        enum Kind : uint8_t { None = 0, UnitStrideLoad, IndexedLoad };
+        enum Kind : uint8_t
+        {
+            None = 0,
+            UnitStrideLoad,
+            IndexedLoad,
+            UnitStrideStore,
+        };
         Kind kind = None;
         uint8_t elemBytes = 0;
         uint8_t srcVReg = 0;

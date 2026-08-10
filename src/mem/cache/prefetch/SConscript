@@ -38,7 +38,8 @@ SimObject('Prefetcher.py', sim_objects=[
     'IrregularStreamBufferPrefetcher', 'SlimAMPMPrefetcher',
     'BOPPrefetcher', 'SBOOEPrefetcher', 'STeMSPrefetcher', 'PIFPrefetcher',
     'FetchDirectedPrefetcher', 'VectorIndirectMemoryPrefetcher',
-    'TychePrefetcher', 'GDPPrefetcher'
+    'TychePrefetcher', 'GDPPrefetcher', 'VectorTychePrefetcher',
+    'VectorTyche2Prefetcher'
     ])
 
 Source('access_map_pattern_matching.cc')
@@ -62,3 +63,5 @@ Source('fdp.cc')
 Source('vector_indirect_memory.cc')
 Source('tyche.cc')
 Source('gdp.cc')
+Source('vector_tyche.cc')
+Source('vector_tyche2.cc')

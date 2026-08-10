@@ -110,6 +110,20 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         l2_tgts_per_mshr: int = 12,
         vector_l1d_tgts_per_mshr: int = 20,
         vector_l2_tgts_per_mshr: int = 12,
+        stream_demote: str = "none",
+        # Feed the stream-page registry from DEMAND accesses (every
+        # unit-stride vector load/store registers its page at LSQ
+        # translation finish) instead of / in addition to prefetch
+        # departures. Lets stream_demote run without a gdp-table
+        # prefetcher, isolating the replacement policy.
+        stream_demote_demand: bool = False,
+        # Second-touch promotion on the demotion policy: observed
+        # cross-sweep reuse (a second touch on a still-resident
+        # demoted line) promotes instead of holding demoted.
+        stream_demote_second_touch: bool = False,
+        # Second touch also unlearns the whole page (blocked from
+        # re-registration): the churn set's re-entry path.
+        stream_demote_page_promote: bool = False,
     ) -> None:
         super().__init__(
             l1d_size=l1d_size,
@@ -131,6 +145,15 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         self._scalar_l2_prefetcher = scalar_l2_prefetcher
         self._vector_l1d_prefetcher = vector_l1d_prefetcher
         self._vector_l2_prefetcher = vector_l2_prefetcher
+        # Stream-aware replacement on the VECTOR chain (the scalar
+        # chain never sees vector streams): same modes as the unified
+        # hierarchy — l2 demotes at insertion, l1 at first touch.
+        assert stream_demote in ("none", "l1", "l2", "both")
+        self._stream_demote = stream_demote
+        self._stream_demote_demand = stream_demote_demand
+        self._stream_demote_second_touch = stream_demote_second_touch
+        self._stream_demote_page_promote = stream_demote_page_promote
+        self._core_gdp_table = None
         self._prefetcher_needs_mmu = prefetcher_needs_mmu
         self._prefetcher_needs_chain_table = prefetcher_needs_chain_table
         self._prefetcher_needs_gdp_table = prefetcher_needs_gdp_table
@@ -168,9 +191,12 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
             # param, so dual configs wire the right prefetcher.
             from m5.objects import GdpChainTable
 
-            tbl = GdpChainTable()
+            tbl = GdpChainTable(
+                demand_stream_pages=self._stream_demote_demand
+            )
             cpu.core.gdp_table = tbl
             prefetcher.link_table = tbl
+            self._core_gdp_table = tbl
 
     @overrides(AbstractCacheHierarchy)
     def incorporate_cache(self, board: AbstractBoard) -> None:
@@ -188,6 +214,10 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         self.splitters = [VectorSplitter() for _ in range(num_cores)]
 
         for i, cpu in enumerate(board.get_processor().get_cores()):
+            # The gdp table is per-core: clear the cursor so this core
+            # gets its own instance (from _finish_prefetcher or the
+            # demand-side standalone path below), never a neighbor's.
+            self._core_gdp_table = None
             # Scalar chain, identical to PrivateL1PrivateL2CacheHierarchy.
             l2_node = self.add_root_child(
                 f"l2-cache-{i}",
@@ -263,6 +293,45 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
             if self._vector_l1d_prefetcher is not None:
                 vl1d_node.cache.prefetcher = self._vector_l1d_prefetcher()
                 self._finish_prefetcher(vl1d_node.cache.prefetcher, cpu)
+
+            # Stream-demoting replacement on the vector caches, sharing
+            # the same per-core GdpChainTable the prefetcher publishes
+            # stream pages through (see unified_cache_hierarchy.py for
+            # the mode rationale).
+            if self._stream_demote != "none":
+                if self._core_gdp_table is None:
+                    # No gdp-table prefetcher: the registry must be fed
+                    # from the demand side (policy-in-isolation runs).
+                    assert self._stream_demote_demand, (
+                        "stream_demote needs a gdp-table prefetcher "
+                        "(gdp/vtyche) or stream_demote_demand to feed "
+                        "the stream-page registry"
+                    )
+                    from m5.objects import GdpChainTable
+
+                    tbl = GdpChainTable(demand_stream_pages=True)
+                    cpu.core.gdp_table = tbl
+                    self._core_gdp_table = tbl
+                from m5.objects import StreamDemoteLRURP
+
+                if self._stream_demote in ("l2", "both"):
+                    vl2_node.cache.replacement_policy = StreamDemoteLRURP(
+                        link_table=self._core_gdp_table,
+                        demote_on_insert=True,
+                        second_touch_promote=(
+                            self._stream_demote_second_touch),
+                        page_promote=(
+                            self._stream_demote_page_promote),
+                    )
+                if self._stream_demote in ("l1", "both"):
+                    vl1d_node.cache.replacement_policy = StreamDemoteLRURP(
+                        link_table=self._core_gdp_table,
+                        demote_on_insert=False,
+                        second_touch_promote=(
+                            self._stream_demote_second_touch),
+                        page_promote=(
+                            self._stream_demote_page_promote),
+                    )
 
             self.vector_l2buses[i].mem_side_ports = vl2_node.cache.cpu_side
             self.membus.cpu_side_ports = vl2_node.cache.mem_side

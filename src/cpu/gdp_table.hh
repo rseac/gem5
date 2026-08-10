@@ -51,6 +51,8 @@
 
 #include <array>
 #include <cstdint>
+#include <deque>
+#include <unordered_set>
 #include <vector>
 
 #include "base/statistics.hh"
@@ -158,6 +160,41 @@ class GdpChainTable : public SimObject
     /** Bumped on every wholesale clear (capacity or ROI reset) */
     uint64_t generation() const { return gen; }
 
+    /**
+     * Stream-page registry for stream-aware cache replacement. The
+     * prefetcher registers the PHYSICAL page of every departing
+     * index-array stream prefetch (it is the only agent that holds a
+     * stream candidate's VA and PA together, at getPacket); a
+     * replacement policy then classifies fills/touches by page. Page
+     * granularity sidesteps the VA/PA mismatch: caches see PAs only,
+     * and prefetch requests carry no VA.
+     */
+    void registerStreamPage(Addr paddr);
+    bool isStreamPage(Addr paddr) const;
+
+    /**
+     * Page-level unlearning: a replacement policy that observed
+     * cross-sweep reuse on this page (second touch of a demoted line)
+     * removes it from the stream registry AND blocks re-registration
+     * (bounded FIFO of promoted pages). Without the block, the demand
+     * path re-registers the page on its very next unit-stride access
+     * and unlearning is instantly undone. Blocking gives the churn
+     * set its re-entry path: new fills of a promoted page insert as
+     * plain LRU.
+     */
+    void promoteStreamPage(Addr paddr);
+
+    /**
+     * Demand-side registration (demand_stream_pages = true): called by
+     * the O3 LSQ when a memory access finishes translation — the one
+     * point the ISA identity (unit-stride vector load/store) and the
+     * physical address are held together on the demand path. Registers
+     * the access's page so stream-aware replacement works without a
+     * prefetcher feeding the registry, and covers stores (output
+     * streams), which no prefetcher ever walks.
+     */
+    void notifyDemandAccess(const StaticInst *si, Addr paddr);
+
     /** Wipe PT and DCT (ROI reset) */
     void resetState();
 
@@ -229,10 +266,26 @@ class GdpChainTable : public SimObject
 
     const unsigned dctEntries;
     const unsigned maxTransformStages;
+    /** Register stream pages from demand unit-stride accesses (LSQ) */
+    const bool demandStreamPages;
 
     std::vector<DctEntry> dct;
     std::array<PtEntry, 32> pt;
     uint64_t gen = 0;
+
+    /** Stream-page registry: FIFO of the last streamPageEntries
+     *  physical pages seen leaving as stream prefetches, with a set
+     *  alongside for O(1) membership. Stream arrays are walked
+     *  monotonically, so stale pages age out harmlessly. */
+    static constexpr unsigned streamPageEntries = 64;
+    static constexpr Addr streamPageShift = 12; // 4KiB pages
+    std::deque<Addr> streamPageFifo;
+    std::unordered_set<Addr> streamPageSet;
+    /** Promoted (unlearned) pages: blocked from re-registration.
+     *  Capacity is the promoted_page_entries param. */
+    const unsigned promotedPageEntries;
+    std::deque<Addr> promotedPageFifo;
+    std::unordered_set<Addr> promotedPageSet;
 
     struct GdpStats : public statistics::Group
     {

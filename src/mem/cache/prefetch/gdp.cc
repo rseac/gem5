@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 #include "base/logging.hh"
 #include "base/trace.hh"
@@ -27,6 +28,7 @@ GDP::GDP(const GDPPrefetcherParams &p)
     streamOnly(p.stream_only),
     sliceBufferEntries(p.slice_buffer_entries),
     pipelines(p.pipelines),
+    pipelinesPerGather(p.pipelines_per_gather),
     irtEntries(p.routing_entries),
     streamTrackingTable(),
     indexRoutingTable(),
@@ -81,7 +83,10 @@ GDP::GDPStats::GDPStats(statistics::Group *parent)
     ADD_STAT(stalenessAborts, statistics::units::Count::get(),
         "slice buffers flushed: walk cursor passed their line"),
     ADD_STAT(replayDeferred, statistics::units::Count::get(),
-        "drain events paused by a full queue (the stall firing)")
+        "drain events paused by a full queue (the stall firing)"),
+    ADD_STAT(replayWidthLimited, statistics::units::Count::get(),
+        "drain events where a gather's replay pipelines ran out with "
+        "elements still buffered")
 {
 }
 
@@ -180,12 +185,22 @@ GDP::drainReplay(std::vector<AddrPriority> &addresses)
     if (room < drainFloor) {
         room = drainFloor;
     }
+    // Replay width: elements one gather's pipelines advance per drain
+    // event, one per pipeline. Unlike `room` (the shared prefetch
+    // queue) the pipelines are private to a gather, so this budget is
+    // re-armed per producer below and running out never stops another
+    // producer's drain.
+    const int laneBudget = pipelinesPerGather
+                         ? (int)pipelinesPerGather
+                         : std::numeric_limits<int>::max();
     bool blocked = false;
+    bool width_limited = false;
     for (auto &kv : streamTrackingTable) {
         if (blocked) {
             break;
         }
         SttEntry &ps = kv.second;
+        int lanes = laneBudget;
         while (!ps.sliceBuffer.empty()) {
             CapturedLine &buf = ps.sliceBuffer.front();
             // Config integrity across the capture->drain window (the
@@ -213,14 +228,22 @@ GDP::drainReplay(std::vector<AddrPriority> &addresses)
                 blocked = true;
                 break; // the stall: payload waits latched
             }
+            if (lanes <= 0) {
+                width_limited = true;
+                break; // every pipeline busy: resume next event
+            }
             const unsigned elems = buf.data.size() / width;
-            while (buf.nextElem < elems && room > 0) {
+            while (buf.nextElem < elems && room > 0 && lanes > 0) {
                 // Extract at EEW, zero-extended into a 64-bit value;
                 // explicit vsext/vzext links handle sign.
                 uint64_t raw = 0;
                 std::memcpy(&raw, buf.data.data() + buf.nextElem * width,
                             width);
                 buf.nextElem++;
+                // One pipeline consumed, whether or not this element
+                // survives to become a prefetch: it went through the
+                // transform chain either way.
+                lanes--;
                 gdpStats.elementsReplayed++;
 
                 const Addr target = applyChain(ps.config, letoh(raw));
@@ -242,6 +265,11 @@ GDP::drainReplay(std::vector<AddrPriority> &addresses)
             }
             if (buf.nextElem >= elems) {
                 ps.sliceBuffer.pop_front(); // fully drained: entry freed
+            } else if (lanes <= 0) {
+                // Width-bound, not queue-bound: this gather resumes
+                // next event, but other gathers still drain now.
+                width_limited = true;
+                break;
             } else {
                 blocked = true;
                 break; // stalled mid-payload; resume next access
@@ -250,6 +278,9 @@ GDP::drainReplay(std::vector<AddrPriority> &addresses)
     }
     if (blocked) {
         gdpStats.replayDeferred++;
+    }
+    if (width_limited) {
+        gdpStats.replayWidthLimited++;
     }
 }
 
@@ -287,7 +318,7 @@ GDP::calculatePrefetch(const PrefetchInfo &pfi,
         ps.lastAddr = addr;
         ps.valid = true;
 
-        // Architectural stream (no confidence: the opcode said
+        // Architectural stream (no confidence counter needed: the opcode said
         // unit-stride).
         streamAhead(ps, addr, size, addresses);
 

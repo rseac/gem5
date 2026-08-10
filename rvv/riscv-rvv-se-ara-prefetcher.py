@@ -149,6 +149,18 @@ parser.add_argument(
 )  # spec only allows 64 bit elen
 parser.add_argument("-d", "--l1d", required=False, type=str, default="32KiB")
 parser.add_argument("-2", "--l2", required=False, type=str, default="512KiB")
+parser.add_argument(
+    "--mem-type",
+    type=str,
+    default="ddr4",
+    choices=["ddr4", "perfect"],
+    help="Main memory model: ddr4 = SingleChannelDDR4_2400 (default). "
+    "perfect = SingleChannelSimpleMemory with 1ns fixed latency and "
+    "1TiB/s bandwidth, so every cache miss is serviced almost for free; "
+    "use it as the perfect-memory counterfactual when measuring a "
+    "kernel's compute floor (fread-loaded benchmarks can't be warmed "
+    "into a big L2 because gem5-SE services fread functionally).",
+)
 
 parser.add_argument("-p", "--parms", required=False, type=str, default="2048")
 parser.add_argument(
@@ -194,6 +206,20 @@ parser.add_argument(
     help="Give vector memory accesses their own private L1D+L2 chain "
     "in parallel with the scalar caches, steered by a VectorSplitter "
     "on the dcache port (coherent via the membus)",
+)
+parser.add_argument(
+    "--unified-cache",
+    action="store_true",
+    default=False,
+    help="Host the prefetcher on the classic shared L1D/L2 chain "
+    "(no VectorSplitter: scalar and vector accesses share one L1D). "
+    "Unlike the bare default hierarchy this strips the stdlib caches' "
+    "built-in stride prefetchers, so a run without --prefetcher is a "
+    "true no-prefetcher base, and it honors --l1d-mshrs/--l2-mshrs. "
+    "gdp/vtyche/tyche work here because the shared L1D sees every "
+    "access class; --prefetcher-side is ignored (there is only one "
+    "chain), --prefetcher-level still picks L1D vs L2. Mutually "
+    "exclusive with --vector-cache and --scalar-prefetcher.",
 )
 parser.add_argument(
     "--vector-l1d",
@@ -264,20 +290,23 @@ parser.add_argument(
     "--prefetcher",
     type=str,
     default=None,
-    choices=["none", "stride", "imp", "vimp", "gdp",
-             "isb", "stems", "tyche"],
+    choices=["none", "stride", "imp", "vimp", "gdp", "vtyche",
+             "vtyche2", "isb", "stems", "tyche"],
     help="Attach a hardware prefetcher to one cache. Implies "
     "(forces) --vector-cache. By default no cache has a prefetcher. "
     "Use --prefetcher-side and --prefetcher-level to place it. "
     "'vimp' (chunk-trained indirect), 'gdp' (Gather Dataflow "
     "Prefetcher: architectural transform-chain replay, exact "
-    "A[f(B[i])] plus vector streaming) "
+    "A[f(B[i])] plus vector streaming), 'vtyche' (Vector Tyche: gdp's "
+    "architectural discovery with imp's base+(index<<shift) equation, "
+    "A[B[i]] only, converted a whole index line at a time) "
     "and 'tyche' (scalar dependency-chain replay) are this "
     "fork's prefetchers; they train on virtual addresses, so the CPU "
     "MMU is registered automatically (override with --pf-param "
-    "use_virtual_addresses=false). gdp needs --prefetcher-side "
-    "vector; tyche needs --prefetcher-side scalar (it decodes scalar "
-    "instructions, which never reach the vector caches).",
+    "use_virtual_addresses=false). gdp and vtyche need "
+    "--prefetcher-side vector; tyche needs --prefetcher-side scalar "
+    "(it decodes scalar instructions, which never reach the vector "
+    "caches).",
 )
 parser.add_argument(
     "--prefetcher-side",
@@ -315,9 +344,9 @@ parser.add_argument(
     "--vector-cache. For a scalar-only prefetcher either use this with "
     "--prefetcher none, or use the existing --prefetcher-side scalar "
     "(combining --prefetcher-side scalar with this option is an error: "
-    "both would claim the scalar chain). gdp is not accepted "
-    "here (its CPU-side records only reach vector-side caches); "
-    "tyche is (it is a scalar-side design).",
+    "both would claim the scalar chain). gdp and vtyche are not "
+    "accepted here (their CPU-side records only reach vector-side "
+    "caches); tyche is (it is a scalar-side design).",
 )
 parser.add_argument(
     "--scalar-pf-param",
@@ -327,8 +356,102 @@ parser.add_argument(
     help="Tunable parameter override for --scalar-prefetcher "
     "(repeatable), same semantics as --pf-param.",
 )
+parser.add_argument(
+    "--l2-prefetcher",
+    type=str,
+    default=None,
+    choices=["none", "stride"],
+    help="Attach a SECOND, independent prefetcher to the unified L2, "
+    "alongside the --prefetcher on the L1D (--unified-cache with "
+    "--prefetcher-level l1 only). Covers the traffic classes an "
+    "L1-hosted vector prefetcher never learns — the scalar row-pointer "
+    "walk and store streams that miss through to the L2.",
+)
+parser.add_argument(
+    "--l2-pf-param",
+    action="append",
+    default=None,
+    metavar="NAME=VALUE",
+    help="Tunable parameter override for --l2-prefetcher "
+    "(repeatable), same semantics as --pf-param.",
+)
+parser.add_argument(
+    "--stream-demote",
+    type=str,
+    default="none",
+    choices=["none", "l1", "l2", "both"],
+    help="Stream-aware cache replacement (needs a gdp-table "
+    "prefetcher; on --unified-cache it applies to the shared caches, "
+    "on the split hierarchy to the VECTOR chain): demote lines of the "
+    "prefetcher-identified index/data stream pages to the LRU "
+    "position so single-use stream traffic stops evicting reused "
+    "data (e.g. spmv's gather-target vector). l2 demotes at "
+    "insertion (the L2 copy of a stream line is dead on arrival), "
+    "l1 demotes at first touch (the line still owes its one use), "
+    "both applies each mode at its level.",
+)
+parser.add_argument(
+    "--stream-demote-demand",
+    action="store_true",
+    help="Feed the stream-page registry from DEMAND accesses: every "
+    "unit-stride vector load/store registers its physical page at LSQ "
+    "translation finish (GdpChainTable demand_stream_pages). Lets "
+    "--stream-demote run without a gdp-table prefetcher (policy in "
+    "isolation, e.g. --prefetcher none/stride) and broadens "
+    "classification from the prefetcher's producer index arrays to "
+    "every unit-stride-touched array, including store streams. With a "
+    "gdp/vtyche prefetcher both sources feed the same registry.",
+)
+parser.add_argument(
+    "--stream-demote-second-touch",
+    action="store_true",
+    help="Second-touch promotion on the demotion policy: a demoted "
+    "stream line touched AGAIN while still resident (per-residency "
+    "consumed bit) is observed cross-sweep reuse and promotes as "
+    "plain LRU instead of being held demoted. Fixes iterative "
+    "re-sweep regressions (blackscholes/jacobi/somier) while "
+    "preserving single-use stream demotion wins.",
+)
+parser.add_argument(
+    "--stream-demote-page-promote",
+    action="store_true",
+    help="Second touch also unlearns the whole PAGE: removed from the "
+    "stream registry and blocked from re-registration "
+    "(GdpChainTable promoted_page_entries FIFO), so new fills of a "
+    "proven-reused page insert as plain LRU. Fixes the churn lockout "
+    "that per-line second-touch promotion cannot (evicted lines "
+    "re-enter demoted and are re-victimized before their second "
+    "touch). Use together with --stream-demote-second-touch.",
+)
 
 args = parser.parse_args()
+
+if args.unified_cache and args.vector_cache:
+    print("Error: --unified-cache and --vector-cache are mutually "
+          "exclusive (one shared chain vs the split hierarchy)")
+    sys.exit(1)
+if args.unified_cache and args.scalar_prefetcher not in (None, "none"):
+    print("Error: --scalar-prefetcher needs the split hierarchy's "
+          "separate scalar chain; with --unified-cache use --prefetcher")
+    sys.exit(1)
+
+l2_prefetcher_active = args.l2_prefetcher not in (None, "none")
+if l2_prefetcher_active and not args.unified_cache:
+    print("Error: --l2-prefetcher targets the unified L2; it requires "
+          "--unified-cache (the split hierarchy uses "
+          "--scalar-prefetcher / --prefetcher-side instead)")
+    sys.exit(1)
+if l2_prefetcher_active and args.prefetcher_level != "l1":
+    print("Error: --l2-prefetcher claims the L2; place the main "
+          "prefetcher at the L1 (--prefetcher-level l1) or drop one")
+    sys.exit(1)
+if args.stream_demote != "none" and not (
+        args.unified_cache or args.vector_cache or
+        args.prefetcher not in (None, "none")):
+    print("Error: --stream-demote needs a hierarchy that hosts the "
+          "policy (--unified-cache, or the split --vector-cache where "
+          "it applies to the VECTOR chain's caches)")
+    sys.exit(1)
 
 # --- Prefetcher selection (configuration only; builds on --vector-cache) ---
 # Parse repeated --pf-param NAME=VALUE into a dict of raw strings; the factory
@@ -354,6 +477,17 @@ for item in args.scalar_pf_param or []:
     key, value = item.split("=", 1)
     scalar_pf_params[key] = value
 
+l2_pf_params = {}
+for item in args.l2_pf_param or []:
+    if "=" not in item:
+        print(f"Error: --l2-pf-param expects NAME=VALUE, got '{item}'")
+        sys.exit(1)
+    key, value = item.split("=", 1)
+    l2_pf_params[key] = value
+if l2_pf_params and not l2_prefetcher_active:
+    print("Error: --l2-pf-param requires --l2-prefetcher (and not 'none')")
+    sys.exit(1)
+
 scalar_prefetcher_active = args.scalar_prefetcher not in (None, "none")
 if scalar_pf_params and not scalar_prefetcher_active:
     print("Error: --scalar-pf-param requires --scalar-prefetcher "
@@ -373,10 +507,12 @@ vector_l2_prefetcher = None
 prefetcher_mmu = False
 prefetcher_tyche_table = False
 prefetcher_gdp_table = False
-if prefetcher_active or scalar_prefetcher_active:
+if prefetcher_active or scalar_prefetcher_active or l2_prefetcher_active:
     # The split hierarchy hosts the prefetcher on whichever chain is
-    # selected, so it is required.
-    args.vector_cache = True
+    # selected, so it is required — unless the caller asked for the
+    # unified shared chain, which hosts prefetchers itself.
+    if not args.unified_cache:
+        args.vector_cache = True
     from prefetcher_factory import build as build_prefetcher
     from prefetcher_factory import needs_chain_table
     from prefetcher_factory import needs_gdp_table
@@ -394,7 +530,11 @@ if prefetcher_active:
     # Tyche decodes scalar instructions; the vector caches never see
     # scalar accesses in the split hierarchy.
     prefetcher_tyche_table = needs_chain_table(args.prefetcher)
-    if prefetcher_tyche_table and args.prefetcher_side != "scalar":
+    # The side guards below only apply to the split hierarchy: the
+    # unified L1D sees scalar and vector accesses alike, so both the
+    # tyche and the gdp/vtyche sideband channels reach it.
+    if prefetcher_tyche_table and not args.unified_cache \
+            and args.prefetcher_side != "scalar":
         print(f"Error: --prefetcher {args.prefetcher} requires "
               "--prefetcher-side scalar (it observes scalar loads, "
               "which the VectorSplitter never routes to the vector "
@@ -403,14 +543,17 @@ if prefetcher_active:
     # GDP's CPU-side records are extracted from vector loads; those
     # only reach a vector-side cache in the split hierarchy.
     prefetcher_gdp_table = needs_gdp_table(args.prefetcher)
-    if prefetcher_gdp_table and args.prefetcher_side != "vector":
+    if prefetcher_gdp_table and not args.unified_cache \
+            and args.prefetcher_side != "vector":
         print(f"Error: --prefetcher {args.prefetcher} requires "
               "--prefetcher-side vector (its CPU-side records come "
               "from vector loads, which the VectorSplitter never "
               "routes to the scalar caches)")
         sys.exit(1)
     # Route the single factory to one of four caches: {scalar,vector} x {l1,l2}.
-    if args.prefetcher_side == "scalar":
+    # The unified hierarchy has only one chain; its caches reuse the
+    # scalar slots and only --prefetcher-level applies.
+    if args.unified_cache or args.prefetcher_side == "scalar":
         if args.prefetcher_level == "l1":
             scalar_l1d_prefetcher = factory
         else:
@@ -420,6 +563,25 @@ if prefetcher_active:
             vector_l1d_prefetcher = factory
         else:
             vector_l2_prefetcher = factory
+
+if l2_prefetcher_active:
+    # Second, independent prefetcher on the unified L2 — covers the
+    # traffic classes an L1-hosted vector prefetcher never learns
+    # (scalar ia[] walk, store streams). The guards above ensure the
+    # main prefetcher sits at the L1, so the L2 slot is free.
+    try:
+        l2_factory = build_prefetcher(args.l2_prefetcher, l2_pf_params)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    scalar_l2_prefetcher = l2_factory
+
+if args.stream_demote != "none" and not prefetcher_gdp_table \
+        and not args.stream_demote_demand:
+    print("Error: --stream-demote needs a gdp-table prefetcher "
+          "(--prefetcher gdp or vtyche) or --stream-demote-demand "
+          "to feed the stream-page registry")
+    sys.exit(1)
 
 if scalar_prefetcher_active:
     # Second, independent prefetcher on the scalar L1D (dual configs:
@@ -474,6 +636,31 @@ if args.vector_cache:
         l2_tgts_per_mshr=args.l2_tgts_per_mshr,
         vector_l1d_tgts_per_mshr=args.vector_l1d_tgts_per_mshr,
         vector_l2_tgts_per_mshr=args.vector_l2_tgts_per_mshr,
+        stream_demote=args.stream_demote,
+        stream_demote_demand=args.stream_demote_demand,
+        stream_demote_second_touch=args.stream_demote_second_touch,
+        stream_demote_page_promote=args.stream_demote_page_promote,
+    )
+elif args.unified_cache:
+    from unified_cache_hierarchy import UnifiedCacheHierarchy
+
+    cache_hierarchy = UnifiedCacheHierarchy(
+        l1d_size=args.l1d,
+        l1i_size="32KiB",
+        l2_size=args.l2,
+        l1d_prefetcher=scalar_l1d_prefetcher,
+        l2_prefetcher=scalar_l2_prefetcher,
+        prefetcher_needs_mmu=prefetcher_mmu,
+        prefetcher_needs_chain_table=prefetcher_tyche_table,
+        prefetcher_needs_gdp_table=prefetcher_gdp_table,
+        l1d_mshrs=args.l1d_mshrs,
+        l2_mshrs=args.l2_mshrs,
+        l1d_tgts_per_mshr=args.l1d_tgts_per_mshr,
+        l2_tgts_per_mshr=args.l2_tgts_per_mshr,
+        stream_demote=args.stream_demote,
+        stream_demote_demand=args.stream_demote_demand,
+        stream_demote_second_touch=args.stream_demote_second_touch,
+        stream_demote_page_promote=args.stream_demote_page_promote,
     )
 else:
     cache_hierarchy = PrivateL1PrivateL2CacheHierarchy(
@@ -484,7 +671,17 @@ else:
     )
 
 # memory = SingleChannelDDR3_1600()
-memory = SingleChannelDDR4_2400(size="8GiB")
+if args.mem_type == "perfect":
+    from gem5.components.memory.simple import SingleChannelSimpleMemory
+
+    memory = SingleChannelSimpleMemory(
+        latency="1ns",
+        latency_var="0ns",
+        bandwidth="1TiB/s",
+        size="8GiB",
+    )
+else:
+    memory = SingleChannelDDR4_2400(size="8GiB")
 
 processor = BaseCPUProcessor(
     cores=[
@@ -557,6 +754,22 @@ if args.vector_cache:
         print(f"  Scalar Prefetcher: {args.scalar_prefetcher} on scalar L1D")
         if scalar_pf_params:
             print(f"  Scalar PF Params: {scalar_pf_params}")
+elif args.unified_cache:
+    print(f"  Vector Caches:    OFF (unified shared L1D/L2, stdlib "
+          f"prefetchers stripped)")
+    print(f"  L1D MSHRs:        {args.l1d_mshrs} "
+          f"(L2: {args.l2_mshrs})")
+    if prefetcher_active:
+        cache = "L1D" if args.prefetcher_level == "l1" else "L2"
+        print(f"  Prefetcher:       {args.prefetcher} on unified {cache}")
+        print(
+            f"  PF MMU:           "
+            f"{'registered (VA training, page-crossing OK)' if prefetcher_mmu else 'none (PA training, page-crossing dropped)'}"
+        )
+        if pf_params:
+            print(f"  PF Params:        {pf_params}")
+    else:
+        print(f"  Prefetcher:       none")
 else:
     print(f"  Vector Caches:    OFF (shared L1D/L2)")
 print("-" * 50)

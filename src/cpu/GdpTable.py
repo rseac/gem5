@@ -31,3 +31,22 @@ class GdpChainTable(SimObject):
         "replay pipeline's generic stage count; longer chains do not "
         "link)"
     )
+    demand_stream_pages = Param.Bool(
+        False,
+        "Register stream pages from DEMAND accesses: every unit-stride "
+        "vector load/store publishes its translated physical page to "
+        "the stream-page registry at LSQ translation finish. Lets "
+        "StreamDemoteLRURP run without a gdp-table prefetcher (the "
+        "registry is otherwise fed only by prefetch departures), and "
+        "broadens classification from producer index arrays to every "
+        "unit-stride-touched array.",
+    )
+    promoted_page_entries = Param.Unsigned(
+        1024,
+        "Promoted-page (unlearned) set capacity: pages a replacement "
+        "policy promoted out of the stream class after observing "
+        "cross-sweep reuse are blocked from re-registration, bounded "
+        "FIFO. ~1024 x 30-bit page numbers ~= 4KB. Too small and "
+        "iterative working sets larger than the window churn back "
+        "into the stream class as entries age out.",
+    )

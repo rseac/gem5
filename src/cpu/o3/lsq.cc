@@ -47,6 +47,7 @@
 
 #include "base/compiler.hh"
 #include "base/logging.hh"
+#include "cpu/gdp_table.hh"
 #include "cpu/o3/cpu.hh"
 #include "cpu/o3/dyn_inst.hh"
 #include "cpu/o3/iew.hh"
@@ -862,6 +863,13 @@ LSQ::SingleDataRequest::finish(const Fault &fault, const RequestPtr &request,
                 assert(_res);
                 request->setExtraData(*_res);
             }
+            // Demand-side stream-page registration: the translated PA
+            // and the instruction's ISA identity meet here (see
+            // GdpChainTable::notifyDemandAccess).
+            if (auto *gt = _inst->getCpuPtr()->gdpTable) {
+                gt->notifyDemandAccess(_inst->staticInst.get(),
+                                       request->getPaddr());
+            }
             setState(State::Request);
         } else {
             setState(State::Fault);
@@ -899,6 +907,15 @@ LSQ::SplitDataRequest::finish(const Fault &fault, const RequestPtr &req,
             if (i > 0) {
                 _inst->physEffAddr = LSQRequest::req()->getPaddr();
                 _inst->memReqFlags = _mainReq->getFlags();
+                // Demand-side stream-page registration; a split access
+                // straddles a page boundary, so register every
+                // successfully translated fragment's page.
+                if (auto *gt = _inst->getCpuPtr()->gdpTable) {
+                    for (int j = 0; j < i; j++) {
+                        gt->notifyDemandAccess(_inst->staticInst.get(),
+                                               _reqs[j]->getPaddr());
+                    }
+                }
                 if (_mainReq->isCondSwap()) {
                     assert (i == _fault.size());
                     assert(_res);

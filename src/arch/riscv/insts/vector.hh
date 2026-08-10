@@ -538,6 +538,20 @@ class VseMicroInst : public VectorMicroInst
     std::string
     generateDisassembly(Addr pc,
                         const loader::SymbolTable *symtab) const override;
+
+  public:
+    // GDP: a unit-stride vector store walks a single-use output
+    // stream, exactly like the unit-stride load's index stream; expose
+    // it for demand-side stream-page registration (see
+    // cpu/gdp_table.hh).
+    GdpInstInfo
+    gdpInstInfo() const override
+    {
+        GdpInstInfo info;
+        info.kind = GdpInstInfo::UnitStrideStore;
+        info.elemBytes = width_EEW(machInst.width) / 8;
+        return info;
+    }
 };
 
 class VlWholeMacroInst : public VectorMemMacroInst

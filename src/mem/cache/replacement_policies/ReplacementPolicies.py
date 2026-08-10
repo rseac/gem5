@@ -171,6 +171,55 @@ class TreePLRURP(BaseReplacementPolicy):
     num_leaves = Param.Int(Parent.assoc, "Number of leaves in each tree")
 
 
+class StreamDemoteLRURP(LRURP):
+    """LRU that demotes lines of registered stream pages to the LRU
+    position — pages the VTyche/GDP prefetcher publishes through the
+    shared GdpChainTable as it issues index-array stream prefetches
+    (unit-stride vector arrays: single-use, dead after their access).
+    demote_on_insert=True is the L2 mode (a stream line's L2 copy is
+    dead on arrival: its demand use is served by the L1 copy);
+    demote_on_insert=False is the L1 mode (insert normally, demote at
+    the first touch — a unit-stride vector access consumes the whole
+    line, making that touch an architecturally known last use).
+    Non-stream lines behave as plain LRU."""
+
+    type = "StreamDemoteLRURP"
+    cxx_class = "gem5::replacement_policy::StreamDemoteLRU"
+    cxx_header = "mem/cache/replacement_policies/stream_demote_lru_rp.hh"
+
+    link_table = Param.GdpChainTable(
+        NULL,
+        "The per-core chain table publishing stream physical pages "
+        "(same instance as the prefetcher's link_table and the CPU's "
+        "gdp_table).",
+    )
+    demote_on_insert = Param.Bool(
+        False,
+        "Demote stream lines at insertion (L2 semantics) instead of "
+        "at their first touch (L1 semantics).",
+    )
+    second_touch_promote = Param.Bool(
+        False,
+        "Promote a demoted stream line on its SECOND touch while "
+        "resident (per-residency consumed bit): a line the single-use "
+        "oracle declared dead that gets used again is observed "
+        "cross-sweep reuse (iterative kernels), and holding it demoted "
+        "churns exactly the lines that keep coming back. True "
+        "single-use streams never see a second touch, so demotion "
+        "wins are preserved.",
+    )
+    page_promote = Param.Bool(
+        False,
+        "Second touch also unlearns the whole PAGE "
+        "(GdpChainTable.promoteStreamPage): removed from the stream "
+        "registry and blocked from re-registration, so NEW fills of a "
+        "proven-reused page insert as plain LRU. Per-line promotion "
+        "alone protects incumbents but gives evicted lines no re-entry "
+        "path (they re-insert demoted and are re-victimized before "
+        "their second touch). Requires second_touch_promote.",
+    )
+
+
 class WeightedLRURP(LRURP):
     type = "WeightedLRURP"
     cxx_class = "gem5::replacement_policy::WeightedLRU"

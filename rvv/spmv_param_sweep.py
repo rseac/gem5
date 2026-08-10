@@ -76,6 +76,8 @@ FIXED_PF_PARAMS = {
     "vimp": {"prefetch_on_pf_hit": "false", "index_size": "8"},
     # gdp has no kill switch and no training; nothing to pin.
     "gdp": {"prefetch_on_pf_hit": "false"},
+    # vtyche likewise: base/shift are architectural, not trained.
+    "vtyche": {"prefetch_on_pf_hit": "false"},
 }
 
 # Swept combos, mirroring tsvc_results/prefetcher_params.xlsx.
@@ -108,22 +110,100 @@ VIMP_COMBOS = [
 # validation saw ~18% bufferBusyDrops at the default 2; sb1 probes the
 # floor, 4/8 the knee). stream_only=true is the ablation: architectural
 # streaming with capture/replay disabled.
+#
+# pipelines_per_gather rows (added 2026-07-29): replay-WIDTH sweep,
+# anchored on the best GDP row (sd16_sb8, 1.618x). ppg=None on the
+# original combos means the param is not passed (those runs predate
+# it; their code drained without any width bound). ppg=0 is the same
+# unbounded semantics on CURRENT code — the fresh baseline the width
+# rows compare against, since the old sd16_sb8 row is pre-v2.1.
+# Calibration: ppg=1 = the strictly serial 1-elem/event pipe the
+# design text claims; ppg=8 = one full 64B line of e64 ja[] indices
+# per event = vtyche's conversion width.
 GDP_COMBOS = [
-    # (streaming_distance, slice_buffer_entries, stream_only)
-    (8, 2, "false"),
-    (16, 2, "false"),
-    (24, 2, "false"),
-    (32, 2, "false"),
-    (16, 1, "false"),
-    (16, 4, "false"),
-    (16, 8, "false"),
-    (32, 4, "false"),
-    (32, 8, "false"),
-    (8, 2, "true"),
-    (16, 2, "true"),
-    (32, 2, "true"),
+    # (streaming_distance, slice_buffer_entries, stream_only,
+    #  pipelines_per_gather)
+    (8, 2, "false", None),
+    (16, 2, "false", None),
+    (24, 2, "false", None),
+    (32, 2, "false", None),
+    (16, 1, "false", None),
+    (16, 4, "false", None),
+    (16, 8, "false", None),
+    (32, 4, "false", None),
+    (32, 8, "false", None),
+    (8, 2, "true", None),
+    (16, 2, "true", None),
+    (32, 2, "true", None),
+    (16, 8, "false", 0),
+    (16, 8, "false", 1),
+    (16, 8, "false", 2),
+    (16, 8, "false", 4),
+    (16, 8, "false", 8),
+    (16, 8, "false", 16),
 ]
-GDP_KEYS = ("streaming_distance", "slice_buffer_entries", "stream_only")
+GDP_KEYS = ("streaming_distance", "slice_buffer_entries", "stream_only",
+            "pipelines_per_gather")
+
+# VTyche sweep (added 2026-07-28): the A[B[i]]-only sibling of gdp — same
+# architectural discovery and same stream/capture machinery, but the
+# transform chain is collapsed once into base + (index << shift) and a
+# whole index line converts in one event (see DOCUMENTATION.MD).
+# Anchored on the BEST GDP row for this input (sd16_sb4, 1.617x): the
+# direct translation is streaming_distance=16 with
+# slice_buffer_entries=4 (same param name as gdp since the 2026-07-30
+# redesign: vtyche now stages raw payloads too; runs before that date
+# used address_queue_entries, which held finished addresses instead).
+# drain_floor has no gdp analog (gdp hardcodes 8): df0 is the pure
+# stall-on-full, which gdp.cc documents as the v2.1 poisson3Db collapse
+# when the queue starves — this row is the direct test of that.
+# Dedup-window campaign (2026-07-30, post-redesign): sd16/sb8 = the
+# best GDP slice-buffer params (sd16_sb8_ppg1, 1.632x), dd swept.
+# dd0 is the fresh post-redesign baseline — the pre-redesign aq runs
+# (vtyche_sd*_aq*) are not comparable and keep their old outdirs.
+VTYCHE_COMBOS = [
+    # (streaming_distance, slice_buffer_entries, drain_floor,
+    #  stream_only, dedup_buffer_size[, vector_l1d_mshrs])
+    # The optional 6th element is NOT a pf-param: it becomes the run
+    # script's --vector-l1d-mshrs (absent = the default 16).
+    (16, 8, 8, "false", 0),   # post-redesign baseline
+    (16, 8, 8, "false", 1),
+    (16, 8, 8, "false", 2),
+    (16, 8, 8, "false", 4),
+    (16, 8, 8, "false", 8),
+    # Dedup-window extension (2026-07-31): dd1-8 were perf-neutral;
+    # deeper windows probe whether cross-line redundancy lives at a
+    # longer range than 8 index lines (poisson3Db chunks span ~500KB).
+    (16, 8, 8, "false", 16),
+    (16, 8, 8, "false", 32),
+    (16, 8, 8, "false", 64),
+    # Vector-L1D MSHR sweep (2026-07-31), anchored on the dd0 baseline
+    # (dedup off — it was perf-neutral at default MSHRs). The dd0 run
+    # above is the mshr16 reference. Fewer MSHRs choke both demand MLP
+    # and prefetch issue (getPacket only fires with a free MSHR), so
+    # this probes how much of vtyche's win survives a narrow miss path.
+    # mshr1/mshr2 were dropped mid-campaign: canPrefetch() needs
+    # allocated < mshrs - 2 (demand_mshr_reserve), so below 4 MSHRs the
+    # prefetcher can never issue and the rows measure nothing vtyche.
+    (16, 8, 8, "false", 0, 4),
+    (16, 8, 8, "false", 0, 8),
+    # dd x MSHR cross (2026-07-31): at default MSHRs the dedup window
+    # was ~neutral because the tag/MSHR snoop absorbed the redundancy
+    # downstream. With canPrefetch slots scarce, every redundant target
+    # that reaches the queue wastes an issue opportunity — this probes
+    # whether coalescing pays once issue bandwidth binds. The dd0 mshr
+    # rows above are the per-MSHR references.
+    (16, 8, 8, "false", 8, 4),
+    (16, 8, 8, "false", 16, 4),
+    (16, 8, 8, "false", 32, 4),
+    (16, 8, 8, "false", 64, 4),
+    (16, 8, 8, "false", 8, 8),
+    (16, 8, 8, "false", 16, 8),
+    (16, 8, 8, "false", 32, 8),
+    (16, 8, 8, "false", 64, 8),
+]
+VTYCHE_KEYS = ("streaming_distance", "slice_buffer_entries",
+               "drain_floor", "stream_only", "dedup_buffer_size")
 
 # Dual-prefetcher configs (added 2026-07-19): stride on the scalar L1D
 # (via the run script's --scalar-prefetcher) combined with each vector-L1
@@ -156,6 +236,16 @@ VIMP_KEYS = ("indirect_delta", "prefetch_threshold",
 def build_configs():
     """Return [(name, prefetcher, {param: value})], base run first."""
     configs = [("base", "none", {})]
+    # MSHR-choke reference points (2026-07-31): no-prefetcher and
+    # best-stride (deg32/dist0, best Stride row by cycles) baselines at
+    # the swept vector-L1D MSHR counts, so the low-MSHR vtyche rows
+    # have fair comparisons. The suffix-less rows are the mshr16 ones.
+    for m in (4, 8):
+        configs.append((f"base_mshr{m}", "none", {}, None,
+                        ["--vector-l1d-mshrs", str(m)]))
+        configs.append((f"stride_deg32_dist0_mshr{m}", "stride",
+                        {"degree": 32, "distance": 0}, None,
+                        ["--vector-l1d-mshrs", str(m)]))
     for combo in STRIDE_COMBOS:
         params = dict(zip(STRIDE_KEYS, combo))
         configs.append((f"stride_deg{combo[0]}_dist{combo[1]}",
@@ -172,12 +262,53 @@ def build_configs():
         configs.append((name, vec_pf, vec_params,
                         dict(DUAL_SCALAR_STRIDE)))
     for combo in GDP_COMBOS:
-        params = dict(zip(GDP_KEYS, combo))
+        # None = leave the param at its class default (and out of the
+        # run name) — the original combos predate pipelines_per_gather.
+        params = {k: v for k, v in zip(GDP_KEYS, combo) if v is not None}
         name = "gdp_sd{}_sb{}".format(combo[0], combo[1])
         if combo[2] == "true":
             name += "_streamonly"
+        if combo[3] is not None:
+            name += f"_ppg{combo[3]}"
         configs.append((name, "gdp", params))
+    for combo in VTYCHE_COMBOS:
+        params = dict(zip(VTYCHE_KEYS, combo[:5]))
+        name = "vtyche_sd{}_sb{}".format(combo[0], combo[1])
+        if combo[2] != 8:
+            name += f"_df{combo[2]}"
+        if combo[3] == "true":
+            name += "_streamonly"
+        name += f"_dd{combo[4]}"
+        if len(combo) > 5:
+            # Cache-side knob, passed as a core arg (5th tuple slot of
+            # the config; the 4th stays the dual-run scalar params).
+            name += f"_mshr{combo[5]}"
+            configs.append((name, "vtyche", params, None,
+                            ["--vector-l1d-mshrs", str(combo[5])]))
+        else:
+            configs.append((name, "vtyche", params))
     return configs
+
+
+# The gdp runs on disk predate the 2026-07-24 gdp2->gdp rename, so their
+# out dirs (and record-tree label) still carry the old prefix. Without
+# this the collector would find no stats for them and silently overwrite
+# the populated GDP sheet with "FAILED/missing" rows.
+LEGACY_OUTDIR_PREFIX = {"gdp_": "gdp2_"}
+
+
+def run_outdir(outroot, name):
+    """Host path of a config's out dir, honoring legacy names."""
+    path = os.path.join(GEM5_ROOT, outroot, name)
+    if os.path.exists(path):
+        return path
+    for new, old in LEGACY_OUTDIR_PREFIX.items():
+        if name.startswith(new):
+            legacy = os.path.join(GEM5_ROOT, outroot,
+                                  old + name[len(new):])
+            if os.path.exists(legacy):
+                return legacy
+    return path
 
 
 def log(logfile, msg):
@@ -193,6 +324,9 @@ def run_one(cfg, input_name, outroot, logfile, timeout_s):
     # Optional 4th element: params of a stride prefetcher on the scalar
     # L1D (dual configs, via the run script's --scalar-prefetcher).
     scalar_params = cfg[3] if len(cfg) > 3 else None
+    # Optional 5th element: extra core args for the run script (e.g.
+    # --vector-l1d-mshrs for the MSHR sweep).
+    extra_args = cfg[4] if len(cfg) > 4 else []
     outdir = os.path.join(outroot, name)
     done = os.path.join(GEM5_ROOT, outdir, "DONE")
     failed = os.path.join(GEM5_ROOT, outdir, "FAILED")
@@ -217,7 +351,7 @@ def run_one(cfg, input_name, outroot, logfile, timeout_s):
         "build/RISCV/gem5.opt", "-re", "-d", outdir,
         "rvv/riscv-rvv-se-ara-prefetcher.py",
         "--prefetcher", prefetcher,
-    ] + pf_args + CORE_ARGS + [
+    ] + pf_args + CORE_ARGS + extra_args + [
         "-p", f"{INPUT_DIR}/{input_name}.csr {INPUT_DIR}/{input_name}.verif",
         BIN,
     ]
@@ -291,6 +425,19 @@ STAT_PATTERNS = {
     "bufferBusyDrops": r"\.prefetcher\.bufferBusyDrops\s+(\S+)",
     "targetsGenerated": r"\.prefetcher\.targetsGenerated\s+(\S+)",
     "linksFormed": r"\.gdp_table\.linksFormed\s+(\S+)",
+    "stalenessAborts": r"\.prefetcher\.stalenessAborts\s+(\S+)",
+    "elementsReplayed": r"\.prefetcher\.elementsReplayed\s+(\S+)",
+    "replayDeferred": r"\.prefetcher\.replayDeferred\s+(\S+)",
+    "replayWidthLimited": r"\.prefetcher\.replayWidthLimited\s+(\S+)",
+    # vtyche-specific (gdp's analogs are chainDispatches / the serial
+    # elementsReplayed; these have no gdp counterpart).
+    "formsAdopted": r"\.prefetcher\.formsAdopted\s+(\S+)",
+    "chainsRejected": r"\.prefetcher\.chainsRejected\s+(\S+)",
+    "elementsConverted": r"\.prefetcher\.elementsConverted\s+(\S+)",
+    "targetsDeduplicated": r"\.prefetcher\.targetsDeduplicated\s+(\S+)",
+    "targetsCrossDeduplicated":
+        r"\.prefetcher\.targetsCrossDeduplicated\s+(\S+)",
+    "emissionDeferred": r"\.prefetcher\.emissionDeferred\s+(\S+)",
     # Side-specific patterns for dual-prefetcher runs. The generic
     # patterns above match the FIRST prefetcher in the stats dump, which
     # in a dual run is the scalar one (l1d-cache-0 precedes
@@ -387,7 +534,29 @@ VIMP_EXTRA = ["streamCandidates", "indirectCandidates", "patternsDetected",
 GDP_EXTRA = ["linksFormed", "chainDispatches", "chunksObserved",
              "streamCandidates", "capturesRegistered",
              "capturesRegisteredMiss", "fillsCaptured",
-             "bufferBusyDrops", "targetsGenerated", "pfLate"]
+             "bufferBusyDrops", "targetsGenerated", "pfLate",
+             # replay-width diagnostics (2026-07-29): elementsReplayed
+             # is what the ppg budget meters; replayWidthLimited counts
+             # events the width bound cut short, replayDeferred events
+             # the shared queue bound cut short — read them against
+             # each other to see which budget binds.
+             "elementsReplayed", "replayWidthLimited", "replayDeferred"]
+# Same columns as GDP where the stat exists on both (so the sheets line
+# up), with chainDispatches -> formsAdopted and the collapse/conversion
+# counters appended.
+VTYCHE_EXTRA = ["linksFormed", "formsAdopted", "chainsRejected",
+                "chunksObserved", "streamCandidates", "capturesRegistered",
+                "capturesRegisteredMiss", "fillsCaptured",
+                "bufferBusyDrops", "elementsConverted", "targetsGenerated",
+                "targetsDeduplicated", "targetsCrossDeduplicated",
+                "stalenessAborts", "emissionDeferred", "pfLate"]
+
+
+def name_mshrs(name):
+    """Vector-L1D MSHR count encoded in a config name (default 16).
+    MSHRs are a core arg, not a pf-param, so they travel in the name."""
+    m = re.search(r"_mshr(\d+)$", name)
+    return int(m.group(1)) if m else 16
 
 
 def collect(configs, outroot, workbook, input_name):
@@ -395,13 +564,16 @@ def collect(configs, outroot, workbook, input_name):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     sheets = {
-        "Base": ["Config"] + METRIC_HDR + ["Status"],
-        "Stride": ["Config"] + list(STRIDE_KEYS) + METRIC_HDR + ["Status"],
+        "Base": ["Config", "vl1d_mshrs"] + METRIC_HDR + ["Status"],
+        "Stride": ["Config"] + list(STRIDE_KEYS) + ["vl1d_mshrs"]
+                  + METRIC_HDR + ["Status"],
         "IMP": ["Config"] + list(IMP_KEYS) + METRIC_HDR + ["Status"],
         "VIMP": ["Config"] + list(VIMP_KEYS) + METRIC_HDR + VIMP_EXTRA
                 + ["Status"],
         "GDP": ["Config"] + list(GDP_KEYS) + METRIC_HDR + GDP_EXTRA
                + ["Status"],
+        "VTYCHE": ["Config"] + list(VTYCHE_KEYS) + ["vl1d_mshrs"]
+                  + METRIC_HDR + VTYCHE_EXTRA + ["Status"],
         "DUAL": ["Config", "VectorPF", "VectorParams", "ScalarPF",
                  "ScalarParams"] + DUAL_HDR + ["Status"],
     }
@@ -415,6 +587,28 @@ def collect(configs, outroot, workbook, input_name):
         "vlen=2048, lanes=4, simd-units=2, vector-cache, "
         "prefetcher on vector L1D.",
         "All prefetchers: prefetch_on_pf_hit=false; vimp: index_size=8.",
+        "VTYCHE sheet (2026-07-28): vtyche is gdp's A[B[i]]-only "
+        "sibling — same discovery and stream/capture path, chain "
+        "collapsed to base+(index<<shift), whole index line converted "
+        "per event. Anchored on the best GDP row (sd16_sb4); "
+        "address_queue_entries is gdp's slice_buffer_entries analog, "
+        "drain_floor has no gdp analog (gdp hardcodes 8).",
+        "GDP ppg rows (2026-07-29): pipelines_per_gather replay-width "
+        "sweep at the best GDP config (sd16_sb8). Blank ppg = legacy "
+        "run predating the param (unbounded, pre-v2.1 code); ppg0 = "
+        "unbounded on current code (the fresh baseline); ppg1 = serial "
+        "1-elem/event pipe; ppg8 = one e64 index line/event = vtyche's "
+        "conversion width.",
+        "VTYCHE 2026-07-31 campaign: dedup window extended to "
+        "dd16/32/64, plus a vector-L1D MSHR sweep (vl1d_mshrs column; "
+        "no suffix = default 16) anchored on sd16_sb8_dd0 — that row "
+        "is the mshr16 reference. mshr1/2 dropped: canPrefetch needs "
+        "allocated < mshrs-2, so the prefetcher can never issue there.",
+        "MSHR campaign part 2 (2026-07-31): base_mshr4/8 and "
+        "stride_deg32_dist0_mshr4/8 reference rows (Base/Stride sheets, "
+        "vl1d_mshrs column), plus the dd x MSHR cross (dd8-64 at "
+        "mshr4/8) testing whether cross-line dedup pays once "
+        "canPrefetch slots are scarce.",
         "Stats are the kernel ROI section (m5 markers); Instructions = "
         "simInsts, Cycles = core numCycles, VL1 = vector-l1d-cache-0.",
         "Raw runs: out tree per config; record tree: "
@@ -425,7 +619,7 @@ def collect(configs, outroot, workbook, input_name):
     for cfg in configs:
         name, prefetcher, params = cfg[:3]
         scalar_params = cfg[3] if len(cfg) > 3 else None
-        host_outdir = os.path.join(GEM5_ROOT, outroot, name)
+        host_outdir = run_outdir(outroot, name)
         stats_path = os.path.join(host_outdir, "stats.txt")
         status = "done" if os.path.exists(
             os.path.join(host_outdir, "DONE")) else "FAILED/missing"
@@ -437,10 +631,11 @@ def collect(configs, outroot, workbook, input_name):
                  "stride", str(scalar_params)]
                 + dual_metric_row(s) + [status])
         elif prefetcher == "none":
-            wb["Base"].append([name] + row + [status])
+            wb["Base"].append([name, name_mshrs(name)] + row + [status])
         elif prefetcher == "stride":
             wb["Stride"].append(
-                [name] + [params[k] for k in STRIDE_KEYS] + row + [status])
+                [name] + [params[k] for k in STRIDE_KEYS]
+                + [name_mshrs(name)] + row + [status])
         elif prefetcher == "imp":
             wb["IMP"].append(
                 [name] + [params[k] for k in IMP_KEYS] + row + [status])
@@ -449,9 +644,16 @@ def collect(configs, outroot, workbook, input_name):
                 [name] + [params[k] for k in VIMP_KEYS] + row
                 + [s.get(k) for k in VIMP_EXTRA] + [status])
         elif prefetcher == "gdp":
+            # .get: legacy rows predate pipelines_per_gather and never
+            # carried it (blank column = param didn't exist that run).
             wb["GDP"].append(
-                [name] + [params[k] for k in GDP_KEYS] + row
+                [name] + [params.get(k, "") for k in GDP_KEYS] + row
                 + [s.get(k) for k in GDP_EXTRA] + [status])
+        elif prefetcher == "vtyche":
+            wb["VTYCHE"].append(
+                [name] + [params[k] for k in VTYCHE_KEYS]
+                + [name_mshrs(name)] + row
+                + [s.get(k) for k in VTYCHE_EXTRA] + [status])
 
     os.makedirs(os.path.dirname(workbook), exist_ok=True)
     wb.save(workbook)
@@ -469,6 +671,12 @@ def main():
                     help="input basename under _spmv/input (csr+verif)")
     ap.add_argument("--timeout-mins", type=int, default=240,
                     help="per-run timeout")
+    ap.add_argument("--only", default=None,
+                    help="run only configs whose name starts with one of "
+                         "these comma-separated prefixes (e.g. "
+                         "'vtyche' or 'base_mshr,stride_deg32'). The "
+                         "workbook is still rebuilt from ALL configs, so "
+                         "previously completed runs keep their rows.")
     args = ap.parse_args()
 
     input_name = "football" if args.smoke else args.input
@@ -476,6 +684,11 @@ def main():
     if args.smoke:
         configs = [c for c in configs
                    if c[0] in ("base", "vimp_id0_pt2_sct4_sd4_ipc8")]
+    # Collection always sees every config; only the run phase is filtered.
+    only = args.only.split(",") if args.only else None
+    run_configs = [c for c in configs
+                   if only is None
+                   or any(c[0].startswith(p) for p in only)]
 
     outroot = f"out/sweep_{input_name}"
     workbook = os.path.join(GEM5_ROOT, "rivec_results",
@@ -485,12 +698,14 @@ def main():
     logfile = os.path.join(host_outroot, "sweep.log")
 
     if not args.collect_only:
-        log(logfile, f"sweep start: {len(configs)} configs on {input_name}, "
-                     f"{args.jobs} parallel")
+        log(logfile, f"sweep start: {len(run_configs)} configs on "
+                     f"{input_name}, {args.jobs} parallel"
+                     + (f" (--only {args.only})" if args.only else ""))
         results = {}
         with ThreadPoolExecutor(max_workers=args.jobs) as pool:
             futs = [pool.submit(run_one, c, input_name, outroot, logfile,
-                                args.timeout_mins * 60) for c in configs]
+                                args.timeout_mins * 60)
+                    for c in run_configs]
             for f in futs:
                 name, status = f.result()
                 results[name] = status
@@ -500,8 +715,9 @@ def main():
 
     wb = collect(configs, outroot, workbook, input_name)
     log(logfile, f"workbook written: {wb}")
-    n_failed = sum(1 for c in configs if not os.path.exists(
-        os.path.join(GEM5_ROOT, outroot, c[0], "DONE")))
+    # Exit status reflects the configs this invocation was asked to run.
+    n_failed = sum(1 for c in run_configs if not os.path.exists(
+        os.path.join(run_outdir(outroot, c[0]), "DONE")))
     sys.exit(1 if n_failed else 0)
 
 

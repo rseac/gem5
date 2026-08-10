@@ -487,11 +487,313 @@ class GDPPrefetcher(QueuedPrefetcher):
     pipelines = Param.Unsigned(
         2, "Concurrently configured producer replay pipelines"
     )
+    pipelines_per_gather = Param.Unsigned(
+        0,
+        "Replay pipelines behind ONE gather: how many indices of a "
+        "captured index line are replayed per drain event, one per "
+        "pipeline. Each replicates the transform-op chain + base "
+        "adder, all fed from the same slice-buffer entry, so N "
+        "consecutive elements convert together instead of streaming "
+        "through a single 1-elem/event pipe. Filtered and "
+        "line-deduplicated elements still occupy a pipeline (they "
+        "went through the datapath); only emitted targets consume "
+        "prefetch-queue slots. Width is per gather -- exhausting one "
+        "producer's pipelines does not stall another's, unlike the "
+        "shared queue budget. 0 = unbounded, the legacy model in "
+        "which replay width never binds (keeps pre-2026-07-29 "
+        "results reproducible).",
+    )
     routing_entries = Param.Unsigned(
         32, "Index Routing Table (IRT) capacity: index lines "
         "registered for capture; a matching fill is routed to the "
         "owning producer's slice buffer"
     )
+
+
+class VectorTychePrefetcher(QueuedPrefetcher):
+    """VTyche (Vector Tyche): an A[B[i]] gather prefetcher — GDP's
+    architectural discovery with IMP's linear equation for generation.
+
+    Shares GDP's CPU-side GdpChainTable (producer identification,
+    producer->gather link, base snoop) and GDP's runtime skeleton
+    (architectural index-array stream, range-based fill capture), but
+    collapses the recorded transform chain ONCE, at adoption, into
+    ``target = base + (index << shift)`` instead of latching a replay
+    pipeline. Fills latch the raw payload into a slice buffer exactly
+    as GDP does; at the drain, ONE whole line per event converts
+    through the parallel lane array — one shift-and-add lane per
+    sliced index, blkSize/EEW lanes — into an output latch that
+    releases into queue room. The drain's compute width (whole line
+    vs GDP's pipelines_per_gather elements) is the entire structural
+    difference between the two designs.
+
+    The collapse accepts at most one leading vsext/vzext, any number of
+    vsll and power-of-2 vmul (folded into ``shift``), and any number of
+    scalar vadd/vsub (folded into ``base``). Chains needing anything
+    else — a general multiply, a right shift, a reversed subtract, a
+    logic op — are rejected outright (chainsRejected), so the gap
+    against GDP on the same kernel is exactly the transform pipeline's
+    contribution.
+
+    Vector-side design (requires --prefetcher-side vector). Wire ONE
+    GdpChainTable per core to both this prefetcher's link_table and the
+    CPU's gdp_table. See mem/cache/prefetch/vector_tyche.hh."""
+
+    type = "VectorTychePrefetcher"
+    cxx_class = "gem5::prefetch::VectorTyche"
+    cxx_header = "mem/cache/prefetch/vector_tyche.hh"
+
+    # Index loads are data reads; ignore instruction accesses.
+    on_inst = False
+    # The stream walk needs every chunk event, hit or miss.
+    prefetch_on_access = True
+    # Index values are virtual; train on VAs and translate targets
+    # through the registered MMU.
+    use_virtual_addresses = True
+    queue_size = 64
+
+    link_table = Param.GdpChainTable(
+        NULL,
+        "CPU-side chain/link table (must be the same instance as the "
+        "CPU's gdp_table param). Shared with GDP: the discovery half "
+        "of the two designs is identical.",
+    )
+    streaming_distance = Param.Unsigned(
+        8,
+        "Index-array stream lookahead in lines. Also sets the indirect "
+        "lookahead (captures come from the stream's fills): full "
+        "indirect timeliness needs distance*chunk-cadence to cover TWO "
+        "memory round-trips (index line + target line).",
+    )
+    stream_only = Param.Bool(
+        False,
+        "Ablation: stream the index arrays but never capture/convert "
+        "(isolates the architectural-stream contribution)",
+    )
+    slice_buffer_entries = Param.Unsigned(
+        2,
+        "Captured raw index lines each producer's slice buffer holds "
+        "(GDP's slice_buffer_entries, same name by design: the "
+        "staging is identical, only the drain's compute engine "
+        "differs). A fill arriving with the buffer full is dropped "
+        "whole (bufferBusyDrops).",
+    )
+    pipelines = Param.Unsigned(
+        2, "Concurrently configured producer pipelines"
+    )
+    routing_entries = Param.Unsigned(
+        32,
+        "Index Routing Table (IRT) capacity: index lines registered "
+        "for capture; a matching fill is routed to the owning "
+        "producer's conversion array",
+    )
+    drain_floor = Param.Int(
+        8,
+        "Minimum targets emitted per access event when the prefetch "
+        "queue is full (bounded displacement). Models the continuous "
+        "queue drain of real hardware, which gem5's pull-only queue "
+        "lacks: at 0 the emission wedges precisely when miss pressure "
+        "is highest. Set 0 for a pure stall-on-full.",
+    )
+    stream_start_at_distance = Param.Bool(
+        False,
+        "On a fresh or reset stream window (cold start, backward-jump "
+        "restart), jump the stream walk straight to the frontier at "
+        "streaming_distance instead of burst-filling the whole "
+        "[next-chunk, distance] window. The skipped near-window lines "
+        "are left to demand misses (late-but-coalescing prefetches for "
+        "them are not issued), buying the frontier lines immediate "
+        "issue slots; their chunks' gather targets are fed through the "
+        "demand-miss capture path instead of the prefetch-window path. "
+        "Steady-state behavior is identical either way (the limitAddr "
+        "high-water mark already makes ongoing emission frontier-only).",
+    )
+    drain_period = Param.Cycles(
+        1,
+        "Self-clocked drain period. While conversion work is buffered "
+        "(slice buffers or output latches non-empty), the drain fires "
+        "on its own event every this-many cycles instead of waiting "
+        "for the next demand access — so buffered index lines keep "
+        "converting and emitting through core stalls and bursts. The "
+        "stream walk stays demand-anchored (the window only advances "
+        "with demand), so this moves emission earlier WITHIN the "
+        "window, never past it. The self-clocked path waits for real "
+        "queue room rather than forcing drain_floor. 0 restores the "
+        "legacy demand-clocked drain (pre-Aug-2026 behavior).",
+    )
+    dedup_buffer_size = Param.Unsigned(
+        0,
+        "Cross-line dedup window, in index lines (0 = disabled). "
+        "Every target line is checked against the lines emitted by "
+        "that producer's last N processed index lines; matches are "
+        "dropped (targetsCrossDeduplicated) instead of re-entering "
+        "the prefetch queue. The one-line-per-event conversion "
+        "already serializes lines, so N sets only the window depth. "
+        "Closes the redundancy the per-line dedup cannot see: "
+        "neighboring index lines re-targeting the same data lines.",
+    )
+    row_schedule_bits = Param.Unsigned(
+        0,
+        "DRAM row-aware issue order (0 = disabled, FIFO). When set, "
+        "getPacket promotes the oldest queued prefetch whose physical "
+        "address shares a DRAM row with the last-issued prefetch "
+        "(row = paddr >> row_schedule_bits) to the head of its "
+        "priority group, so row-mates issue back-to-back and amortize "
+        "one ACT/PRE pair instead of paying tRP+tRCD each. Only "
+        "already-due, equal-priority entries are considered, so the "
+        "queue's priority order and ready-time bookkeeping are "
+        "preserved. Set to 13 for the 8KiB row buffer of "
+        "DDR4_2400_8x8 (8 devices x 1KiB) under the default "
+        "RoRaBaCoCh mapping, where column bits occupy paddr[12:6] so "
+        "one DRAM row is an 8KiB-aligned physical region.",
+    )
+
+
+class VectorTyche2Prefetcher(QueuedPrefetcher):
+    """VTyche2: VTyche with DECOUPLED metadata/data lead.\n\n    Deep index staging (index_distance) + cursor-scheduled\n    near release (release_distance): index lines are fetched\n    and captured far ahead (cheap SRAM staging, L2 residency),\n    while converted targets and just-in-time L1 promotions are\n    released only when the walk cursor closes to within\n    release_distance chunks. Separates the two failure modes a\n    single distance couples: late targets (fix with deep\n    index_distance) vs evicted-before-use targets (fix with\n    shallow release_distance).\n\n    Base design: VTyche, an A[B[i]] gather prefetcher — GDP's
+    architectural discovery with IMP's linear equation for generation.
+
+    Shares GDP's CPU-side GdpChainTable (producer identification,
+    producer->gather link, base snoop) and GDP's runtime skeleton
+    (architectural index-array stream, range-based fill capture), but
+    collapses the recorded transform chain ONCE, at adoption, into
+    ``target = base + (index << shift)`` instead of latching a replay
+    pipeline. Fills latch the raw payload into a slice buffer exactly
+    as GDP does; at the drain, ONE whole line per event converts
+    through the parallel lane array — one shift-and-add lane per
+    sliced index, blkSize/EEW lanes — into an output latch that
+    releases into queue room. The drain's compute width (whole line
+    vs GDP's pipelines_per_gather elements) is the entire structural
+    difference between the two designs.
+
+    The collapse accepts at most one leading vsext/vzext, any number of
+    vsll and power-of-2 vmul (folded into ``shift``), and any number of
+    scalar vadd/vsub (folded into ``base``). Chains needing anything
+    else — a general multiply, a right shift, a reversed subtract, a
+    logic op — are rejected outright (chainsRejected), so the gap
+    against GDP on the same kernel is exactly the transform pipeline's
+    contribution.
+
+    Vector-side design (requires --prefetcher-side vector). Wire ONE
+    GdpChainTable per core to both this prefetcher's link_table and the
+    CPU's gdp_table. See mem/cache/prefetch/vector_tyche.hh."""
+
+    type = "VectorTyche2Prefetcher"
+    cxx_class = "gem5::prefetch::VectorTyche2"
+    cxx_header = "mem/cache/prefetch/vector_tyche2.hh"
+
+    # Index loads are data reads; ignore instruction accesses.
+    on_inst = False
+    # The stream walk needs every chunk event, hit or miss.
+    prefetch_on_access = True
+    # Index values are virtual; train on VAs and translate targets
+    # through the registered MMU.
+    use_virtual_addresses = True
+    queue_size = 64
+
+    link_table = Param.GdpChainTable(
+        NULL,
+        "CPU-side chain/link table (must be the same instance as the "
+        "CPU's gdp_table param). Shared with GDP: the discovery half "
+        "of the two designs is identical.",
+    )
+    index_distance = Param.Unsigned(
+        32,
+        "DEEP staging distance in chunks: how far ahead of the walk "
+        "cursor index/stream lines are fetched (staging in the L2) and "
+        "their payloads captured into the slice buffers. Unlike v1's "
+        "streaming_distance this does NOT set when targets are "
+        "fetched -- release_distance does -- so it can be large "
+        "without target-residency cost.",
+    )
+    release_distance = Param.Unsigned(
+        3,
+        "NEAR release distance in chunks: a captured index line "
+        "converts and its targets issue only once the cursor is "
+        "within this many chunks; the line itself is re-promoted "
+        "into the L1 on the same schedule. Must cover the target "
+        "fetch latency (release_distance * chunk-cadence > one "
+        "L2/DRAM round trip) and stay well inside the L1 survival "
+        "horizon. Must be < index_distance.",
+    )
+    release_pace = Param.Unsigned(
+        0,
+        "Max target addresses emitted per drain firing (0 = "
+        "unlimited). Spreads a due batch across firings instead of "
+        "dumping ~a chunk's worth of targets at the release-gate "
+        "edge: with drain_period=1, release_pace=2 spreads ~28 "
+        "targets over >=14 cycles, smoothing queue/MSHR contention "
+        "at the cost of <15%% of the release margin for the batch's "
+        "last target.",
+    )
+    stream_only = Param.Bool(
+        False,
+        "Ablation: stream the index arrays but never capture/convert "
+        "(isolates the architectural-stream contribution)",
+    )
+    slice_buffer_entries = Param.Unsigned(
+        128,
+        "Captured raw index lines each producer's slice buffer holds "
+        "(GDP's slice_buffer_entries, same name by design: the "
+        "staging is identical, only the drain's compute engine "
+        "differs). A fill arriving with the buffer full is dropped "
+        "whole (bufferBusyDrops).",
+    )
+    pipelines = Param.Unsigned(
+        2, "Concurrently configured producer pipelines"
+    )
+    routing_entries = Param.Unsigned(
+        128,
+        "Index Routing Table (IRT) capacity: index lines registered "
+        "for capture; a matching fill is routed to the owning "
+        "producer's conversion array",
+    )
+    drain_floor = Param.Int(
+        8,
+        "Minimum targets emitted per access event when the prefetch "
+        "queue is full (bounded displacement). Models the continuous "
+        "queue drain of real hardware, which gem5's pull-only queue "
+        "lacks: at 0 the emission wedges precisely when miss pressure "
+        "is highest. Set 0 for a pure stall-on-full.",
+    )
+    stream_start_at_distance = Param.Bool(
+        False,
+        "On a fresh or reset stream window (cold start, backward-jump "
+        "restart), jump the stream walk straight to the frontier at "
+        "streaming_distance instead of burst-filling the whole "
+        "[next-chunk, distance] window. The skipped near-window lines "
+        "are left to demand misses (late-but-coalescing prefetches for "
+        "them are not issued), buying the frontier lines immediate "
+        "issue slots; their chunks' gather targets are fed through the "
+        "demand-miss capture path instead of the prefetch-window path. "
+        "Steady-state behavior is identical either way (the limitAddr "
+        "high-water mark already makes ongoing emission frontier-only).",
+    )
+    drain_period = Param.Cycles(
+        1,
+        "Self-clocked drain period. While conversion work is buffered "
+        "(slice buffers or output latches non-empty), the drain fires "
+        "on its own event every this-many cycles instead of waiting "
+        "for the next demand access — so buffered index lines keep "
+        "converting and emitting through core stalls and bursts. The "
+        "stream walk stays demand-anchored (the window only advances "
+        "with demand), so this moves emission earlier WITHIN the "
+        "window, never past it. The self-clocked path waits for real "
+        "queue room rather than forcing drain_floor. 0 restores the "
+        "legacy demand-clocked drain (pre-Aug-2026 behavior).",
+    )
+    dedup_buffer_size = Param.Unsigned(
+        0,
+        "Cross-line dedup window, in index lines (0 = disabled). "
+        "Every target line is checked against the lines emitted by "
+        "that producer's last N processed index lines; matches are "
+        "dropped (targetsCrossDeduplicated) instead of re-entering "
+        "the prefetch queue. The one-line-per-event conversion "
+        "already serializes lines, so N sets only the window depth. "
+        "Closes the redundancy the per-line dedup cannot see: "
+        "neighboring index lines re-targeting the same data lines.",
+    )
+
 
 
 class TychePrefetcher(QueuedPrefetcher):

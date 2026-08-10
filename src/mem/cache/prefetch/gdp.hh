@@ -43,8 +43,24 @@
  *    payload waits IN the slice buffer (denser than expanded
  *    targets) and the drain resumes at the next observed access
  *    (which also supplies translation context). The hardware ITB is
- *    thereby a single conversion-stage output register, not a
- *    buffer.
+ *    thereby a conversion-stage output register per pipeline, not a
+ *    buffer;
+ *  - replay WIDTH is pipelines_per_gather: that many copies of the
+ *    transform chain sit behind one gather, all fed from the same
+ *    slice-buffer entry, so N consecutive indices convert together
+ *    rather than one per drain event. This is the only throughput
+ *    term in the replay model — every other bound here is capacity
+ *    (queue slots, buffer entries). Width is PER GATHER, since the
+ *    pipelines are private to it: one producer exhausting its
+ *    pipelines does not stall another's, unlike the shared queue
+ *    budget, which stops the whole drain. An element that is filtered
+ *    or line-deduplicated still occupied a pipeline; only emitted
+ *    targets consume queue slots. 0 = unbounded, the legacy model in
+ *    which replay width never binds. Setting it to blkSize/EEW is the
+ *    whole-line-per-event limit — the point at which GDP's serial
+ *    chain matches VTyche's collapsed one-shot conversion
+ *    (mem/cache/prefetch/vector_tyche.hh), making the two directly
+ *    comparable on conversion throughput as well as on algebra.
  *
  * Load shedding under sustained overload happens at fill admission,
  * chunk-granular: each replay pipeline has ONE slice buffer of
@@ -97,6 +113,10 @@ class GDP : public Queued
     const unsigned sliceBufferEntries;
     /** Concurrently configured producer pipelines */
     const unsigned pipelines;
+    /** Replay pipelines behind ONE gather: elements of the head
+     *  slice-buffer entry advanced per drain event, one per pipeline.
+     *  0 = unbounded (the legacy model, replay width never binds). */
+    const unsigned pipelinesPerGather;
     /** Index Routing Table capacity (registered awaiting-fill lines) */
     const unsigned irtEntries;
 
@@ -180,6 +200,9 @@ class GDP : public Queued
         statistics::Scalar stalenessAborts;
         /** Drain events paused by a full queue (the stall firing) */
         statistics::Scalar replayDeferred;
+        /** Drain events where a gather's replay pipelines ran out with
+         *  elements still buffered (width, not queue room, bound) */
+        statistics::Scalar replayWidthLimited;
     } gdpStats;
 
     /** The architectural stream: emit lines in (highWater,

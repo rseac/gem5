@@ -21,8 +21,10 @@ GdpChainTable::GdpChainTable(const GdpChainTableParams &p)
   : SimObject(p),
     dctEntries(p.dct_entries),
     maxTransformStages(p.max_transform_stages),
+    demandStreamPages(p.demand_stream_pages),
     dct(p.dct_entries),
     pt(),
+    promotedPageEntries(p.promoted_page_entries),
     gdpStats(this)
 {
     fatal_if(dctEntries < 3, "dct_entries must be >= 3 "
@@ -68,7 +70,71 @@ GdpChainTable::clearAll()
     // no dangling 3-bit pointers survive a wholesale clear.
     std::fill(dct.begin(), dct.end(), DctEntry());
     pt.fill(PtEntry());
+    streamPageFifo.clear();
+    streamPageSet.clear();
+    promotedPageFifo.clear();
+    promotedPageSet.clear();
     gen++;
+}
+
+void
+GdpChainTable::registerStreamPage(Addr paddr)
+{
+    const Addr page = paddr >> streamPageShift;
+    // Promoted (unlearned) pages are blocked: proven cross-sweep
+    // reuse must not be re-classified as a stream one access later.
+    if (streamPageSet.count(page) || promotedPageSet.count(page)) {
+        return;
+    }
+    streamPageFifo.push_back(page);
+    streamPageSet.insert(page);
+    while (streamPageFifo.size() > streamPageEntries) {
+        streamPageSet.erase(streamPageFifo.front());
+        streamPageFifo.pop_front();
+    }
+}
+
+bool
+GdpChainTable::isStreamPage(Addr paddr) const
+{
+    return streamPageSet.count(paddr >> streamPageShift) != 0;
+}
+
+void
+GdpChainTable::promoteStreamPage(Addr paddr)
+{
+    const Addr page = paddr >> streamPageShift;
+    if (streamPageSet.erase(page)) {
+        for (auto it = streamPageFifo.begin();
+             it != streamPageFifo.end(); ++it) {
+            if (*it == page) {
+                streamPageFifo.erase(it);
+                break;
+            }
+        }
+    }
+    if (promotedPageSet.count(page)) {
+        return;
+    }
+    promotedPageFifo.push_back(page);
+    promotedPageSet.insert(page);
+    while (promotedPageFifo.size() > promotedPageEntries) {
+        promotedPageSet.erase(promotedPageFifo.front());
+        promotedPageFifo.pop_front();
+    }
+}
+
+void
+GdpChainTable::notifyDemandAccess(const StaticInst *si, Addr paddr)
+{
+    if (!demandStreamPages) {
+        return;
+    }
+    const auto kind = si->gdpInstInfo().kind;
+    if (kind == StaticInst::GdpInstInfo::UnitStrideLoad ||
+        kind == StaticInst::GdpInstInfo::UnitStrideStore) {
+        registerStreamPage(paddr);
+    }
 }
 
 int
@@ -212,11 +278,6 @@ GdpChainTable::dispatch(const StaticInst *si, Addr pc)
                 DPRINTF(GDP, "head allocated: PC %#x slot %d EEW %u\n",
                         pc, idx, info.elemBytes);
             }
-        } else {
-            dct[idx].head = true;
-            dct[idx].elemBytes = info.elemBytes;
-            // dct[idx].consumer (the link) stays sticky across
-            // re-dispatches.
         }
         for (int i = 0; i < ndest; i++) {
             pt[dests[i]] = (idx >= 0) ? PtEntry{true, idx} : PtEntry();
@@ -246,6 +307,9 @@ GdpChainTable::dispatch(const StaticInst *si, Addr pc)
                     gdpStats.gathersInserted++;
                 }
             } else {
+                // Unlike the identity fields, provenance is dynamic:
+                // chainSnapshot starts its walk here, so a reshaped
+                // chain must not leave the old anchor behind.
                 dct[gidx].lastDctPtr = src.ptr;
             }
             if (gidx >= 0) {
@@ -406,17 +470,9 @@ GdpChainTable::dispatch(const StaticInst *si, Addr pc)
             }
         } else {
             DctEntry &e = dct[idx];
-            e.op = d.op;
-            e.extFromBits = d.extFromBits;
+            // The predecessor is dynamic (a transform can be fed by a
+            // different producer across instances); op/imm are static.
             e.lastDctPtr = last;
-            if (d.immType) {
-                e.immType = true;
-                e.scalar = (uint64_t)d.imm;
-                e.immValid = true;
-            } else if (e.immType) {
-                e.immType = false;
-                e.immValid = false; // await first issue snoop
-            }
         }
         for (int i = 0; i < ndest; i++) {
             pt[dests[i]] = (idx >= 0) ? PtEntry{true, idx} : PtEntry();

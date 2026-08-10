@@ -1,16 +1,16 @@
 """
 Selectable, tunable prefetcher factory for vector-cache experiments.
 
-Maps a CLI prefetcher name (``none``/``stride``/``imp``/``vimp``/``isb``/
-``stems``) plus a dict of ``--pf-param NAME=VALUE`` overrides to a *zero-arg
-factory* that builds one fresh prefetcher SimObject per call.
+Maps a CLI prefetcher name (a key of :data:`PREFETCHERS`) plus a dict of
+``--pf-param NAME=VALUE`` overrides to a *zero-arg factory* that builds one
+fresh prefetcher SimObject per call.
 ``VectorSplitCacheHierarchy`` (``vector_cache_hierarchy.py``) calls the
 factory once per core, because a single SimObject instance cannot be shared
 between caches.
 
 The prefetcher classes themselves live in
-``src/mem/cache/prefetch/Prefetcher.py`` (all stock gem5 except ``vimp``,
-this fork's VectorIndirectMemoryPrefetcher); this module only *selects* and
+``src/mem/cache/prefetch/Prefetcher.py`` (all stock gem5 except this fork's
+``vimp``, ``gdp``, ``vtyche`` and ``tyche``); this module only *selects* and
 *parameterizes* one from the command line. Every tunable knob is just a
 ``Param.*`` declared on the chosen class (or inherited from
 ``QueuedPrefetcher``/``BasePrefetcher``), so any such name is a valid
@@ -25,6 +25,8 @@ from m5.objects import (
     StridePrefetcher,
     TychePrefetcher,
     VectorIndirectMemoryPrefetcher,
+    VectorTychePrefetcher,
+    VectorTyche2Prefetcher,
 )
 from m5.params import NULL
 
@@ -35,6 +37,8 @@ PREFETCHERS = {
     "imp": IndirectMemoryPrefetcher,
     "vimp": VectorIndirectMemoryPrefetcher,
     "gdp": GDPPrefetcher,
+    "vtyche": VectorTychePrefetcher,
+    "vtyche2": VectorTyche2Prefetcher,
     "isb": IrregularStreamBufferPrefetcher,
     "stems": STeMSPrefetcher,
     "tyche": TychePrefetcher,
@@ -65,7 +69,7 @@ def _coerce(value):
 # on virtual addresses, so the CPU MMU must be registered on the prefetcher
 # (BasePrefetcher.registerMMU) or every page-crossing prefetch target is
 # silently dropped (Queued::insert requires an MMU to cross a page).
-VA_PREFETCHERS = {"vimp", "gdp", "tyche"}
+VA_PREFETCHERS = {"vimp", "gdp", "vtyche", "vtyche2", "tyche"}
 
 # Prefetchers needing a per-core TycheChainTable wired to both the
 # prefetcher (chain_table) and the CPU (tyche_table); see
@@ -75,7 +79,7 @@ CHAIN_TABLE_PREFETCHERS = {"tyche"}
 # Prefetchers needing a per-core GdpChainTable wired to both the
 # prefetcher (link_table) and the CPU (gdp_table); see
 # src/cpu/gdp_table.hh.
-GDP_TABLE_PREFETCHERS = {"gdp"}
+GDP_TABLE_PREFETCHERS = {"gdp", "vtyche", "vtyche2"}
 
 
 def needs_chain_table(name):
