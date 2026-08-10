@@ -230,6 +230,20 @@ class InstructionQueue
         void setFreeFU() { freeFU = true; }
     };
 
+    /** FU event for pipelined units with dynamic issue latency. */
+    class FUFreeNextCycle: public Event
+    {
+      private:
+        FUPool *fuPool;
+        int fuIdx;
+
+      public:
+        FUFreeNextCycle(FUPool *fu_pool, int fu_idx);
+
+        void process() override;
+        const char *description() const override;
+    };
+
     /** Constructs an IQ. */
     InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
             const BaseO3CPUParams &params);

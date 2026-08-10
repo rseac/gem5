@@ -5,13 +5,20 @@ endif
 
 include $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))/Makefile.$(COMPILER)
 
+# Add ARA common apps include
+flags += -I$(abspath $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))/../../ara/apps/common)
+
+ifdef ITERATIONS
+flags+=-Diterations=$(ITERATIONS)
+endif
+
+ifdef CONFIG
+flags+=-D$(shell echo $(CONFIG) | tr '[:lower:]' '[:upper:]')
+endif
+
 ifndef NO_OMP
 flags+=$(omp_flags)
 endif
 
-ifdef PRECISE_MATH
-flags+=$(ieee_math_flags)
-else ifdef FAST_MATH
-flags+=$(fast_math_flags)
-endif
+# End of Makefile.defs
 

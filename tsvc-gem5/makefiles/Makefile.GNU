@@ -1,9 +1,11 @@
 
-CC=/riscv/_install/bin/riscv64-unknown-elf-gcc -std=c99
+CC=/riscv/_install/bin/riscv64-unknown-elf-gcc -std=gnu99
 CXX=/riscv/_install/bin/riscv64-unknown-elf-g++
 OBJDUMP=/riscv/_install/bin/riscv64-unknown-elf-objdump
 FC=gfortran
-flags = -mcmodel=medany -march=rv64gcv_zifencei -mabi=lp64d -I/ara/apps/common -static -O3 -fno-common -fno-builtin-printf -DNR_LANES=$(nr_lanes) -DVLEN=$(vlen) -ffunction-sections -fdata-sections -std=gnu99
+
+# Updated flags to align with ARA reference command
+flags = -O3 -mcmodel=medany -march=rv64gcv_zifencei -mabi=lp64d -static -fno-common -ffunction-sections -fdata-sections -Wall
 vecflags = -ftree-vectorize
 noscalvecflags = -ftree-vectorize
 novecflags = -fno-tree-vectorize
@@ -31,14 +33,5 @@ ifdef KERNELS
 flags += -DTSVC_KERNELS='"$(KERNELS)"'
 endif
 
-ifdef VEC_REPORT
-vecflags+=-ftree-vectorizer-verbose=1 -fopt-info-vec=gcc.vect -fopt-info-vec-missed=gcc.miss -fno-inline
-endif
-
-ieee_math_flags=
-fast_math_flags=-ffast-math
-
-ifdef PRECISE_MATH
-$(warning No 'precise' math flags for GNU!)
-endif
+# End of Makefile.GNU
 

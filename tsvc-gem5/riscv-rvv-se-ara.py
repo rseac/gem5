@@ -58,11 +58,11 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '/gem5/
 
 
 from gem5.components.boards.simple_board import SimpleBoard
+from gem5.components.boards.abstract_board import AbstractBoard
 from gem5.components.cachehierarchies.classic.private_l1_private_l2_cache_hierarchy import (
     PrivateL1PrivateL2CacheHierarchy,
 )
-#from gem5.components.memory import SingleChannelDDR3_1600
-from gem5.components.memory import SingleChannelDDR4_2400
+from gem5.components.memory.simple import SingleChannelSimpleMemory
 from gem5.components.processors.base_cpu_core import BaseCPUCore
 from gem5.components.processors.base_cpu_processor import BaseCPUProcessor
 from gem5.isas import ISA
@@ -70,17 +70,21 @@ import gem5.resources.resource as res
 from gem5.resources.resource import obtain_resource
 from gem5.simulate.simulator import Simulator
 from gem5.utils.requires import requires
+from gem5.utils.override import overrides
 # from cpu.o3.AraConfig import AraFUPool # Removed
 
 class RVVCore(BaseCPUCore):
     def __init__(self, elen, vlen, cpu_id, enable_chaining, vector_timing_throughput, simd_units):
-        # Use our custom SelectedCPU which handles FUPool configuration automatically
-        core = SelectedCPU(cpu_id=cpu_id)
+        # Use our custom SelectedCPU which handles FUPool and width configuration
+        core = SelectedCPU(cpu_id=cpu_id, simd_units=simd_units)
         
         # Configure the CPU Core
         core.enable_vector_chaining = enable_chaining
         core.vector_timing_throughput = vector_timing_throughput
         core.simd_units = simd_units
+        
+        from m5.objects import ExeTracer
+        core.tracer = ExeTracer()
         
         # --- MODULAR LATENCY MODEL ---
         # The AraO3CPU constructor automatically sets up the AraLatencyModel.
@@ -137,6 +141,18 @@ parser.add_argument("--enable-chaining", action="store_true", default=True, help
 parser.add_argument("--disable-chaining", action="store_false", dest="enable_chaining", help="Disable vector chaining")
 parser.add_argument("--vector-timing-throughput", type=int, default=4, help="Number of elements per cycle for timing model")
 parser.add_argument("--simd-units", type=int, default=2, help="Number of physical SIMD lanes")
+parser.add_argument("--roi-trace", action="store_true", default=False,
+                    help="Enable ExecVector tracing only during ROI (m5_work_begin/m5_work_end)")
+
+# Cache/Memory Calibration Parameters
+parser.add_argument("--l1d-lat", type=int, default=8, help="L1D hit latency")
+parser.add_argument("--l1d-mshrs", type=int, default=2, help="L1D MSHRs")
+parser.add_argument("--l1i-lat", type=int, default=8, help="L1I hit latency")
+parser.add_argument("--l1i-mshrs", type=int, default=2, help="L1I MSHRs")
+parser.add_argument("--l2-lat", type=int, default=12, help="L2 hit latency")
+parser.add_argument("--l2-mshrs", type=int, default=2, help="L2 MSHRs")
+parser.add_argument("--mem-lat", type=str, default="50ns", help="Memory latency")
+parser.add_argument("--bus-width", type=int, default=16, help="Data bus width in bytes (16=128-bit)")
 
 args = parser.parse_args()
 
@@ -149,13 +165,63 @@ else:
     print(f"Error: Unknown CPU type {args.cpu_type}")
     sys.exit(1)
 
-cache_hierarchy = PrivateL1PrivateL2CacheHierarchy(
-    #l1d_size="32KiB", l1i_size="32KiB", l2_size="512KiB"
-    l1d_size=args.l1d, l1i_size="32KiB", l2_size=args.l2
+# Custom Cache Hierarchy to allow latency/MSHR/Width overrides
+class AraCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
+    def __init__(self, l1d_size, l1i_size, l2_size, l1d_lat, l1d_mshrs, l1i_lat, l1i_mshrs, l2_lat, l2_mshrs, bus_width):
+        from m5.objects import SystemXBar, BadAddr
+        # Custom membus with restricted width
+        membus = SystemXBar(width=bus_width)
+        membus.badaddr_responder = BadAddr()
+        membus.default = membus.badaddr_responder.pio
+        
+        super().__init__(l1d_size=l1d_size, l1i_size=l1i_size, l2_size=l2_size, membus=membus)
+        self._l1d_lat = l1d_lat
+        self._l1d_mshrs = l1d_mshrs
+        self._l1i_lat = l1i_lat
+        self._l1i_mshrs = l1i_mshrs
+        self._l2_lat = l2_lat
+        self._l2_mshrs = l2_mshrs
+        self._bus_width = bus_width
+
+    @overrides(PrivateL1PrivateL2CacheHierarchy)
+    def incorporate_cache(self, board: AbstractBoard) -> None:
+        super().incorporate_cache(board)
+        # Apply overrides after the base class has instantiated the caches
+        for i in range(board.get_processor().get_num_cores()):
+            # Restrict L2Bus width (connecting L1s to L2)
+            self.l2buses[i].width = self._bus_width
+            
+            # In PrivateL1PrivateL2CacheHierarchy, nodes are added via self.add_root_child
+            l1d = getattr(self, f"l1d-cache-{i}")
+            l1d.tag_latency = self._l1d_lat
+            l1d.data_latency = self._l1d_lat
+            l1d.mshrs = self._l1d_mshrs
+
+            l1i = getattr(self, f"l1i-cache-{i}")
+            l1i.tag_latency = self._l1i_lat
+            l1i.data_latency = self._l1i_lat
+            l1i.mshrs = self._l1i_mshrs
+
+            l2 = getattr(self, f"l2-cache-{i}")
+            l2.tag_latency = self._l2_lat
+            l2.data_latency = self._l2_lat
+            l2.mshrs = self._l2_mshrs
+
+cache_hierarchy = AraCacheHierarchy(
+    l1d_size=args.l1d, l1i_size="32KiB", l2_size=args.l2,
+    l1d_lat=args.l1d_lat, l1d_mshrs=args.l1d_mshrs,
+    l1i_lat=args.l1i_lat, l1i_mshrs=args.l1i_mshrs,
+    l2_lat=args.l2_lat, l2_mshrs=args.l2_mshrs,
+    bus_width=args.bus_width
 )
 
-#memory = SingleChannelDDR3_1600()
-memory = SingleChannelDDR4_2400(size="8GiB")
+# Use SimpleMemory to model the low-latency SRAM/L2 in ARA RTL
+memory = SingleChannelSimpleMemory(
+    latency=args.mem_lat,
+    latency_var="0ns",
+    bandwidth="128GiB/s", # Very high bandwidth to let cache hierarchy dominate
+    size="8GiB"
+)
 
 processor = BaseCPUProcessor(
     cores=[RVVCore(args.elen, args.vlen, i, args.enable_chaining, args.vector_timing_throughput, args.simd_units) for i in range(args.cores)]
@@ -189,6 +255,7 @@ print(f"  ELEN:             {args.elen} bits")
 print(f"  Vector Chaining:  {'ENABLED' if args.enable_chaining else 'DISABLED'}")
 print(f"  Throughput:       {args.vector_timing_throughput} elements/cycle")
 print(f"  SIMD Units:       {args.simd_units} parallel units")
+print(f"  ROI Trace:        {'ENABLED' if args.roi_trace else 'DISABLED'}")
 print(f"  L1D Cache:        {args.l1d}")
 print(f"  L2 Cache:         {args.l2}")
 print("-" * 50)
@@ -199,7 +266,43 @@ print("=" * 50)
 board.set_se_binary_workload(binary, arguments=args.parms.split())
 
 import m5 # For curTick()
-simulator = Simulator(board=board, full_system=False)
+from m5 import debug as m5_debug
+from gem5.simulate.exit_event import ExitEvent
+
+# --- ROI-gated ExecVector tracing ---
+# When --roi-trace is used, ExecVector is enabled only between
+# m5_work_begin() and m5_work_end() calls in the simulated binary.
+
+def workbegin_handler():
+    """Enable ExecVector tracing and reset stats at ROI start."""
+    while True:
+        m5_debug.flags["ExecVector"].enable()
+        m5.stats.reset()
+        print("[ROI] Work begin: ExecVector tracing ENABLED, stats reset")
+        yield False
+
+def workend_handler():
+    """Disable ExecVector tracing and dump stats at ROI end."""
+    while True:
+        m5_debug.flags["ExecVector"].disable()
+        m5.stats.dump()
+        print("[ROI] Work end: ExecVector tracing DISABLED, stats dumped")
+        yield False
+
+if args.roi_trace:
+    # Ensure ExecVector starts disabled — it will be enabled by workbegin
+    if "ExecVector" in m5_debug.flags:
+        m5_debug.flags["ExecVector"].disable()
+    simulator = Simulator(
+        board=board,
+        full_system=False,
+        on_exit_event={
+            ExitEvent.WORKBEGIN: workbegin_handler(),
+            ExitEvent.WORKEND: workend_handler(),
+        },
+    )
+else:
+    simulator = Simulator(board=board, full_system=False)
 
 simulator.run()
 

@@ -34,6 +34,8 @@
 #include "common.h"
 #include "array_defs.h"
 
+int iterations_val = 1;
+
 // array definitions
 __attribute__((aligned(ARRAY_ALIGNMENT))) real_t flat_2d_array[LEN_2D*LEN_2D];
 
@@ -58,12 +60,13 @@ real_t s000(struct args_t * func_args)
 
     for (int nl = 0; nl < 2*iterations; nl++) {
         for (int i = 0; i < LEN_1D; i++) {
-            a[i] = b[i] + 1;
+            a[i] = b[i] + 1 ;
         }
         dummy((real_t*)a, (real_t*)b, (real_t*)c, (real_t*)d, (real_t*)e, aa, bb, cc, 0.);
+        // Tells the compiler "assume memory has been read/written here"
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -378,7 +381,7 @@ real_t s121(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -599,7 +602,7 @@ real_t s131(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -792,7 +795,7 @@ real_t s162(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -817,7 +820,7 @@ real_t s171(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -969,7 +972,7 @@ real_t s211(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -1148,7 +1151,7 @@ real_t s1232(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 1.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -1297,7 +1300,7 @@ real_t s243(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -1387,7 +1390,7 @@ real_t s251(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -2095,7 +2098,7 @@ real_t s1281(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -2271,7 +2274,7 @@ real_t s311(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, sum);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -2693,7 +2696,7 @@ real_t s321(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -2766,7 +2769,7 @@ real_t s331(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, chksum);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return j+1;
 }
 
@@ -2801,7 +2804,7 @@ L20:
         dummy(a, b, c, d, e, aa, bb, cc, chksum);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return value;
 }
 
@@ -2829,7 +2832,7 @@ real_t s341(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -2914,7 +2917,7 @@ real_t s351(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -3051,7 +3054,7 @@ real_t s421(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 1.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -3473,7 +3476,7 @@ real_t s491(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -3950,7 +3953,7 @@ real_t vag(struct args_t * func_args)
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
-    ROI_END(func_args);
+    ROI_END(func_args); ROI_PRINT(func_args);
     return calc_checksum(__func__);
 }
 
@@ -4245,13 +4248,9 @@ void time_function(const char *name, test_function_t vector_func, void * arg_inf
 
     double result = vector_func(&func_args);
 
-    double tic=func_args.t1.tv_sec+(func_args.t1.tv_usec/1000000.0);
-    double toc=func_args.t2.tv_sec+(func_args.t2.tv_usec/1000000.0);
-
-    double taken = toc-tic;
     uint64_t cycles = func_args.c2 - func_args.c1;
 
-    printf("%-12s\t%10.3f\t%12" PRIu64 "\t%f\n", name, taken, cycles, result);
+    printf("%-12s\t%12" PRIu64 "\t%f\n", name, cycles, result);
 }
 
 /* RUN_KERNEL: stringifies the function name, checks filter, then times it. */
@@ -4262,6 +4261,26 @@ int main(int argc, char ** argv){
     /* Newlib buffers stdout when not connected to a terminal (e.g. gem5 SE
      * mode).  Disable buffering so every printf is immediately visible. */
     setvbuf(stdout, NULL, _IONBF, 0);
+
+    /* Robust non-destructive argument parsing */
+    static char *filter_list[256];
+    int filter_count = 0;
+
+    for (int i = 1; i < argc; i++) {
+        if ((strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--iterations") == 0) && i + 1 < argc) {
+            iterations_val = atoi(argv[++i]);
+        } else if (argv[i][0] != '-') {
+            // Treat anything not starting with a dash as a kernel filter
+            if (filter_count < 256) {
+                filter_list[filter_count++] = argv[i];
+            }
+        }
+    }
+    
+    if (filter_count > 0) {
+        g_num_filters = filter_count;
+        g_filters = filter_list;
+    }
 
 #ifdef TSVC_KERNELS
     /* Kernel whitelist baked in at compile time.
@@ -4279,13 +4298,6 @@ int main(int argc, char ** argv){
         g_num_filters = n;
         g_filters = kernel_tokens;
     }
-#else
-    /* Runtime fallback: argv[1], argv[2], ... are kernel names to run.
-     * Used by run-tsvc.sh, which passes the kernel name via gem5's --parms. */
-    if (argc > 1) {
-        g_num_filters = argc - 1;
-        g_filters = argv + 1;
-    }
 #endif
 
     int n1 = 1;
@@ -4293,7 +4305,7 @@ int main(int argc, char ** argv){
     int* ip;
     real_t s1,s2;
     init(&ip, &s1, &s2);
-    printf("%-12s\t%10s\t%12s\t%s\n", "Loop", "Time(sec)", "Cycles", "Checksum");
+    printf("%-12s\t%12s\t%s\n", "Loop", "Cycles", "Checksum");
 
     RUN_KERNEL(s000, NULL);
     RUN_KERNEL(s111, NULL);

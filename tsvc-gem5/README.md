@@ -65,22 +65,97 @@ make
 | `--simd-units N` | Number of SIMD lanes |
 | `--vector-timing-throughput N` | Issue throughput for vector instructions |
 | `--enable-chaining` | Enable vector instruction chaining |
+| `--roi-trace` | Enable vector instruction tracing only during the ROI (see below) |
 
 To run only a specific kernel, compile with `KERNELS="s000"` (see above) and
 use the resulting binary directly — no extra arguments are needed at run time.
 
+### ROI-gated vector tracing (`--roi-trace`)
+
+By default, gem5's `ExecVector` debug flag traces every vector instruction for
+the entire simulation (including setup, libc init, etc.). The `--roi-trace`
+option restricts tracing to the Region of Interest only — between
+`m5_work_begin()` and `m5_work_end()` calls in the binary (embedded in the
+`ROI_BEGIN`/`ROI_END` macros in `src/common.h`).
+
+**Usage:**
+
+```bash
+# Direct invocation — no --debug-flags needed:
+build/RISCV/gem5.opt --quiet rvv/riscv-rvv-se-ara.py \
+    --roi-trace \
+    --enable-chaining \
+    --vlen 4096 \
+    --vector-timing-throughput 4 \
+    ./bin/GNU/tsvc_vec_TINY
+```
+
+```bash
+# Via run.sh wrapper:
+TRACE_VEC=1 ./run.sh bin/GNU/tsvc_vec_TINY s000
+```
+
+```bash
+# Via run-s000.sh (TRACE_VEC=1 is set by default):
+./run-s000.sh TINY
+```
+
+**How it works:**
+
+1. The `--roi-trace` flag tells the simulation script to register exit event
+   handlers for `m5_work_begin` / `m5_work_end`.
+2. The `ExecVector` debug flag starts **disabled**.
+3. When the binary hits `ROI_BEGIN` → `m5_work_begin()` fires → the handler
+   enables `ExecVector` and resets stats.
+4. When the binary hits `ROI_END` → `m5_work_end()` fires → the handler
+   disables `ExecVector` and dumps stats.
+5. Trace output (macro-ops + micro-ops) appears in `m5out/debug.trace` only
+   for instructions executed within the ROI.
+
+**Note:** Do NOT pass `--debug-flags=ExecVector` on the gem5 command line when
+using `--roi-trace`. That would pre-enable the flag from tick 0, causing
+tracing before the ROI starts. The `--roi-trace` mechanism handles flag
+activation entirely from Python.
+
 ## Output
 
-Each kernel prints one line:
+Each kernel prints a performance line to the terminal:
 
 ```
-Loop            Time(sec)       Cycles    Checksum
-s000            0.000       123456789    1234.567890
+Loop                	      Cycles	Checksum
+s000                	      142378	471923584.000000
 ```
 
-- **Time(sec)** — wall-clock time via `gettimeofday` (not meaningful in gem5; use Cycles instead)
-- **Cycles** — RISC-V `rdcycle` delta, reflects simulated cycles from the ARA timing model
-- **Checksum** — correctness verification value
+- **Cycles** — RISC-V `rdcycle` delta, reflects simulated cycles from the ARA timing model.
+- **Checksum** — Correctness verification value, automatically validated against official golden data in the automated runs.
+
+---
+
+## Automated Subset Execution & Scaling
+
+A dedicated script, `run-subset.sh`, is provided to automate the execution of a specific subset of kernels across multiple iteration counts, collect all relevant data, and generate a summary CSV.
+
+### Subset Kernels
+The current subset includes: `s000`, `s121`, `s131`, `s162`, `s171`, `s211`, `s243`, `s251`, `s128`, `s311`, `s341`.
+
+### Running in Docker
+To execute the full automated suite inside the `jovial_curran` container:
+
+```bash
+docker exec -it -w /gem5/tsvc-gem5 jovial_curran ./run-subset.sh
+```
+
+### What the script does:
+1.  **Iteration Scaling:** Automatically iterates through `1, 5, 10, and 20` iterations for every kernel.
+2.  **Wallclock Timing:** Measures the real-world execution time (Host Wallclock) for each simulation run.
+3.  **Data Organization:** Creates a timestamped results directory (e.g., `subset_results_YYYYMMDD_HHMMSS/`) with subdirectories for each kernel and iteration count.
+4.  **Metric Collection:** Captures:
+    *   **Arch Cycles:** Architectural hardware cycles from the simulation.
+    *   **ROI Cycles (Gem5):** Internal gem5 CPU cycles for the Region of Interest.
+    *   **ROI Vector Insts:** Number of committed vector instructions in the ROI.
+    *   **Checksums:** The calculated checksum for correctness.
+5.  **Validation:** Automatically compares every checksum against the official reference data in `input-small/`.
+6.  **CSV Generation:** Produces a consolidated `summary_results.csv` inside the results folder containing all the above metrics and a **PASS/FAIL** validation status.
 
 ---
 

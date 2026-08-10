@@ -48,6 +48,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <optional>
 
 #include "arch/generic/pcstate.hh"
 #include "base/logging.hh"
@@ -401,6 +402,13 @@ class StaticInst : public RefCounted, public StaticInstFlags
     dynamicOpLatency(ThreadContext *tc) const
     {
         return Cycles(0);
+    }
+
+    /// Dynamic issue latency. Used by CPU to override FUPool when instructed.
+    virtual std::optional<Cycles>
+    dynamicIssueLatency(ThreadContext *tc) const
+    {
+        return std::nullopt;
     }
 
     /**

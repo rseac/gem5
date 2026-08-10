@@ -245,6 +245,24 @@ InstructionQueue::FUCompletion::description() const
     return "Functional unit completion";
 }
 
+InstructionQueue::FUFreeNextCycle::FUFreeNextCycle(FUPool *fu_pool, int fu_idx)
+    : Event(Stat_Event_Pri, AutoDelete),
+      fuPool(fu_pool),
+      fuIdx(fu_idx)
+{}
+
+void
+InstructionQueue::FUFreeNextCycle::process()
+{
+    fuPool->freeUnitNextCycle(fuIdx);
+}
+
+const char *
+InstructionQueue::FUFreeNextCycle::description() const
+{
+    return "Functional unit release next cycle";
+}
+
 InstructionQueue::InstructionQueue(CPU *cpu_ptr, IEW *iew_ptr,
                                    const BaseO3CPUParams &params)
     : cpu(cpu_ptr),
@@ -1037,6 +1055,15 @@ InstructionQueue::scheduleReadyInsts()
             } else {
                 assert(idx != FUPool::NoCapableFU);
                 bool pipelined = fu_pool->isPipelined(op_class);
+                Cycles issue_latency = Cycles(1);
+
+                if (pipelined) {
+                    auto dyn_issue_lat =
+                        issuing_inst->staticInst->dynamicIssueLatency(issuing_inst->tcBase());
+                    if (dyn_issue_lat) {
+                        issue_latency = *dyn_issue_lat;
+                    }
+                }
 
                 Cycles chaining_latency = op_latency;
                 if (auto chain_lat = issuing_inst->staticInst->chainingLatency(
@@ -1045,10 +1072,10 @@ InstructionQueue::scheduleReadyInsts()
                     chaining_latency = chain_lat;
                 }
 
-                DPRINTF(IQ, "Issuing [sn:%llu]: op_latency=%i, chaining_latency=%i, "
-                            "chaining_enabled=%d\n",
-                        issuing_inst->seqNum, op_latency, chaining_latency,
-                        cpu->enableVectorChaining);
+                DPRINTF(IQ, "Issuing [sn:%llu]: op_latency=%i, issue_latency=%i, "
+                            "chaining_latency=%i, chaining_enabled=%d\n",
+                        issuing_inst->seqNum, op_latency, issue_latency,
+                        chaining_latency, cpu->enableVectorChaining);
 
                 // If chaining is possible, schedule the wake dependents event early.
                 // This event will also trigger the functional execution of the instruction
@@ -1073,6 +1100,10 @@ InstructionQueue::scheduleReadyInsts()
                     // If FU isn't pipelined, then it must be freed
                     // upon the execution completing.
                     execution->setFreeFU();
+                } else if (issue_latency > Cycles(1)) {
+                    // Schedule free in issue_latency cycles.
+                    cpu->schedule(new FUFreeNextCycle(fu_pool, idx),
+                                  cpu->clockEdge(Cycles(issue_latency - 1)));
                 } else {
                     // Add the FU onto the list of FU's to be freed next cycle.
                     fu_pool->freeUnitNextCycle(idx);

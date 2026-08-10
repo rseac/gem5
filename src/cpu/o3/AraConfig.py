@@ -30,125 +30,141 @@ from m5.objects.FUPool import FUPool
 from m5.params import *
 from m5.SimObject import SimObject
 
-class AraSIMD_Pipelined(FUDesc):
+class AraVALU(FUDesc):
     """
-    Pipelined ARA vector functional units: ALU, Multiply, FP compute, conversions,
-    reductions, and load/store address generation.
-
-    count=simd_units (default 2) provides the two FU slots required by gem5's O3
-    chaining mechanism — one for the producer instruction still occupying the
-    pipeline, one for the consumer that starts early via WakeDependents.  This
-    mirrors the ARA hardware behaviour where a new instruction can enter a
-    pipelined VFU while the previous one is still streaming elements through.
+    ARA Integer ALU VFU.
+    Handles integer arithmetic, logic, shifts, compare, and config.
+    count=1: one instruction enters this pipeline per cycle.
+    Two independent vadd/vsub cannot issue in the same cycle.
     """
     opList = [
-        # --- Integer Arithmetic ---
-        OpDesc(opClass="SimdAdd", opLat=1),
-        OpDesc(opClass="SimdAddAcc", opLat=1),
-        OpDesc(opClass="SimdAlu", opLat=1),
-        OpDesc(opClass="SimdCmp", opLat=1),
-        OpDesc(opClass="SimdCvt", opLat=1),
-        OpDesc(opClass="SimdMisc", opLat=1),
-        OpDesc(opClass="SimdShift", opLat=1),
+        OpDesc(opClass="SimdAdd",      opLat=1),
+        OpDesc(opClass="SimdAddAcc",   opLat=1),
+        OpDesc(opClass="SimdAlu",      opLat=1),
+        OpDesc(opClass="SimdCmp",      opLat=1),
+        OpDesc(opClass="SimdCvt",      opLat=1),
+        OpDesc(opClass="SimdMisc",     opLat=1),
+        OpDesc(opClass="SimdShift",    opLat=1),
         OpDesc(opClass="SimdShiftAcc", opLat=1),
-
-        # --- Integer Multiply ---
-        OpDesc(opClass="SimdMult", opLat=1),
-        OpDesc(opClass="SimdMultAcc", opLat=1),
-        OpDesc(opClass="SimdMatMultAcc", opLat=1),
-
-        # --- Float Arithmetic ---
-        # RTL: LatFCompEW64=5, LatFCompEW32=4, LatFCompEW16=3, LatFCompEW8=2
-        # gem5 opClass does not distinguish element width, so opLat=4 is used as
-        # the EW32 (single-precision) representative — the dominant FP width in
-        # practice. EW64 workloads will see 1-cycle optimism; EW16/8 workloads
-        # will see 1-2 cycles pessimism.
-        OpDesc(opClass="SimdFloatAdd", opLat=10),
-        OpDesc(opClass="SimdFloatAlu", opLat=10),
-        OpDesc(opClass="SimdFloatMult", opLat=10),
-        OpDesc(opClass="SimdFloatMultAcc", opLat=10),
-        OpDesc(opClass="SimdFloatMatMultAcc", opLat=10),
-
-        # --- Float Misc / Compare ---
-        OpDesc(opClass="SimdFloatCmp", opLat=1),
-        OpDesc(opClass="SimdFloatMisc", opLat=1),
-
-        # --- Float Conversion ---
-        OpDesc(opClass="SimdFloatCvt", opLat=2),
-
-        # --- Reductions ---
-        OpDesc(opClass="SimdReduceAdd", opLat=1),
-        OpDesc(opClass="SimdReduceAlu", opLat=1),
-        OpDesc(opClass="SimdReduceCmp", opLat=1),
-        OpDesc(opClass="SimdFloatReduceAdd", opLat=1),
-        OpDesc(opClass="SimdFloatReduceCmp", opLat=1),
-
-        # --- Load / Store Address Generation ---
-        OpDesc(opClass="SimdUnitStrideLoad", opLat=1),
-        OpDesc(opClass="SimdUnitStrideStore", opLat=1),
-        OpDesc(opClass="SimdUnitStrideMaskLoad", opLat=1),
-        OpDesc(opClass="SimdUnitStrideMaskStore", opLat=1),
-        OpDesc(opClass="SimdStridedLoad", opLat=1),
-        OpDesc(opClass="SimdStridedStore", opLat=1),
-        OpDesc(opClass="SimdIndexedLoad", opLat=1),
-        OpDesc(opClass="SimdIndexedStore", opLat=1),
-        OpDesc(opClass="SimdWholeRegisterLoad", opLat=1),
-        OpDesc(opClass="SimdWholeRegisterStore", opLat=1),
-        OpDesc(opClass="SimdUnitStrideSegmentedLoad", opLat=1),
-        OpDesc(opClass="SimdUnitStrideSegmentedStore", opLat=1),
-        OpDesc(opClass="SimdExt", opLat=1),
-        OpDesc(opClass="SimdFloatExt", opLat=1),
-        OpDesc(opClass="SimdConfig", opLat=1),
+        # vsetvl/vsetvli — programmes the vector length register
+        OpDesc(opClass="SimdConfig",   opLat=1),
     ]
-
-    count = 2
-
-
-class AraSIMD_IntDiv(FUDesc):
-    """
-    ARA integer divide unit — non-pipelined, count=1.
-
-    ARA has one serial integer divider shared across all lanes.  A second
-    independent vdiv cannot start until the first completes.  count=1 enforces
-    this structural hazard; pipelined=False prevents micro-op overlap within a
-    single instruction.
-    """
-    opList = [
-        # RTL: serial divider, pipeline depth = 8 << vsew + 9 (73 for EW64).
-        OpDesc(opClass="SimdDiv", opLat=73, pipelined=False),
-    ]
-
     count = 1
 
 
-class AraSIMD_FPDivSqrt(FUDesc):
+class AraVMFPU(FUDesc):
     """
-    ARA FP divide / square-root unit — non-pipelined, count=1.
-
-    fpnew's DIVSQRT unit is iterative: only one FP divide or sqrt can be
-    in-flight per lane at a time, and all lanes share the same issue slot.
-    count=1 models the single-issue constraint; pipelined=False prevents
-    micro-op overlap within one instruction.
+    ARA FP+Multiply VFU (fpnew).
+    Handles integer multiply and all FP arithmetic, compare, and convert.
+    count=1: one instruction per cycle. Two independent vfadd/vfmul cannot
+    issue in the same cycle (unlike the old AraSIMD_Pipelined(count=2)).
     """
     opList = [
-        # RTL: LatFDivSqrt=3 (ara_pkg.sv:95) — but iterative compute time is ~17.
+        # Integer multiply (shares fpnew datapath in ARA)
+        OpDesc(opClass="SimdMult",           opLat=1),
+        OpDesc(opClass="SimdMultAcc",        opLat=1),
+        OpDesc(opClass="SimdMatMultAcc",     opLat=1),
+        # FP arithmetic — opLat matches AraLatencyModel pipeline depths
+        OpDesc(opClass="SimdFloatAdd",       opLat=4),
+        OpDesc(opClass="SimdFloatAlu",       opLat=4),
+        OpDesc(opClass="SimdFloatMult",      opLat=4),
+        OpDesc(opClass="SimdFloatMultAcc",   opLat=4),
+        OpDesc(opClass="SimdFloatMatMultAcc",opLat=4),
+        # FP compare / misc / convert
+        OpDesc(opClass="SimdFloatCmp",       opLat=1),
+        OpDesc(opClass="SimdFloatMisc",      opLat=1),
+        OpDesc(opClass="SimdFloatCvt",       opLat=2),
+    ]
+    count = 1
+
+
+class AraVLSU(FUDesc):
+    """
+    ARA Load/Store VFU (VLSU): unit-stride and whole-register memory ops.
+    Loads and stores share this single pipelined unit — ARA has one AGU.
+    count=1: a vle and a vse cannot issue in the same cycle.
+    """
+    opList = [
+        OpDesc(opClass="SimdUnitStrideLoad",           opLat=3),
+        OpDesc(opClass="SimdUnitStrideStore",          opLat=3),
+        OpDesc(opClass="SimdUnitStrideMaskLoad",       opLat=3),
+        OpDesc(opClass="SimdUnitStrideMaskStore",      opLat=3),
+        OpDesc(opClass="SimdUnitStrideSegmentedLoad",  opLat=3),
+        OpDesc(opClass="SimdUnitStrideSegmentedStore", opLat=3),
+        OpDesc(opClass="SimdWholeRegisterLoad",        opLat=3),
+        OpDesc(opClass="SimdWholeRegisterStore",       opLat=3),
+    ]
+    count = 1
+
+
+class AraVSLD(FUDesc):
+    """
+    ARA Slide/Permute/Strided/Indexed VFU.
+    Covers non-unit-stride and indexed memory, element permutations
+    (vslide, vrgather), and reductions (which use the cross-lane slide network).
+    count=1: single pipeline.
+    """
+    opList = [
+        OpDesc(opClass="SimdStridedLoad",    opLat=1),
+        OpDesc(opClass="SimdStridedStore",   opLat=1),
+        OpDesc(opClass="SimdIndexedLoad",    opLat=1),
+        OpDesc(opClass="SimdIndexedStore",   opLat=1),
+        # Element permutation (vslide, vrgather, vext)
+        OpDesc(opClass="SimdExt",            opLat=1),
+        OpDesc(opClass="SimdFloatExt",       opLat=1),
+        # Reductions traverse all lane results via the slide network
+        OpDesc(opClass="SimdReduceAdd",      opLat=1),
+        OpDesc(opClass="SimdReduceAlu",      opLat=1),
+        OpDesc(opClass="SimdReduceCmp",      opLat=1),
+        OpDesc(opClass="SimdFloatReduceAdd", opLat=1),
+        OpDesc(opClass="SimdFloatReduceCmp", opLat=1),
+    ]
+    count = 1
+
+
+class AraIntDiv(FUDesc):
+    """
+    ARA integer divide unit — non-pipelined, count=1.
+    ARA has one serial integer divider; a second vdiv must wait.
+    """
+    opList = [
+        # RTL: bit-serial divider, depth = 8<<vsew + 9 (73 cycles for EW64)
+        OpDesc(opClass="SimdDiv", opLat=73, pipelined=False),
+    ]
+    count = 1
+
+
+class AraFPDivSqrt(FUDesc):
+    """
+    ARA FP divide/sqrt unit (fpnew DIVSQRT) — non-pipelined, count=1.
+    Iterative SRT: only one vfdiv or vfsqrt can be in-flight at a time.
+    """
+    opList = [
         OpDesc(opClass="SimdFloatDiv",  opLat=20, pipelined=False),
         OpDesc(opClass="SimdFloatSqrt", opLat=20, pipelined=False),
     ]
-
     count = 1
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible aliases — scripts using the old names still work
+# ---------------------------------------------------------------------------
+AraSIMD_Pipelined = AraVLSU    # closest single-class analogue; prefer per-VFU classes
+AraSIMD_IntDiv    = AraIntDiv
+AraSIMD_FPDivSqrt = AraFPDivSqrt
 
 
 from m5.objects.LatencyModel import LatencyModel
 from m5.objects.FuncUnit import OpClass
 
 class AraLatencyModel(LatencyModel):
-    def __init__(self, **kwargs):
+    def __init__(self, simd_units=2, **kwargs):
         super().__init__(**kwargs)
 
-        # Global Floor: 6 cycles (RTL lane sequencer bottleneck)
-        # Total latency will be max(Pipe + Throughput, Floor) + 1 issue
-        self.dispatchFloor = 6
+        # Dynamic Dispatch Floor: max(4, 12 - L)
+        # This accounts for the core-to-vector handshake becoming a smaller
+        # percentage of total execution as the vector units grow.
+        self.dispatchFloor = max(4, 12 - simd_units)
 
         def get_lats(vsew):
             # Pre-populate with 0 (falls back to standard FU opLat if not defined here)
@@ -190,9 +206,9 @@ class AraLatencyModel(LatencyModel):
             lats[m['SimdMult']] = (0 if vsew == 0 else 1)
             lats[m['SimdMultAcc']] = (0 if vsew == 0 else 1)
             
-            # Memory (AGU depth = 1)
-            lats[m['SimdUnitStrideLoad']] = 1
-            lats[m['SimdUnitStrideStore']] = 1
+            # Memory (AGU depth = 3)
+            lats[m['SimdUnitStrideLoad']] = 3
+            lats[m['SimdUnitStrideStore']] = 3
 
             # Permute / Reduction
             lats[m['SimdReduceAdd']] = 1
@@ -210,46 +226,78 @@ try:
     class AraO3CPU(RiscvO3CPU):
         """
         Custom RiscvO3CPU that automatically sets up the ARA Functional Unit Pool
-        and constrains widths to match ARA hardware.
+        and scales core resources based on the number of vector lanes.
         """
-        # Constrain O3 pipeline widths to match ARA's 2-lane issue capability
-        fetchWidth = 2
-        decodeWidth = 2
-        renameWidth = 2
-        dispatchWidth = 2
-        issueWidth = 2
-        wbWidth = 2
-        commitWidth = 2
-        squashWidth = 2
+        def __init__(self, simd_units=2, **kwargs):
+            # Proportional Scaling: Each 2 lanes add 1 wide to the scalar core
+            # 2 lanes -> 1 wide, 4 lanes -> 2 wide, 8 lanes -> 4 wide
+            scale = max(1, simd_units // 2)
 
-        # Increase TimeBuffer sizes to ensure they are deep enough
-        # for long ARA RTL latencies (e.g., 74-cycle division).
-        backComSize = 100
-        forwardComSize = 100
+            # --- Scaled Pipeline Widths ---
+            self.fetchWidth = scale
+            self.decodeWidth = scale
+            self.renameWidth = scale
+            self.dispatchWidth = scale
+            self.issueWidth = scale
+            self.wbWidth = scale
+            self.commitWidth = scale
+            self.squashWidth = scale
 
-        def __init__(self, **kwargs):
+            # --- Scaled Core Buffer Sizes ---
+            # We scale buffers to ensure the wider front-end doesn't cause
+            # "resource full" stalls before the lanes are saturated.
+            self.numROBEntries = 32 * scale
+            self.numPhysIntRegs = 64 * scale
+            self.numPhysFloatRegs = 64 * scale
+            self.LQEntries = 16 * scale
+            self.SQEntries = 16 * scale
+
             super().__init__(**kwargs)
 
-            # Assign the ARA Latency Model
-            self.latency_model = AraLatencyModel()
+            # Assign the ARA Latency Model with lane-aware dispatch floor
+            self.latency_model = AraLatencyModel(simd_units=simd_units)
+
+            # --- Serialize Cache Ports ---
+            # Even with multiple lanes, requests are serialized at the cache level
+            # to match ARA's single-ported memory model.
+            self.cacheStorePorts = 1
+            self.cacheLoadPorts = 1
+
+            # Increase TimeBuffer sizes to ensure they are deep enough
+            # for long ARA RTL latencies (e.g., 74-cycle division).
+            self.backComSize = 100
+            self.forwardComSize = 100
 
             # CRITICAL: In gem5, SimObject instances (like functional units) must
             # have a clear parent-child relationship. We instantiate them inside
             # the constructor so they are immediately attached to their parents.
             for iq in self.instQueues:
-                # We provide a fresh set of functional units for every Instruction Queue (IQ).
-                # This prevents 'multiple parent' and 'orphan node' RuntimeErrors.
-                #
-                # AraSIMD_Pipelined: count=simd_units (default 2) — the two slots
-                #   needed for gem5's WakeDependents chaining mechanism.
-                # AraSIMD_IntDiv / AraSIMD_FPDivSqrt: count=1 — enforces the
-                #   single-issue structural hazard on ARA's serial divide units.
-                iq.fuPool = FUPool(FUList = [
+                # Set IQ size proportional to scale (Deeper for wider lanes)
+                iq.numEntries = 32 * scale
+
+                # Per-VFU FU pool — one descriptor per ARA hardware VFU, each
+                # with count=1 (pipelined). This correctly enforces:
+                #   AraVALU    : one integer ALU op per cycle
+                #   AraVMFPU   : one FP/mul op per cycle  (fixes the old bug
+                #                where count=2 allowed 2 independent vfadd/cycle)
+                #   AraVLSU    : one unit-stride load OR store per cycle
+                #   AraVSLD    : one strided/indexed/slide/reduction per cycle
+                #   AraIntDiv  : serial integer divide (non-pipelined)
+                #   AraFPDivSqrt: iterative FP div/sqrt (non-pipelined)
+                # Cross-VFU parallelism is still possible: a vfadd (AraVMFPU)
+                # and a vle16 (AraVLSU) CAN issue in the same cycle.
+                # Chaining still works: pipelined slots are freed next cycle,
+                # before WakeDependents fires, so the consumer acquires the
+                # freed slot without needing a second permanent slot.
+                iq.fuPool = FUPool(FUList=[
                     IntALU(), IntMultDiv(), FP_ALU(), FP_MultDiv(),
                     ReadPort(),
-                    AraSIMD_Pipelined(count=self.simd_units),
-                    AraSIMD_IntDiv(),
-                    AraSIMD_FPDivSqrt(),
+                    AraVALU(),
+                    AraVMFPU(),
+                    AraVLSU(),
+                    AraVSLD(),
+                    AraIntDiv(),
+                    AraFPDivSqrt(),
                     Matrix_Unit(), System_Unit(), PredALU(),
                     WritePort(), RdWrPort()
                 ])
