@@ -596,15 +596,19 @@ class VleMicroInst : public VectorMicroInst
                         const loader::SymbolTable *symtab) const override;
 
   public:
-    // GDP: a unit-stride vector load is an index-stream producer
+    // Chain table: a unit-stride vector load is an index-stream producer
     // candidate; expose its element width (encoded EEW) for chunk
-    // slicing (see cpu/gdp_table.hh).
-    GdpInstInfo
-    gdpInstInfo() const override
+    // slicing (see cpu/vector_chain_table.hh).
+    VecMemInfo
+    vecMemInfo() const override
     {
-        GdpInstInfo info;
-        info.kind = GdpInstInfo::UnitStrideLoad;
+        VecMemInfo info;
+        info.kind = VecMemInfo::UnitStrideLoad;
         info.elemBytes = width_EEW(machInst.width) / 8;
+        // ReVeLA stream tracking: micro-op position and the granted
+        // vector length (elements) of the whole macro-op.
+        info.microIdx = microIdx;
+        info.vl = machInst.vl;
         return info;
     }
 };
@@ -628,16 +632,20 @@ class VseMicroInst : public VectorMicroInst
                         const loader::SymbolTable *symtab) const override;
 
   public:
-    // GDP: a unit-stride vector store walks a single-use output
+    // Chain table: a unit-stride vector store walks a single-use output
     // stream, exactly like the unit-stride load's index stream; expose
     // it for demand-side stream-page registration (see
-    // cpu/gdp_table.hh).
-    GdpInstInfo
-    gdpInstInfo() const override
+    // cpu/vector_chain_table.hh).
+    VecMemInfo
+    vecMemInfo() const override
     {
-        GdpInstInfo info;
-        info.kind = GdpInstInfo::UnitStrideStore;
+        VecMemInfo info;
+        info.kind = VecMemInfo::UnitStrideStore;
         info.elemBytes = width_EEW(machInst.width) / 8;
+        // ReVeLA stream tracking: micro-op position and the granted
+        // vector length (elements) of the whole macro-op.
+        info.microIdx = microIdx;
+        info.vl = machInst.vl;
         return info;
     }
 };
@@ -840,15 +848,15 @@ class VlIndexMicroInst : public VectorMemMicroInst
                         const loader::SymbolTable *symtab) const override;
 
   public:
-    // GDP: an indexed vector load is the gather whose base (rs1) is
+    // Chain table: an indexed vector load is the gather whose base (rs1) is
     // snooped at issue; expose its data element width (vtype SEW -> the
     // index-to-byte-offset shift) and the architectural register this
-    // element micro reads its offsets from (see cpu/gdp_table.hh).
-    GdpInstInfo
-    gdpInstInfo() const override
+    // element micro reads its offsets from (see cpu/vector_chain_table.hh).
+    VecMemInfo
+    vecMemInfo() const override
     {
-        GdpInstInfo info;
-        info.kind = GdpInstInfo::IndexedLoad;
+        VecMemInfo info;
+        info.kind = VecMemInfo::IndexedLoad;
         info.elemBytes = vtype_SEW(machInst.vtype8) / 8;
         info.srcVReg = vs2RegIdx;
         return info;

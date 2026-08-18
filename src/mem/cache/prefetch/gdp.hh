@@ -1,7 +1,7 @@
 /**
  * GDP — Gather Dataflow Prefetcher (cache side). Prefetches
  * A[f(B[i])] vector gathers with no training: the dataflow is
- * extracted architecturally. The CPU side (cpu/gdp_table.hh) records
+ * extracted architecturally. The CPU side (cpu/vector_chain_table.hh) records
  * producer heads, transform links and gather links (DCT) and forms
  * producer->gather links in one iteration (backward propagation at
  * the gather's dispatch). This prefetcher runs the runtime dataflow:
@@ -89,7 +89,7 @@
 #include <vector>
 
 #include "base/statistics.hh"
-#include "cpu/gdp_table.hh"
+#include "cpu/vector_chain_table.hh"
 #include "mem/cache/prefetch/queued.hh"
 
 namespace gem5
@@ -103,7 +103,7 @@ namespace prefetch
 class GDP : public Queued
 {
     /** The CPU-side chain/link table (shared SimObject) */
-    GdpChainTable *const tbl;
+    VectorChainTable *const tbl;
     /** Stream lookahead in lines (sets indirect lookahead too) */
     const int streamingDistance;
     /** Ablation: stream the index arrays but never capture/replay */
@@ -141,7 +141,7 @@ class GDP : public Queued
         /** Stream high-water mark (exclusive end of issued window) */
         Addr limitAddr = 0;
         /** Latched replay configuration ("chain dispatch") */
-        GdpChainTable::ChainSnapshot config;
+        VectorChainTable::ChainSnapshot config;
         bool configured = false;
         /** Slice width latched with the config */
         unsigned elemBytes = 0;
@@ -227,7 +227,7 @@ class GDP : public Queued
     void drainReplay(std::vector<AddrPriority> &addresses);
 
     /** Apply the latched transform ops + base adder to one element */
-    Addr applyChain(const GdpChainTable::ChainSnapshot &cfg,
+    Addr applyChain(const VectorChainTable::ChainSnapshot &cfg,
                     uint64_t value) const;
 
   public:

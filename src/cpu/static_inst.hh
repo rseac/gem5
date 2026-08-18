@@ -423,8 +423,9 @@ class StaticInst : public RefCounted, public StaticInstFlags
     }
 
     /**
-     * Classification for the Gather Dataflow Prefetcher (GDP, see
-     * cpu/gdp_table.hh). Vector memory micro-ops override this to expose
+     * Classification of vector memory micro-ops for the CPU-side
+     * sideband tables (cpu/vector_chain_table.hh, cpu/revela_table.hh).
+     * Vector memory micro-ops override this to expose
      * ISA fields the CPU-side hooks need without ISA-specific casts:
      * unit-stride loads report their element width (EEW/8, the width the
      * prefetcher slices index chunks at), indexed loads report their
@@ -432,7 +433,7 @@ class StaticInst : public RefCounted, public StaticInstFlags
      * shift) and the architectural vector register they read offsets
      * from. Everything else keeps the None default.
      */
-    struct GdpInstInfo
+    struct VecMemInfo
     {
         enum Kind : uint8_t
         {
@@ -444,11 +445,17 @@ class StaticInst : public RefCounted, public StaticInstFlags
         Kind kind = None;
         uint8_t elemBytes = 0;
         uint8_t srcVReg = 0;
+        /** ReVeLA (cpu/revela_table.hh): micro-op position within the
+         *  macro-op and the macro-op's granted vector length in
+         *  elements, so the stream update runs once per macro-op
+         *  (micro-op 0) with the whole register group's extent. */
+        uint32_t microIdx = 0;
+        uint32_t vl = 0;
     };
-    virtual GdpInstInfo
-    gdpInstInfo() const
+    virtual VecMemInfo
+    vecMemInfo() const
     {
-        return GdpInstInfo();
+        return VecMemInfo();
     }
 
     /**

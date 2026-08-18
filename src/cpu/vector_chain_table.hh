@@ -1,8 +1,12 @@
 /**
- * GdpChainTable — the shared CPU-to-prefetcher channel of the Gather
- * Dataflow Prefetcher (GDP, mem/cache/prefetch/gdp.hh), built on
- * Tyche's skeleton (see cpu/tyche_table.hh for the scalar analog this
- * borrows from).
+ * VectorChainTable — the shared CPU-to-prefetcher channel for vector
+ * instruction dependency chains, built on Tyche's skeleton (see
+ * cpu/tyche_table.hh for the scalar analog this borrows from).
+ * Originally built for the Gather Dataflow Prefetcher (GDP,
+ * mem/cache/prefetch/gdp.hh); today its clients are GDP, VTyche and
+ * VTyche2 (chain discovery + base/scalar snoops via link_table),
+ * StreamDemoteLRURP (the stream-page registry below), and the O3 LSQ's
+ * demand-side stream registration (demand_stream_pages).
  *
  * The structures, with honest hardware widths in mind:
  *
@@ -29,7 +33,7 @@
  *    consumer there. Link formation takes one iteration: no training,
  *    prefetching from the second iteration.
  *
- * Classification: loads use the existing StaticInst::gdpInstInfo()
+ * Classification: loads use the existing StaticInst::vecMemInfo()
  * virtual (unit-stride EEW / indexed SEW+vs2, correct at micro-op
  * granularity); transform ops are decoded from the raw encoding via
  * StaticInst::getEMI() (OP-V major opcode), the same no-ISA-edits
@@ -46,8 +50,8 @@
  * All state clears at every stats reset (ROI boundaries).
  */
 
-#ifndef __CPU_GDP_TABLE_HH__
-#define __CPU_GDP_TABLE_HH__
+#ifndef __CPU_VECTOR_CHAIN_TABLE_HH__
+#define __CPU_VECTOR_CHAIN_TABLE_HH__
 
 #include <array>
 #include <cstdint>
@@ -63,9 +67,9 @@
 namespace gem5
 {
 
-struct GdpChainTableParams;
+struct VectorChainTableParams;
 
-class GdpChainTable : public SimObject
+class VectorChainTable : public SimObject
 {
   public:
     /** Replayable transform ops (vector chain subset) */
@@ -91,7 +95,7 @@ class GdpChainTable : public SimObject
         unsigned extFromBits = 0;
     };
 
-    GdpChainTable(const GdpChainTableParams &p);
+    VectorChainTable(const VectorChainTableParams &p);
 
     /**
      * CPU-side hook, call in dispatch (program) order for every vector
@@ -124,6 +128,10 @@ class GdpChainTable : public SimObject
         int dctPtr = -1;
         /** Producer element bytes (EEW/8): the slice width */
         unsigned elemBytes = 0;
+        /** Linked consumer slots on this head (0 = unlinked; the
+         *  prefetcher walks slots [0, numConsumers) via
+         *  pipelineConfig's slot argument) */
+        unsigned numConsumers = 0;
     };
     ProducerInfo producerInfo(Addr pc) const;
 
@@ -153,9 +161,12 @@ class GdpChainTable : public SimObject
     /**
      * The producer's pipeline configuration, walked on demand (the
      * prefetcher adopts it at trigger time and holds the only latched
-     * copy).
+     * copy). `slot` selects among the head's consumer links
+     * (multi-way producers); the slot-0 default keeps single-consumer
+     * callers unchanged.
      */
-    ChainSnapshot pipelineConfig(int producer_ptr) const;
+    ChainSnapshot pipelineConfig(int producer_ptr,
+                                 unsigned slot = 0) const;
 
     /** Bumped on every wholesale clear (capacity or ROI reset) */
     uint64_t generation() const { return gen; }
@@ -169,7 +180,7 @@ class GdpChainTable : public SimObject
      * granularity sidesteps the VA/PA mismatch: caches see PAs only,
      * and prefetch requests carry no VA.
      */
-    void registerStreamPage(Addr paddr);
+    void registerStreamPage(Addr paddr, Addr pcTag = 0);
     bool isStreamPage(Addr paddr) const;
 
     /**
@@ -192,8 +203,21 @@ class GdpChainTable : public SimObject
      * the access's page so stream-aware replacement works without a
      * prefetcher feeding the registry, and covers stores (output
      * streams), which no prefetcher ever walks.
+     *
+     * With monotone_arm set, registration is gated by the Stream
+     * Direction Table: a stream must first advance monotonically for
+     * arm_distance bytes of VIRTUAL address space (monotone progress
+     * is a VA property — a VA-contiguous sweep is not PA-contiguous
+     * across page frames), and the first backward jump beyond
+     * backward_slack REVOKES the stream for good (an access below the
+     * high-water mark is proof of recurrence: the stream's lines have
+     * a future, so demoting them trades hits for DRAM refetches).
+     * Revocation also drops the stream's already-registered pages from
+     * the registry — without that, pages registered before the re-sweep
+     * was detected keep demoting fills for a whole further sweep.
      */
-    void notifyDemandAccess(const StaticInst *si, Addr paddr);
+    void notifyDemandAccess(const StaticInst *si, Addr pc, Addr vaddr,
+                            Addr paddr);
 
     /** Wipe PT and DCT (ROI reset) */
     void resetState();
@@ -238,19 +262,26 @@ class GdpChainTable : public SimObject
         // dissolved: it was direct-mapped 1:1 to these slots, i.e.
         // just extra columns for head rows; in a real layout they
         // fit in the head's flavor-unused field space).
-        /** Head only: the gather (tail) slot this producer feeds —
-         *  written by backward propagation; -1 = not linked (there
-         *  is no separate linked bit). Sim walk anchor; hardware
-         *  holds this only transiently during the backprop walk. */
-        int consumer = -1;
+        /** Head only: the gather (tail) slots this producer feeds —
+         *  written by backward propagation; empty = not linked
+         *  (there is no separate linked bit). Up to
+         *  consumers_per_producer slots (~4 bits each: 3-bit DCT
+         *  pointer + empty encoding). At capacity 1 backprop keeps
+         *  the historical overwrite (last-dispatched gather wins);
+         *  at capacity > 1 it is insert-if-absent, a distinct
+         *  gather beyond capacity bouncing off
+         *  (consumerSlotsExhausted). Sim walk anchors; hardware
+         *  holds these only transiently during the backprop walk. */
+        std::vector<int> consumers;
         /** Head only: producer element bytes (EEW/8), the slice
          *  width, from the encoding at dispatch */
         unsigned elemBytes = 0;
     };
 
     /** Walk consumer->head (the backprop path) and build the
-     *  pipeline configuration; called on demand by pipelineConfig() */
-    ChainSnapshot chainSnapshot(int producer_ptr) const;
+     *  pipeline configuration for one consumer slot; called on
+     *  demand by pipelineConfig() */
+    ChainSnapshot chainSnapshot(int producer_ptr, unsigned slot) const;
 
     struct PtEntry
     {
@@ -266,6 +297,9 @@ class GdpChainTable : public SimObject
 
     const unsigned dctEntries;
     const unsigned maxTransformStages;
+    /** Consumer slots per head row (multi-way gather support);
+     *  1 = the historical single-link overwrite behavior */
+    const unsigned consumerSlots;
     /** Register stream pages from demand unit-stride accesses (LSQ) */
     const bool demandStreamPages;
 
@@ -276,20 +310,65 @@ class GdpChainTable : public SimObject
     /** Stream-page registry: FIFO of the last streamPageEntries
      *  physical pages seen leaving as stream prefetches, with a set
      *  alongside for O(1) membership. Stream arrays are walked
-     *  monotonically, so stale pages age out harmlessly. */
+     *  monotonically, so stale pages age out harmlessly. Each entry
+     *  carries the PC of the registering stream (0 = untagged, e.g.
+     *  prefetcher-side registrations) so a monotone-arm revocation can
+     *  drop exactly its own stream's pages. */
     static constexpr unsigned streamPageEntries = 64;
     static constexpr Addr streamPageShift = 12; // 4KiB pages
-    std::deque<Addr> streamPageFifo;
+    struct StreamPageRec { Addr page; Addr pcTag; };
+    std::deque<StreamPageRec> streamPageFifo;
     std::unordered_set<Addr> streamPageSet;
+
+    /** Monotone-arm gate (see notifyDemandAccess) */
+    const bool monotoneArm;
+    /** Monotone VA bytes a stream must cover before it may demote */
+    const Addr armDistance;
+    /** Backward dead zone absorbing OoO completion jitter — an access
+     *  this far under the high-water mark neither advances nor
+     *  revokes. Revocation is irreversible, so the test needs slack. */
+    const Addr backwardSlack;
+
+    /**
+     * Stream Direction Table: per-PC monotonicity tracking for the
+     * demand-side unit-stride streams (VA space). armed = has covered
+     * arm_distance monotonically; revoked = was seen restarting
+     * (sticky until the next stats-reset wipe).
+     */
+    struct StreamDirEntry
+    {
+        bool valid = false;
+        Addr pc = 0;
+        /** First address of the stream (direction tiebreak anchor) */
+        Addr startAddr = 0;
+        /** Extremes seen; footprint = maxAddr - minAddr */
+        Addr minAddr = 0;
+        Addr maxAddr = 0;
+        /** 0 = undetermined, +1 ascending, -1 descending */
+        int8_t dir = 0;
+        bool armed = false;
+        bool revoked = false;
+        /** LRU victim ordering */
+        uint64_t lastUse = 0;
+    };
+    static constexpr unsigned streamDirEntries = 16;
+    std::array<StreamDirEntry, streamDirEntries> streamDirTable;
+    uint64_t streamDirSeq = 0;
+
+    /** Lookup-or-allocate by PC (LRU victim on a full table); a fresh
+     *  entry is seeded with the access's vaddr as start/min/max. */
+    StreamDirEntry *streamDirEntry(Addr pc, Addr vaddr);
+    /** Sticky-revoke and drop the stream's registered pages */
+    void revokeStream(StreamDirEntry &e);
     /** Promoted (unlearned) pages: blocked from re-registration.
      *  Capacity is the promoted_page_entries param. */
     const unsigned promotedPageEntries;
     std::deque<Addr> promotedPageFifo;
     std::unordered_set<Addr> promotedPageSet;
 
-    struct GdpStats : public statistics::Group
+    struct TableStats : public statistics::Group
     {
-        GdpStats(statistics::Group *parent);
+        TableStats(statistics::Group *parent);
         /** Producer heads allocated (unit-stride loads, first seen) */
         statistics::Scalar headsAllocated;
         /** Transform links inserted */
@@ -298,6 +377,9 @@ class GdpChainTable : public SimObject
         statistics::Scalar gathersInserted;
         /** Producer-consumer links formed (backprop completions) */
         statistics::Scalar linksFormed;
+        /** Distinct gathers denied a consumer slot (all
+         *  consumers_per_producer slots taken; capacity > 1 only) */
+        statistics::Scalar consumerSlotsExhausted;
         /** Backward walks that failed to reach a head */
         statistics::Scalar linkWalksFailed;
         /** Chain breaks (undecodable op / multi-source with a tag) */
@@ -308,9 +390,17 @@ class GdpChainTable : public SimObject
         statistics::Scalar basesArmed;
         /** Wholesale clears on capacity */
         statistics::Scalar dctClears;
-    } gdpStats;
+        /** Streams that armed (covered arm_distance monotonically) */
+        statistics::Scalar monotoneStreamsArmed;
+        /** Streams sticky-revoked on a backward jump (re-sweep seen) */
+        statistics::Scalar monotoneStreamsRevoked;
+        /** Registry pages dropped retroactively by revocations */
+        statistics::Scalar monotonePagesDropped;
+        /** Demand registrations suppressed (pre-arm or post-revoke) */
+        statistics::Scalar monotoneRegsSuppressed;
+    } tableStats;
 };
 
 } // namespace gem5
 
-#endif // __CPU_GDP_TABLE_HH__
+#endif // __CPU_VECTOR_CHAIN_TABLE_HH__

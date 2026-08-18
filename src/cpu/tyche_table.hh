@@ -30,7 +30,7 @@
  * Instruction classification decodes the raw RV64 encoding obtained via
  * StaticInst::getEMI() (base + M + Zba + RVC subsets), so no ISA files
  * are touched. Only scalar instructions are fed here (the O3 dispatch
- * hook filters vectors; the GDP channel handles those).
+ * hook filters vectors; the VectorChainTable channel handles those).
  *
  * Deviations from the artifact (all documented in DOCUMENTATION.MD):
  *  - Constant *register* operands are sampled at issue (when the value

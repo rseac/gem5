@@ -4,7 +4,7 @@
  *
  * LRU, except that lines belonging to registered STREAM pages (single
  * -use index/data arrays walked by a vector kernel — pages published
- * by the VTyche/GDP prefetcher through the shared GdpChainTable) are
+ * by the VTyche/GDP prefetcher through the shared VectorChainTable) are
  * demoted to the LRU position instead of being promoted:
  *
  *  - demote_on_insert = true  (L2 use): a stream line inserts already
@@ -39,7 +39,7 @@
 #ifndef __MEM_CACHE_REPLACEMENT_POLICIES_STREAM_DEMOTE_LRU_RP_HH__
 #define __MEM_CACHE_REPLACEMENT_POLICIES_STREAM_DEMOTE_LRU_RP_HH__
 
-#include "cpu/gdp_table.hh"
+#include "cpu/vector_chain_table.hh"
 #include "mem/cache/replacement_policies/lru_rp.hh"
 
 namespace gem5
@@ -62,13 +62,13 @@ class StreamDemoteLRU : public LRU
 
   private:
     /** The per-core chain table publishing stream physical pages */
-    GdpChainTable *const tbl;
+    VectorChainTable *const tbl;
     /** Demote at insertion (L2 semantics) vs at first touch (L1) */
     const bool demoteOnInsert;
     /** Promote a demoted line on its second touch (observed reuse
      *  overrides the single-use oracle) */
     const bool secondTouchPromote;
-    /** Second touch also unlearns the whole PAGE (GdpChainTable
+    /** Second touch also unlearns the whole PAGE (VectorChainTable
      *  promoteStreamPage): new fills of a proven-reused page insert
      *  as plain LRU — the churn set's re-entry path that per-line
      *  promotion alone cannot provide */

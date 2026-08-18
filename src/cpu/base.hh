@@ -70,7 +70,8 @@ class ThreadContext;
 class System;
 class LatencyModel;
 class TycheChainTable;
-class GdpChainTable;
+class VectorChainTable;
+class RevelaStreamTable;
 
 struct AddressMonitor
 {
@@ -438,8 +439,12 @@ class BaseCPU : public ClockedObject
     /** Optional Tyche dependency-chain table (see cpu/tyche_table.hh) */
     TycheChainTable *tycheTable;
 
-    /** Optional GDP vector chain/link table (see cpu/gdp_table.hh) */
-    GdpChainTable *gdpTable;
+    /** Optional vector chain/link table — shared CPU-to-prefetcher
+     *  channel (see cpu/vector_chain_table.hh) */
+    VectorChainTable *vectorChainTable;
+
+    /** Optional ReVeLA stream table (see cpu/revela_table.hh) */
+    RevelaStreamTable *revelaTable;
 
     /**
      * Get the cache line size of the system.

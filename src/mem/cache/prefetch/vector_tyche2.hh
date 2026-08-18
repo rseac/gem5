@@ -4,7 +4,7 @@
  * A hybrid of GDP (mem/cache/prefetch/gdp.hh) and IMP
  * (mem/cache/prefetch/indirect_memory.hh): it keeps GDP's
  * architectural discovery — the Tyche-derived CPU-side chain table
- * (cpu/gdp_table.hh) names the producer load, links it to its gather
+ * (cpu/vector_chain_table.hh) names the producer load, links it to its gather
  * in one iteration, and snoops the gather's base register — but
  * replaces GDP's transform-replay pipeline with IMP's linear equation
  *
@@ -106,7 +106,7 @@
 #include <vector>
 
 #include "base/statistics.hh"
-#include "cpu/gdp_table.hh"
+#include "cpu/vector_chain_table.hh"
 #include "mem/cache/prefetch/queued.hh"
 
 namespace gem5
@@ -121,7 +121,7 @@ class VectorTyche2 : public Queued
 {
     /** The CPU-side chain/link table (shared SimObject, same one GDP
      *  uses — the discovery half is identical) */
-    GdpChainTable *const tbl;
+    VectorChainTable *const tbl;
     /** DEEP index/stream staging distance (index_distance): how far
      *  ahead of the cursor index lines are fetched and captured. Deep
      *  fetches stage in the L2 and the slice buffers; nothing about
@@ -152,8 +152,6 @@ class VectorTyche2 : public Queued
     const int drainFloor;
     /** Cross-line dedup window in index lines; 0 disables */
     const unsigned dedupBufferSize;
-    /** Self-clocked drain period; 0 = legacy demand-clocked drain */
-    const Cycles drainPeriod;
 
     /**
      * The collapsed chain: target = base + (extend(elem) << shift).
@@ -307,7 +305,7 @@ class VectorTyche2 : public Queued
     } vtycheStats;
 
     /**
-     * Self-clocked drain (drain_period > 0): the conversion/emission
+     * Self-clocked drain (every cycle): the conversion/emission
      * engine fires on its own clock while work is buffered, instead of
      * waiting for the next demand access. The stream walk stays
      * demand-anchored (limitAddr only advances with demand), so this
@@ -340,7 +338,7 @@ class VectorTyche2 : public Queued
      * invalid form if the chain is not affine with a power-of-2 scale.
      * See the header comment for the accepted algebra.
      */
-    LinearForm collapse(const GdpChainTable::ChainSnapshot &snap) const;
+    LinearForm collapse(const VectorChainTable::ChainSnapshot &snap) const;
 
     /** Apply the slice's extension, then the shift-and-add lane */
     Addr applyForm(const LinearForm &f, uint64_t raw) const;

@@ -1,9 +1,9 @@
 /**
- * GdpChainTable implementation. See gdp_table.hh for the design.
+ * VectorChainTable implementation. See vector_chain_table.hh for the design.
  * Structure follows cpu/tyche_table.cc.
  */
 
-#include "cpu/gdp_table.hh"
+#include "cpu/vector_chain_table.hh"
 
 #include <algorithm>
 
@@ -11,30 +11,35 @@
 #include "base/logging.hh"
 #include "base/trace.hh"
 #include "cpu/reg_class.hh"
-#include "debug/GDP.hh"
-#include "params/GdpChainTable.hh"
+#include "debug/VectorChain.hh"
+#include "params/VectorChainTable.hh"
 
 namespace gem5
 {
 
-GdpChainTable::GdpChainTable(const GdpChainTableParams &p)
+VectorChainTable::VectorChainTable(const VectorChainTableParams &p)
   : SimObject(p),
     dctEntries(p.dct_entries),
     maxTransformStages(p.max_transform_stages),
+    consumerSlots(p.consumers_per_producer),
     demandStreamPages(p.demand_stream_pages),
     dct(p.dct_entries),
     pt(),
+    monotoneArm(p.monotone_arm),
+    armDistance(p.arm_distance),
+    backwardSlack(p.backward_slack),
     promotedPageEntries(p.promoted_page_entries),
-    gdpStats(this)
+    tableStats(this)
 {
     fatal_if(dctEntries < 3, "dct_entries must be >= 3 "
              "(head + transform + gather)");
+    fatal_if(consumerSlots < 1, "consumers_per_producer must be >= 1");
     // Wipe learned state at every stats reset (ROI boundaries), like
     // the prefetchers' resetLearnedState().
     statistics::registerResetCallback([this]() { resetState(); });
 }
 
-GdpChainTable::GdpStats::GdpStats(statistics::Group *parent)
+VectorChainTable::TableStats::TableStats(statistics::Group *parent)
   : statistics::Group(parent),
     ADD_STAT(headsAllocated, statistics::units::Count::get(),
         "producer heads allocated (unit-stride vector loads)"),
@@ -44,6 +49,9 @@ GdpChainTable::GdpStats::GdpStats(statistics::Group *parent)
         "gather chain links inserted"),
     ADD_STAT(linksFormed, statistics::units::Count::get(),
         "producer-consumer links formed (backward propagation)"),
+    ADD_STAT(consumerSlotsExhausted, statistics::units::Count::get(),
+        "distinct gathers denied a consumer slot "
+        "(consumers_per_producer cap)"),
     ADD_STAT(linkWalksFailed, statistics::units::Count::get(),
         "backward walks that did not reach a head"),
     ADD_STAT(chainsBroken, statistics::units::Count::get(),
@@ -53,18 +61,34 @@ GdpChainTable::GdpStats::GdpStats(statistics::Group *parent)
     ADD_STAT(basesArmed, statistics::units::Count::get(),
         "gather bases snooped at issue"),
     ADD_STAT(dctClears, statistics::units::Count::get(),
-        "wholesale DCT clears on capacity")
+        "wholesale DCT clears on capacity"),
+    ADD_STAT(monotoneStreamsArmed, statistics::units::Count::get(),
+        "streams armed after arm_distance of monotone progress"),
+    ADD_STAT(monotoneStreamsRevoked, statistics::units::Count::get(),
+        "streams sticky-revoked on a backward jump (re-sweep observed)"),
+    ADD_STAT(monotonePagesDropped, statistics::units::Count::get(),
+        "registry pages dropped retroactively by stream revocations"),
+    ADD_STAT(monotoneRegsSuppressed, statistics::units::Count::get(),
+        "demand registrations suppressed (stream pre-arm or revoked)")
 {
 }
 
 void
-GdpChainTable::resetState()
+VectorChainTable::resetState()
 {
     clearAll();
+    // Stream Direction Table state clears only at ROI boundaries, NOT
+    // in clearAll: clearAll also fires on DCT capacity overflow, and a
+    // sticky revocation must survive DCT churn (the page registry
+    // re-fills from the demand path within a few accesses, but a lost
+    // revocation costs a whole re-sweep of demotion damage to
+    // re-learn).
+    streamDirTable.fill(StreamDirEntry());
+    streamDirSeq = 0;
 }
 
 void
-GdpChainTable::clearAll()
+VectorChainTable::clearAll()
 {
     // Head rows' consumer pointers clear with their DCT entries, so
     // no dangling 3-bit pointers survive a wholesale clear.
@@ -78,7 +102,7 @@ GdpChainTable::clearAll()
 }
 
 void
-GdpChainTable::registerStreamPage(Addr paddr)
+VectorChainTable::registerStreamPage(Addr paddr, Addr pcTag)
 {
     const Addr page = paddr >> streamPageShift;
     // Promoted (unlearned) pages are blocked: proven cross-sweep
@@ -86,28 +110,28 @@ GdpChainTable::registerStreamPage(Addr paddr)
     if (streamPageSet.count(page) || promotedPageSet.count(page)) {
         return;
     }
-    streamPageFifo.push_back(page);
+    streamPageFifo.push_back({page, pcTag});
     streamPageSet.insert(page);
     while (streamPageFifo.size() > streamPageEntries) {
-        streamPageSet.erase(streamPageFifo.front());
+        streamPageSet.erase(streamPageFifo.front().page);
         streamPageFifo.pop_front();
     }
 }
 
 bool
-GdpChainTable::isStreamPage(Addr paddr) const
+VectorChainTable::isStreamPage(Addr paddr) const
 {
     return streamPageSet.count(paddr >> streamPageShift) != 0;
 }
 
 void
-GdpChainTable::promoteStreamPage(Addr paddr)
+VectorChainTable::promoteStreamPage(Addr paddr)
 {
     const Addr page = paddr >> streamPageShift;
     if (streamPageSet.erase(page)) {
         for (auto it = streamPageFifo.begin();
              it != streamPageFifo.end(); ++it) {
-            if (*it == page) {
+            if (it->page == page) {
                 streamPageFifo.erase(it);
                 break;
             }
@@ -125,20 +149,116 @@ GdpChainTable::promoteStreamPage(Addr paddr)
 }
 
 void
-GdpChainTable::notifyDemandAccess(const StaticInst *si, Addr paddr)
+VectorChainTable::notifyDemandAccess(const StaticInst *si, Addr pc,
+                                  Addr vaddr, Addr paddr)
 {
     if (!demandStreamPages) {
         return;
     }
-    const auto kind = si->gdpInstInfo().kind;
-    if (kind == StaticInst::GdpInstInfo::UnitStrideLoad ||
-        kind == StaticInst::GdpInstInfo::UnitStrideStore) {
-        registerStreamPage(paddr);
+    const auto kind = si->vecMemInfo().kind;
+    if (kind != StaticInst::VecMemInfo::UnitStrideLoad &&
+        kind != StaticInst::VecMemInfo::UnitStrideStore) {
+        return;
+    }
+    if (!monotoneArm) {
+        registerStreamPage(paddr, pc);
+        return;
+    }
+
+    // Monotone-arm gate: track this PC's sweep in VA space (VA because
+    // a VA-contiguous sweep is not PA-contiguous across page frames —
+    // a PA-space limit would false-revoke at frame boundaries).
+    StreamDirEntry &e = *streamDirEntry(pc, vaddr);
+    if (!e.revoked) {
+        if (e.dir == 0) {
+            // Direction undetermined: track both extremes; latch the
+            // direction once the spread clears the OoO jitter zone.
+            if (vaddr > e.maxAddr) {
+                e.maxAddr = vaddr;
+            } else if (vaddr < e.minAddr) {
+                e.minAddr = vaddr;
+            }
+            if (e.maxAddr - e.minAddr > backwardSlack) {
+                e.dir = (e.maxAddr - e.startAddr >
+                         e.startAddr - e.minAddr) ? 1 : -1;
+            }
+        } else if (e.dir > 0) {
+            if (vaddr >= e.maxAddr) {
+                e.maxAddr = vaddr;
+            } else if (e.maxAddr - vaddr > backwardSlack) {
+                // Below the high-water mark: this stream restarts.
+                // Its lines have a future — demotion would trade
+                // their hits for DRAM refetches. Sticky.
+                revokeStream(e);
+            }
+        } else {
+            if (vaddr <= e.minAddr) {
+                e.minAddr = vaddr;
+            } else if (vaddr - e.minAddr > backwardSlack) {
+                revokeStream(e);
+            }
+        }
+        if (!e.revoked && !e.armed &&
+            e.maxAddr - e.minAddr >= armDistance) {
+            e.armed = true;
+            tableStats.monotoneStreamsArmed++;
+        }
+    }
+
+    if (e.armed && !e.revoked) {
+        registerStreamPage(paddr, pc);
+    } else {
+        tableStats.monotoneRegsSuppressed++;
+    }
+}
+
+VectorChainTable::StreamDirEntry *
+VectorChainTable::streamDirEntry(Addr pc, Addr vaddr)
+{
+    StreamDirEntry *victim = &streamDirTable[0];
+    for (auto &e : streamDirTable) {
+        if (e.valid && e.pc == pc) {
+            e.lastUse = ++streamDirSeq;
+            return &e;
+        }
+        if (!e.valid) {
+            victim = &e;
+        } else if (victim->valid && e.lastUse < victim->lastUse) {
+            victim = &e;
+        }
+    }
+    *victim = StreamDirEntry();
+    victim->valid = true;
+    victim->pc = pc;
+    victim->startAddr = vaddr;
+    victim->minAddr = vaddr;
+    victim->maxAddr = vaddr;
+    victim->lastUse = ++streamDirSeq;
+    return victim;
+}
+
+void
+VectorChainTable::revokeStream(StreamDirEntry &e)
+{
+    e.revoked = true;
+    e.armed = false;
+    tableStats.monotoneStreamsRevoked++;
+    // Drop the pages this stream already registered: without this,
+    // pages registered before the re-sweep was detected keep demoting
+    // fills for the whole next pass (the jacobi timestep-2 trap).
+    for (auto it = streamPageFifo.begin(); it != streamPageFifo.end();) {
+        if (it->pcTag == e.pc) {
+            streamPageSet.erase(it->page);
+            it = streamPageFifo.erase(it);
+            tableStats.monotonePagesDropped++;
+        } else {
+            ++it;
+        }
     }
 }
 
 int
-GdpChainTable::searchPc(Addr pc) const
+VectorChainTable::searchPc(Addr pc) const
 {
     for (int i = 0; i < (int)dct.size(); i++) {
         if (dct[i].valid && dct[i].pc == pc) {
@@ -149,7 +269,7 @@ GdpChainTable::searchPc(Addr pc) const
 }
 
 int
-GdpChainTable::dctInsert(const DctEntry &e)
+VectorChainTable::dctInsert(const DctEntry &e)
 {
     for (int i = 0; i < (int)dct.size(); i++) {
         if (!dct[i].valid) {
@@ -158,7 +278,7 @@ GdpChainTable::dctInsert(const DctEntry &e)
         }
     }
     clearAll();
-    gdpStats.dctClears++;
+    tableStats.dctClears++;
     return -1; // Tyche clear_dct semantics: clear, do not insert
 }
 
@@ -166,8 +286,8 @@ GdpChainTable::dctInsert(const DctEntry &e)
 // OP-V transform decode (raw encoding via StaticInst::getEMI())
 // ---------------------------------------------------------------------
 
-GdpChainTable::DecodedVArith
-GdpChainTable::decodeTransform(uint64_t emi)
+VectorChainTable::DecodedVArith
+VectorChainTable::decodeTransform(uint64_t emi)
 {
     DecodedVArith d;
     const uint32_t inst = (uint32_t)emi;
@@ -245,9 +365,9 @@ GdpChainTable::decodeTransform(uint64_t emi)
 // ---------------------------------------------------------------------
 
 void
-GdpChainTable::dispatch(const StaticInst *si, Addr pc)
+VectorChainTable::dispatch(const StaticInst *si, Addr pc)
 {
-    const StaticInst::GdpInstInfo info = si->gdpInstInfo();
+    const StaticInst::VecMemInfo info = si->vecMemInfo();
 
     // Architectural vector destinations.
     uint8_t dests[8];
@@ -263,7 +383,7 @@ GdpChainTable::dispatch(const StaticInst *si, Addr pc)
     }
 
     // Producer head: unit-stride vector load.
-    if (info.kind == StaticInst::GdpInstInfo::UnitStrideLoad &&
+    if (info.kind == StaticInst::VecMemInfo::UnitStrideLoad &&
         info.elemBytes > 0) {
         int idx = searchPc(pc);
         if (idx < 0) {
@@ -274,8 +394,8 @@ GdpChainTable::dispatch(const StaticInst *si, Addr pc)
             e.elemBytes = info.elemBytes;
             idx = dctInsert(e);
             if (idx >= 0) {
-                gdpStats.headsAllocated++;
-                DPRINTF(GDP, "head allocated: PC %#x slot %d EEW %u\n",
+                tableStats.headsAllocated++;
+                DPRINTF(VectorChain, "head allocated: PC %#x slot %d EEW %u\n",
                         pc, idx, info.elemBytes);
             }
         }
@@ -288,7 +408,7 @@ GdpChainTable::dispatch(const StaticInst *si, Addr pc)
     // The gather: backward propagation NOW, at dispatch — program
     // order, and before this instruction's own destination overwrites
     // PT (compilers alias vd with vs2: "vluxei64.v v1,(a2),v1").
-    if (info.kind == StaticInst::GdpInstInfo::IndexedLoad &&
+    if (info.kind == StaticInst::VecMemInfo::IndexedLoad &&
         info.elemBytes > 0) {
         const PtEntry src = pt[info.srcVReg & 31];
         if (src.depend && src.ptr >= 0 && src.ptr < (int)dct.size() &&
@@ -304,7 +424,7 @@ GdpChainTable::dispatch(const StaticInst *si, Addr pc)
                 e.lastDctPtr = src.ptr;
                 gidx = dctInsert(e);
                 if (gidx >= 0) {
-                    gdpStats.gathersInserted++;
+                    tableStats.gathersInserted++;
                 }
             } else {
                 // Unlike the identity fields, provenance is dynamic:
@@ -325,20 +445,43 @@ GdpChainTable::dispatch(const StaticInst *si, Addr pc)
                 }
                 if (ptr >= 0 && ptr < (int)dct.size() &&
                     dct[ptr].valid && dct[ptr].head) {
-                    if (dct[ptr].consumer != gidx) {
-                        gdpStats.linksFormed++;
-                        DPRINTF(GDP, "link: producer PC %#x slot "
-                                "%d -> gather PC %#x slot %d\n",
-                                dct[ptr].pc, ptr, pc, gidx);
+                    std::vector<int> &cons = dct[ptr].consumers;
+                    const bool present =
+                        std::find(cons.begin(), cons.end(), gidx)
+                        != cons.end();
+                    if (consumerSlots == 1) {
+                        // Historical single-link behavior: the
+                        // last-dispatched gather overwrites, so
+                        // multi-way loops ping-pong the slot (and
+                        // churn linksFormed) exactly as before.
+                        if (!present) {
+                            tableStats.linksFormed++;
+                            DPRINTF(VectorChain, "link: producer PC %#x "
+                                    "slot %d -> gather PC %#x slot %d\n",
+                                    dct[ptr].pc, ptr, pc, gidx);
+                        }
+                        cons.assign(1, gidx);
+                    } else if (!present) {
+                        // Multi-way: insert-if-absent; a distinct
+                        // gather beyond capacity bounces off.
+                        if (cons.size() < consumerSlots) {
+                            cons.push_back(gidx);
+                            tableStats.linksFormed++;
+                            DPRINTF(VectorChain, "link: producer PC %#x "
+                                    "slot %d -> gather PC %#x slot %d "
+                                    "(way %u)\n", dct[ptr].pc, ptr, pc,
+                                    gidx, (unsigned)cons.size() - 1);
+                        } else {
+                            tableStats.consumerSlotsExhausted++;
+                        }
                     }
-                    dct[ptr].consumer = gidx;
                     // No config latch here: the prefetcher walks the
                     // chain on demand at adoption (pipelineConfig).
                     // In hardware this walk distributes each link's
                     // op into the pipeline stage registers as it
                     // passes; the table keeps no copy.
                 } else {
-                    gdpStats.linkWalksFailed++;
+                    tableStats.linkWalksFailed++;
                 }
             }
         }
@@ -365,7 +508,7 @@ GdpChainTable::dispatch(const StaticInst *si, Addr pc)
     // dispatched.
     const unsigned op7 = (unsigned)si->getEMI() & 0x7f;
     if ((op7 == 0x07 || op7 == 0x27) &&
-        info.kind == StaticInst::GdpInstInfo::None &&
+        info.kind == StaticInst::VecMemInfo::None &&
         !si->isLoad() && !si->isStore()) {
         int src_slot = -1;
         for (int i = 0; i < si->numSrcRegs(); i++) {
@@ -442,7 +585,7 @@ GdpChainTable::dispatch(const StaticInst *si, Addr pc)
         if (d.op == VOp::Invalid) {
             // A tagged value flowed into an op the pipeline cannot
             // replay: the chain breaks here.
-            gdpStats.chainsBroken++;
+            tableStats.chainsBroken++;
             for (int i = 0; i < ndest; i++) {
                 pt[dests[i]] = PtEntry();
             }
@@ -464,8 +607,8 @@ GdpChainTable::dispatch(const StaticInst *si, Addr pc)
             e.lastDctPtr = last;
             idx = dctInsert(e);
             if (idx >= 0) {
-                gdpStats.transformsInserted++;
-                DPRINTF(GDP, "transform: PC %#x slot %d op %d prev "
+                tableStats.transformsInserted++;
+                DPRINTF(VectorChain, "transform: PC %#x slot %d op %d prev "
                         "%d\n", pc, idx, (int)d.op, last);
             }
         } else {
@@ -491,9 +634,9 @@ GdpChainTable::dispatch(const StaticInst *si, Addr pc)
 // ---------------------------------------------------------------------
 
 void
-GdpChainTable::armBase(const StaticInst *si, Addr pc, Addr base)
+VectorChainTable::armBase(const StaticInst *si, Addr pc, Addr base)
 {
-    if (si->gdpInstInfo().kind != StaticInst::GdpInstInfo::IndexedLoad) {
+    if (si->vecMemInfo().kind != StaticInst::VecMemInfo::IndexedLoad) {
         return;
     }
     const int idx = searchPc(pc);
@@ -501,8 +644,8 @@ GdpChainTable::armBase(const StaticInst *si, Addr pc, Addr base)
         return;
     }
     if (!dct[idx].immValid) {
-        gdpStats.basesArmed++;
-        DPRINTF(GDP, "base armed: gather PC %#x base %#x\n", pc, base);
+        tableStats.basesArmed++;
+        DPRINTF(VectorChain, "base armed: gather PC %#x base %#x\n", pc, base);
     }
     dct[idx].scalar = base;
     dct[idx].immValid = true;
@@ -511,18 +654,18 @@ GdpChainTable::armBase(const StaticInst *si, Addr pc, Addr base)
     // one trigger later with no latch to refresh.
 }
 
-GdpChainTable::ChainSnapshot
-GdpChainTable::pipelineConfig(int producer_ptr) const
+VectorChainTable::ChainSnapshot
+VectorChainTable::pipelineConfig(int producer_ptr, unsigned slot) const
 {
     if (producer_ptr < 0 || producer_ptr >= (int)dct.size() ||
         !dct[producer_ptr].valid || !dct[producer_ptr].head) {
         return ChainSnapshot();
     }
-    return chainSnapshot(producer_ptr);
+    return chainSnapshot(producer_ptr, slot);
 }
 
 bool
-GdpChainTable::wantsScalar(Addr pc) const
+VectorChainTable::wantsScalar(Addr pc) const
 {
     const int idx = searchPc(pc);
     return idx >= 0 && !dct[idx].head && !dct[idx].tail &&
@@ -530,7 +673,7 @@ GdpChainTable::wantsScalar(Addr pc) const
 }
 
 void
-GdpChainTable::captureScalar(Addr pc, uint64_t value)
+VectorChainTable::captureScalar(Addr pc, uint64_t value)
 {
     const int idx = searchPc(pc);
     if (idx < 0 || dct[idx].head || dct[idx].tail ||
@@ -541,15 +684,15 @@ GdpChainTable::captureScalar(Addr pc, uint64_t value)
     // value, no stability training (contrast Tyche's conf ramp).
     dct[idx].scalar = value;
     dct[idx].immValid = true;
-    gdpStats.scalarsCaptured++;
+    tableStats.scalarsCaptured++;
 }
 
 // ---------------------------------------------------------------------
 // Prefetcher-side queries
 // ---------------------------------------------------------------------
 
-GdpChainTable::ProducerInfo
-GdpChainTable::producerInfo(Addr pc) const
+VectorChainTable::ProducerInfo
+VectorChainTable::producerInfo(Addr pc) const
 {
     ProducerInfo out;
     const int idx = searchPc(pc);
@@ -557,23 +700,24 @@ GdpChainTable::producerInfo(Addr pc) const
         return out;
     }
     out.found = true;
-    out.linked = dct[idx].consumer >= 0;
+    out.linked = !dct[idx].consumers.empty();
     out.dctPtr = idx;
     out.elemBytes = dct[idx].elemBytes;
+    out.numConsumers = dct[idx].consumers.size();
     return out;
 }
 
-GdpChainTable::ChainSnapshot
-GdpChainTable::chainSnapshot(int producer_ptr) const
+VectorChainTable::ChainSnapshot
+VectorChainTable::chainSnapshot(int producer_ptr, unsigned slot) const
 {
     ChainSnapshot out;
     out.gen = gen;
     if (producer_ptr < 0 || producer_ptr >= (int)dct.size() ||
         !dct[producer_ptr].valid || !dct[producer_ptr].head ||
-        dct[producer_ptr].consumer < 0) {
+        slot >= dct[producer_ptr].consumers.size()) {
         return out;
     }
-    const int c = dct[producer_ptr].consumer;
+    const int c = dct[producer_ptr].consumers[slot];
     if (c < 0 || c >= (int)dct.size() || !dct[c].valid ||
         !dct[c].tail || !dct[c].immValid) {
         return out; // base not snooped yet (gather has not issued)

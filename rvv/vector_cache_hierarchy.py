@@ -93,10 +93,20 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         # (tyche_table) — the CPU-to-prefetcher sideband channel. See
         # src/cpu/tyche_table.hh and needs_chain_table().
         prefetcher_needs_chain_table: bool = False,
-        # GDP: same wiring pattern for the GdpChainTable
-        # (prefetcher.link_table + core.gdp_table). See
-        # src/cpu/gdp_table.hh and needs_gdp_table().
-        prefetcher_needs_gdp_table: bool = False,
+        # GDP/VTyche: same wiring pattern for the VectorChainTable
+        # (prefetcher.link_table + core.vector_chain_table). See
+        # src/cpu/vector_chain_table.hh and needs_vector_chain_table().
+        prefetcher_needs_vector_chain_table: bool = False,
+        # VectorChainTable sizing, shared by every prefetcher fed from
+        # that channel (gdp/vtyche/vtyche2/vhybrid) since one table is
+        # built per core. Defaults match VectorChainTable.py.
+        vector_dct_entries: int = 8,
+        vector_max_transform_stages: int = 4,
+        # ReVeLA: same wiring pattern for the RevelaStreamTable
+        # (prefetcher.stream_table + core.revela_table). See
+        # src/cpu/revela_table.hh and needs_revela_table().
+        prefetcher_needs_revela_table: bool = False,
+        revela_stt_entries: int = 16,
         # MSHR counts bound the miss-level parallelism of each cache;
         # tgts_per_mshr bounds how many demands can coalesce on one
         # outstanding line (relevant for gathers, where many elements of
@@ -114,7 +124,7 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         # Feed the stream-page registry from DEMAND accesses (every
         # unit-stride vector load/store registers its page at LSQ
         # translation finish) instead of / in addition to prefetch
-        # departures. Lets stream_demote run without a gdp-table
+        # departures. Lets stream_demote run without a vector-chain-table
         # prefetcher, isolating the replacement policy.
         stream_demote_demand: bool = False,
         # Second-touch promotion on the demotion policy: observed
@@ -124,6 +134,10 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         # Second touch also unlearns the whole page (blocked from
         # re-registration): the churn set's re-entry path.
         stream_demote_page_promote: bool = False,
+        # Monotone-arm gate on demand-fed registration: streams must
+        # advance arm_distance monotonically (VA) before demoting, and
+        # a backward jump sticky-revokes them (re-sweep = reuse).
+        stream_demote_monotone: bool = False,
     ) -> None:
         super().__init__(
             l1d_size=l1d_size,
@@ -153,10 +167,15 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         self._stream_demote_demand = stream_demote_demand
         self._stream_demote_second_touch = stream_demote_second_touch
         self._stream_demote_page_promote = stream_demote_page_promote
-        self._core_gdp_table = None
+        self._stream_demote_monotone = stream_demote_monotone
+        self._core_vector_chain_table = None
         self._prefetcher_needs_mmu = prefetcher_needs_mmu
         self._prefetcher_needs_chain_table = prefetcher_needs_chain_table
-        self._prefetcher_needs_gdp_table = prefetcher_needs_gdp_table
+        self._prefetcher_needs_vector_chain_table = prefetcher_needs_vector_chain_table
+        self._vector_dct_entries = vector_dct_entries
+        self._vector_max_transform_stages = vector_max_transform_stages
+        self._prefetcher_needs_revela_table = prefetcher_needs_revela_table
+        self._revela_stt_entries = revela_stt_entries
 
     def _finish_prefetcher(self, prefetcher, cpu) -> None:
         """Per-prefetcher post-attach wiring: register the core's MMU
@@ -184,19 +203,42 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
             cpu.core.tyche_table = tbl
             prefetcher.chain_table = tbl
         if (
-            self._prefetcher_needs_gdp_table
+            self._prefetcher_needs_vector_chain_table
             and "link_table" in prefetcher._params
         ):
             # Same _params guard: only the gdp class has a link_table
             # param, so dual configs wire the right prefetcher.
-            from m5.objects import GdpChainTable
+            from m5.objects import VectorChainTable
 
-            tbl = GdpChainTable(
-                demand_stream_pages=self._stream_demote_demand
+            tbl = VectorChainTable(
+                dct_entries=self._vector_dct_entries,
+                max_transform_stages=self._vector_max_transform_stages,
+                demand_stream_pages=self._stream_demote_demand,
+                monotone_arm=self._stream_demote_monotone,
             )
-            cpu.core.gdp_table = tbl
+            # Multi-way gather support: the prefetcher's
+            # consumers_per_producer pf-param is the single source of
+            # truth; copy it onto the table so the head rows carry
+            # matching consumer slots. Guarded so prefetchers without
+            # the param (gdp, vtyche2) keep the table default of 1.
+            if "consumers_per_producer" in prefetcher._params:
+                tbl.consumers_per_producer = (
+                    prefetcher.consumers_per_producer
+                )
+            cpu.core.vector_chain_table = tbl
             prefetcher.link_table = tbl
-            self._core_gdp_table = tbl
+            self._core_vector_chain_table = tbl
+        if (
+            self._prefetcher_needs_revela_table
+            and "stream_table" in prefetcher._params
+        ):
+            # Same _params guard: only the revela class has a
+            # stream_table param, so dual configs wire the right one.
+            from m5.objects import RevelaStreamTable
+
+            tbl = RevelaStreamTable(stt_entries=self._revela_stt_entries)
+            cpu.core.revela_table = tbl
+            prefetcher.stream_table = tbl
 
     @overrides(AbstractCacheHierarchy)
     def incorporate_cache(self, board: AbstractBoard) -> None:
@@ -214,10 +256,10 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         self.splitters = [VectorSplitter() for _ in range(num_cores)]
 
         for i, cpu in enumerate(board.get_processor().get_cores()):
-            # The gdp table is per-core: clear the cursor so this core
+            # The vector chain table is per-core: clear the cursor so this core
             # gets its own instance (from _finish_prefetcher or the
             # demand-side standalone path below), never a neighbor's.
-            self._core_gdp_table = None
+            self._core_vector_chain_table = None
             # Scalar chain, identical to PrivateL1PrivateL2CacheHierarchy.
             l2_node = self.add_root_child(
                 f"l2-cache-{i}",
@@ -295,28 +337,34 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
                 self._finish_prefetcher(vl1d_node.cache.prefetcher, cpu)
 
             # Stream-demoting replacement on the vector caches, sharing
-            # the same per-core GdpChainTable the prefetcher publishes
+            # the same per-core VectorChainTable the prefetcher publishes
             # stream pages through (see unified_cache_hierarchy.py for
             # the mode rationale).
             if self._stream_demote != "none":
-                if self._core_gdp_table is None:
-                    # No gdp-table prefetcher: the registry must be fed
+                if self._core_vector_chain_table is None:
+                    # No vector-chain-table prefetcher: the registry must be fed
                     # from the demand side (policy-in-isolation runs).
                     assert self._stream_demote_demand, (
-                        "stream_demote needs a gdp-table prefetcher "
+                        "stream_demote needs a vector-chain-table prefetcher "
                         "(gdp/vtyche) or stream_demote_demand to feed "
                         "the stream-page registry"
                     )
-                    from m5.objects import GdpChainTable
+                    from m5.objects import VectorChainTable
 
-                    tbl = GdpChainTable(demand_stream_pages=True)
-                    cpu.core.gdp_table = tbl
-                    self._core_gdp_table = tbl
+                    tbl = VectorChainTable(
+                        dct_entries=self._vector_dct_entries,
+                        max_transform_stages=(
+                            self._vector_max_transform_stages),
+                        demand_stream_pages=True,
+                        monotone_arm=self._stream_demote_monotone,
+                    )
+                    cpu.core.vector_chain_table = tbl
+                    self._core_vector_chain_table = tbl
                 from m5.objects import StreamDemoteLRURP
 
                 if self._stream_demote in ("l2", "both"):
                     vl2_node.cache.replacement_policy = StreamDemoteLRURP(
-                        link_table=self._core_gdp_table,
+                        link_table=self._core_vector_chain_table,
                         demote_on_insert=True,
                         second_touch_promote=(
                             self._stream_demote_second_touch),
@@ -325,7 +373,7 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
                     )
                 if self._stream_demote in ("l1", "both"):
                     vl1d_node.cache.replacement_policy = StreamDemoteLRURP(
-                        link_table=self._core_gdp_table,
+                        link_table=self._core_vector_chain_table,
                         demote_on_insert=False,
                         second_touch_promote=(
                             self._stream_demote_second_touch),

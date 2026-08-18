@@ -1,6 +1,6 @@
 /**
  * VTyche (Vector Tyche) implementation. See vector_tyche2.hh for the
- * design and cpu/gdp_table.hh for the CPU-side half it shares with GDP.
+ * design and cpu/vector_chain_table.hh for the CPU-side half it shares with GDP.
  */
 
 #include "mem/cache/prefetch/vector_tyche2.hh"
@@ -35,15 +35,14 @@ VectorTyche2::VectorTyche2(const VectorTyche2PrefetcherParams &p)
     irtEntries(p.routing_entries),
     drainFloor(p.drain_floor),
     dedupBufferSize(p.dedup_buffer_size),
-    drainPeriod(p.drain_period),
     streamTrackingTable(),
     indexRoutingTable(),
     vtycheStats(this),
     drainEvent([this] { drainTick(); }, name())
 {
     fatal_if(tbl == nullptr, "%s: no link_table set. VTyche needs the "
-             "GdpChainTable that is also attached to the CPU's "
-             "gdp_table param (the config script wires both).", name());
+             "VectorChainTable that is also attached to the CPU's "
+             "vector_chain_table param (the config script wires both).", name());
     fatal_if(streamingDistance < 1, "index_distance must be >= 1");
     fatal_if(releaseDistance < 1, "release_distance must be >= 1");
     fatal_if(releaseDistance >= streamingDistance,
@@ -57,7 +56,7 @@ VectorTyche2::VectorTyche2(const VectorTyche2PrefetcherParams &p)
 void
 VectorTyche2::resetLearnedState()
 {
-    // The GdpChainTable registers its own reset callback; only this
+    // The VectorChainTable registers its own reset callback; only this
     // prefetcher's runtime state is cleared here.
     streamTrackingTable.clear();
     configuredCount = 0;
@@ -121,9 +120,9 @@ VectorTyche2::VTycheStats::VTycheStats(statistics::Group *parent)
 // ---------------------------------------------------------------------
 
 VectorTyche2::LinearForm
-VectorTyche2::collapse(const GdpChainTable::ChainSnapshot &snap) const
+VectorTyche2::collapse(const VectorChainTable::ChainSnapshot &snap) const
 {
-    using VOp = GdpChainTable::VOp;
+    using VOp = VectorChainTable::VOp;
     LinearForm f;
     f.gen = snap.gen;
     if (!snap.valid) {
@@ -538,10 +537,10 @@ VectorTyche2::drainWorkPending() const
 void
 VectorTyche2::scheduleDrain()
 {
-    if (drainPeriod == 0 || drainEvent.scheduled() || !drainWorkPending()) {
+    if (drainEvent.scheduled() || !drainWorkPending()) {
         return;
     }
-    schedule(drainEvent, clockEdge(drainPeriod));
+    schedule(drainEvent, clockEdge(Cycles(1)));
 }
 
 void
@@ -600,7 +599,7 @@ VectorTyche2::notify(const CacheAccessProbeArg &acc, const PrefetchInfo &pfi)
     // (useVirtualAddresses PA math) and a ContextID (cross-page
     // translation requests). The Request is a shared_ptr, so it
     // outlives the packet safely.
-    if (drainPeriod != 0 && acc.pkt != nullptr && acc.pkt->req != nullptr &&
+    if (acc.pkt != nullptr && acc.pkt->req != nullptr &&
         acc.pkt->req->hasVaddr() && acc.pkt->req->hasContextId()) {
         drainCtxReq = acc.pkt->req;
         drainCtxPfi.reset(new PrefetchInfo(pfi, pfi.getAddr()));
@@ -627,7 +626,7 @@ VectorTyche2::calculatePrefetch(const PrefetchInfo &pfi,
     const Addr pc = pfi.getPC();
     const bool is_secure = pfi.isSecure();
 
-    const GdpChainTable::ProducerInfo info = tbl->producerInfo(pc);
+    const VectorChainTable::ProducerInfo info = tbl->producerInfo(pc);
     if (!info.found) {
         drainEmission(addresses);
         return;
@@ -660,7 +659,7 @@ VectorTyche2::calculatePrefetch(const PrefetchInfo &pfi,
             if (!ps.configured && configuredCount >= pipelines) {
                 vtycheStats.pipelinesSaturated++;
             } else {
-                const GdpChainTable::ChainSnapshot snap =
+                const VectorChainTable::ChainSnapshot snap =
                     tbl->pipelineConfig(info.dctPtr);
                 if (!snap.valid) {
                     vtycheStats.chainNotReady++;

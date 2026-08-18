@@ -174,7 +174,7 @@ class TreePLRURP(BaseReplacementPolicy):
 class StreamDemoteLRURP(LRURP):
     """LRU that demotes lines of registered stream pages to the LRU
     position — pages the VTyche/GDP prefetcher publishes through the
-    shared GdpChainTable as it issues index-array stream prefetches
+    shared VectorChainTable as it issues index-array stream prefetches
     (unit-stride vector arrays: single-use, dead after their access).
     demote_on_insert=True is the L2 mode (a stream line's L2 copy is
     dead on arrival: its demand use is served by the L1 copy);
@@ -187,11 +187,11 @@ class StreamDemoteLRURP(LRURP):
     cxx_class = "gem5::replacement_policy::StreamDemoteLRU"
     cxx_header = "mem/cache/replacement_policies/stream_demote_lru_rp.hh"
 
-    link_table = Param.GdpChainTable(
+    link_table = Param.VectorChainTable(
         NULL,
         "The per-core chain table publishing stream physical pages "
         "(same instance as the prefetcher's link_table and the CPU's "
-        "gdp_table).",
+        "vector_chain_table).",
     )
     demote_on_insert = Param.Bool(
         False,
@@ -211,7 +211,7 @@ class StreamDemoteLRURP(LRURP):
     page_promote = Param.Bool(
         False,
         "Second touch also unlearns the whole PAGE "
-        "(GdpChainTable.promoteStreamPage): removed from the stream "
+        "(VectorChainTable.promoteStreamPage): removed from the stream "
         "registry and blocked from re-registration, so NEW fills of a "
         "proven-reused page insert as plain LRU. Per-line promotion "
         "alone protects incumbents but gives evicted lines no re-entry "

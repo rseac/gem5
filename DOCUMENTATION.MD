@@ -411,9 +411,10 @@ section below, formerly named GDP2) superseded them:
   `A[B[i]+c]` blind spot) disappears; on poisson3Db it beat v1 1.617x
   vs 1.434x. Deleted: `src/mem/cache/prefetch/gdp.hh/.cc` (old
   version), `src/cpu/gdp_table.hh/.cc` + `GdpTable.py` (old
-  `GatherDescriptorTable`), the v1 dispatch/arming hooks in
-  `src/cpu/o3/inst_queue.cc`, and the `gdp_table` BaseCPU param's old
-  type. The `StaticInst::gdpInstInfo()` classification virtual
+  `GatherDescriptorTable`; those paths now hold the renamed
+  `VectorChainTable`, see the mapping below), the v1 dispatch/arming
+  hooks in `src/cpu/o3/inst_queue.cc`, and the `gdp_table` BaseCPU
+  param's old type. The `StaticInst::vecMemInfo()` classification virtual
   (static_inst.hh, vector.hh) SURVIVES — the current GDP table uses
   the same channel.
 - **VStride** (`--prefetcher vstride`): confidence-free vector stream
@@ -424,10 +425,20 @@ section below, formerly named GDP2) superseded them:
   vstride.hh/.cc`, `VStridePrefetcher`, debug flag `VStride`,
   `rvv/vstride_test.c`.
 
-The current-name mapping after the rename: `--prefetcher gdp` is the
+The current-name mapping after the renames: `--prefetcher gdp` is the
 transform-chain design, class `GDPPrefetcher` / `gem5::prefetch::GDP`,
-CPU sideband `GdpChainTable` on BaseCPU param `gdp_table`, debug flag
-`GDP`. Old sweep rows recorded under `gdp_*`/`gdp_sap_*`/`gdp_skip*`
+debug flag `GDP`. Its CPU sideband was renamed on 2026-08-12 from
+`GdpChainTable` (files `src/cpu/gdp_table.{hh,cc}`, `GdpTable.py`,
+BaseCPU param `gdp_table`, hook `StaticInst::gdpInstInfo()`) to
+`VectorChainTable` (`src/cpu/vector_chain_table.{hh,cc}`,
+`VectorChainTable.py`, param `vector_chain_table`, hook
+`StaticInst::vecMemInfo()`, debug flag `VectorChain`), because the
+table is shared general infrastructure — VTyche/VTyche2, ReVeLA's
+`vecMemInfo()` classification, `StreamDemoteLRURP`'s stream-page
+registry and the demand-side LSQ registration all use it, not just
+GDP. Stats therefore moved from `...gdp_table.*` to
+`...vector_chain_table.*` (pre-rename stats.txt files keep the old
+path). Old sweep rows recorded under `gdp_*`/`gdp_sap_*`/`gdp_skip*`
 (v1) and `vstride_*` names are historical.
 
 ## Feature: Tyche — scalar dependency-chain indirect prefetcher (port)
@@ -449,13 +460,13 @@ architecturally from RVV semantics.
 
 - `src/cpu/tyche_table.hh/.cc`, `src/cpu/TycheTable.py` (new — the
   `TycheChainTable` SimObject: IPT + PT + DCT, the CPU-to-prefetcher
-  sideband channel, same wiring pattern as `GdpChainTable`)
+  sideband channel, same wiring pattern as `VectorChainTable`)
 - `src/mem/cache/prefetch/tyche.hh/.cc` (new — the cache-side
   prefetcher: IPT training/trigger, walk registration, fill capture,
   chain replay)
 - `src/mem/cache/prefetch/Prefetcher.py` (additive `TychePrefetcher`)
 - `src/cpu/BaseCPU.py`, `src/cpu/base.hh/.cc` (additive `tyche_table`
-  param, following `gdp_table`)
+  param, following `vector_chain_table`)
 - `src/cpu/o3/inst_queue.cc` (additive hooks next to the GDP ones:
   scalar-instruction dispatch feed + issue-time constant capture)
 - `src/cpu/SConscript`, `src/mem/cache/prefetch/SConscript`
@@ -593,22 +604,23 @@ training anywhere; arming still takes one iteration.
 
 **Files:**
 
-- `src/cpu/gdp_table.hh/.cc`, `src/cpu/GdpTable.py` (the
-  `GdpChainTable` SimObject: PT + DCT, the CPU-to-prefetcher
+- `src/cpu/vector_chain_table.hh/.cc`, `src/cpu/VectorChainTable.py` (the
+  `VectorChainTable` SimObject: PT + DCT, the CPU-to-prefetcher
   sideband, same wiring pattern as `TycheChainTable`)
 - `src/mem/cache/prefetch/gdp.hh/.cc` (the cache-side
   prefetcher: architectural stream, range-based capture, replay)
 - `src/mem/cache/prefetch/Prefetcher.py` (`GDPPrefetcher`)
-- `src/cpu/BaseCPU.py`, `src/cpu/base.hh/.cc` (`gdp_table` param)
+- `src/cpu/BaseCPU.py`, `src/cpu/base.hh/.cc` (`vector_chain_table` param)
 - `src/cpu/o3/inst_queue.cc` (additive hooks next to the Tyche
   ones: vector dispatch feed + issue-time base/scalar snooping)
-- SConscripts (registration; `GDP` debug flag);
+- SConscripts (registration; `GDP` debug flag for the prefetcher,
+  `VectorChain` for the table);
   `rvv/prefetcher_factory.py`, `rvv/vector_cache_hierarchy.py`,
   `rvv/riscv-rvv-se-ara-prefetcher.py` (selection, per-core wiring —
   the gdp param is `link_table`, distinct from tyche's `chain_table`
   so the dual-config `_params` guards stay unambiguous)
 
-**CPU side (`GdpChainTable`), hardware widths in mind:**
+**CPU side (`VectorChainTable`), hardware widths in mind:**
 
 - *PT*: 32 vector arch regs -> {depend, 3-bit DCT ptr}. Forward
   propagation at dispatch; same source-classification rules as v1's
@@ -789,7 +801,7 @@ more conservative clock), and wrong-path dispatches update the tables
 (self-healing via the per-gather re-walk).
 
 **Validation:** no new test binary needed — `rvv/gdp_test.bin` covers
-both paths. Mode 1 (`x[idx[i]]`): expect `gdp_table.linksFormed>=1`,
+both paths. Mode 1 (`x[idx[i]]`): expect `vector_chain_table.linksFormed>=1`,
 `prefetcher.chainDispatches>0`, `fillsCaptured>0`,
 `targetsGenerated>0`. Mode 0 (`x[idx[i]+8]`, the pattern v1 KILLS):
 the `vadd.vi v1,v1,8` becomes a recorded Add link — expect the same
@@ -810,7 +822,7 @@ build/RISCV/gem5.opt rvv/riscv-rvv-se-ara-prefetcher.py \
 
 `--prefetcher vtyche`, vector side only. A deliberate hybrid: GDP's
 *architectural discovery* with IMP's *linear equation* for generation.
-It shares GDP's entire CPU side — the same `GdpChainTable` SimObject,
+It shares GDP's entire CPU side — the same `VectorChainTable` SimObject,
 the same producer identification, producer→gather link and base snoop
 — but replaces the transform-replay pipeline with
 
@@ -834,20 +846,20 @@ equation cannot express.
 **Files:**
 
 - `src/mem/cache/prefetch/vector_tyche.hh/.cc` (the whole prefetcher;
-  no new CPU-side code — `GdpChainTable` is reused unmodified)
+  no new CPU-side code — `VectorChainTable` is reused unmodified)
 - `src/mem/cache/prefetch/Prefetcher.py` (`VectorTychePrefetcher`; the
   param is `link_table`, the *same name* GDP uses, so the per-core
   wiring in `rvv/vector_cache_hierarchy.py` — which guards on
   `"link_table" in prefetcher._params` — picks it up with no change)
 - SConscripts (registration; `VTyche` debug flag)
 - `rvv/prefetcher_factory.py` (`PREFETCHERS`, `VA_PREFETCHERS`,
-  `GDP_TABLE_PREFETCHERS`), `rvv/riscv-rvv-se-ara-prefetcher.py`
+  `VECTOR_CHAIN_TABLE_PREFETCHERS`), `rvv/riscv-rvv-se-ara-prefetcher.py`
   (`--prefetcher vtyche`)
 
 ### What GDP does
 
 `GDP::calculatePrefetch` (`gdp.cc:300-318`) adopts a
-`GdpChainTable::ChainSnapshot` — a *list* of `StageOp{op, scalar,
+`VectorChainTable::ChainSnapshot` — a *list* of `StageOp{op, scalar,
 extFromBits}` in head-to-gather order — into the producer's STT entry.
 At drain time `GDP::applyChain` (`gdp.cc:131-165`) walks that list per
 element, and `drainReplay` (`gdp.cc:167-254`) walks the elements
@@ -939,7 +951,7 @@ payload they came from when dedup does not bite.
 
 | Param | Default | Meaning |
 |---|---|---|
-| `link_table` | NULL | the per-core `GdpChainTable` (wired by the config script) |
+| `link_table` | NULL | the per-core `VectorChainTable` (wired by the config script) |
 | `streaming_distance` | 8 | index-array stream lookahead in lines; also sets the indirect lookahead |
 | `stream_only` | False | ablation: stream but never capture/convert |
 | `address_queue_entries` | 2 | converted batches held per pipeline |
@@ -951,7 +963,7 @@ payload they came from when dedup does not bite.
 
 None to any existing configuration: this is an additive prefetcher
 selection. `--prefetcher vtyche` requires `--prefetcher-side vector`
-(same gate as gdp, via `GDP_TABLE_PREFETCHERS`) and is not accepted for
+(same gate as gdp, via `VECTOR_CHAIN_TABLE_PREFETCHERS`) and is not accepted for
 `--scalar-prefetcher`. It trains on virtual addresses, so the CPU MMU
 is registered automatically.
 
@@ -963,8 +975,8 @@ vector L1:
 
 | | mode 0 (`x[idx[i]+8]`) | mode 1 (`x[idx[i]]`) |
 |---|---|---|
-| `gdp_table.transformsInserted` | 2 | 1 |
-| `gdp_table.linksFormed` | 1 | 1 |
+| `vector_chain_table.transformsInserted` | 2 | 1 |
+| `vector_chain_table.linksFormed` | 1 | 1 |
 | `formsAdopted` | 1709 | 1744 |
 | **`chainsRejected`** | **0** | **0** |
 | `fillsCaptured` | 1298 | 1326 |
@@ -1172,9 +1184,9 @@ has, copied from `VectorSplitCacheHierarchy`:
   attaches to the L1D or the L2;
 - `_finish_prefetcher` is identical to the split class's: MMU
   registration for VA-training prefetchers, and per-core
-  `TycheChainTable` / `GdpChainTable` sideband tables wired to both
+  `TycheChainTable` / `VectorChainTable` sideband tables wired to both
   the prefetcher (`chain_table` / `link_table`) and the core
-  (`tyche_table` / `gdp_table`);
+  (`tyche_table` / `vector_chain_table`);
 - `mshrs` / `tgts_per_mshr` constructor knobs on L1D and L2, defaults
   matching the stdlib classes (16/20 and 20/12).
 
@@ -1188,7 +1200,7 @@ tgts) are honored. The gdp/vtyche "side must be vector" and tyche
 exist because the VectorSplitter hides one access class from each
 chain, and the unified L1D sees both. This was validated on
 spmv/football: vtyche on the unified L1D adopts forms and the CPU-side
-`gdp_table.linksFormed` fires, with scalar accesses passing through
+`vector_chain_table.linksFormed` fires, with scalar accesses passing through
 vtyche's PC gate harmlessly (`vector_tyche.cc` `calculatePrefetch`
 early-returns when `tbl->producerInfo(pc)` finds nothing).
 
@@ -1282,7 +1294,7 @@ xbar holds more than that. `rvv/unified_cache_hierarchy.py` now sets
 bounds tracking, not allocated storage, so normal runs are
 unaffected.
 
-## VTyche: self-clocked drain (`drain_period`, 2026-08-04)
+## VTyche: self-clocked drain (2026-08-04; `drain_period` param removed 2026-08-12)
 
 ### What the drain did before
 
@@ -1302,11 +1314,14 @@ pipeline stage and the demand cursor advanced on the same event clock.
 
 ### What this fork adds
 
-`VectorTychePrefetcher.drain_period` (Cycles, default 1; `0` restores
-the legacy demand-clocked drain). With it set, VTyche self-schedules
-an `EventFunctionWrapper` (`drainEvent`, `vector_tyche.cc`): while any
-producer holds buffered or half-emitted conversion work, the drain
-fires every `drain_period` cycles, converting (still at most one line
+An always-on every-cycle drain (originally a `drain_period` param,
+Cycles default 1 with `0` restoring the legacy demand-clocked drain;
+removed 2026-08-12 along with ReVeLA's — the Aug 5 sweep never used
+another setting, and the legacy mode survives in the git history if
+ever needed). VTyche self-schedules an `EventFunctionWrapper`
+(`drainEvent`, `vector_tyche.cc`): while any producer holds buffered
+or half-emitted conversion work, the drain
+fires every cycle, converting (still at most one line
 per firing — the serial lane-array cost model is unchanged) and
 emitting into the queue. Re-arm points: `notify()` (demand event),
 `notifyFill()` (new work), `getPacket()` (queue room freed by a cache
@@ -1357,7 +1372,7 @@ EXACT streaming oracle — a unit-stride vector load consumes a line's
 whole spatial payload in one access, making its touch an
 architecturally provable last use (no training, unlike SHiP):
 
-1. `GdpChainTable` (`src/cpu/gdp_table.{hh,cc}`) grew a stream-page
+1. `VectorChainTable` (`src/cpu/vector_chain_table.{hh,cc}`) grew a stream-page
    registry: `registerStreamPage(pa)` / `isStreamPage(pa)`, a 64-page
    FIFO+set of PHYSICAL pages, cleared on ROI reset. Page granularity
    sidesteps the VA/PA mismatch (caches are PIPT; prefetch requests
@@ -1380,7 +1395,7 @@ architecturally provable last use (no training, unlike SHiP):
    prefetcher's own lead), demote at first touch. Stats:
    demotedInserts/demotedTouches.
 4. Run script: `--stream-demote {none,l1,l2,both}` (unified hierarchy
-   + gdp-table prefetcher only) wires the policy in
+   + vector-chain-table prefetcher only) wires the policy in
    `rvv/unified_cache_hierarchy.py` sharing the per-core table
    instance; `--l2-prefetcher stride` + `--l2-pf-param` attach a
    second prefetcher to the unified L2 (requires --prefetcher-level
@@ -1402,19 +1417,19 @@ lever; the L1 mode exists for completeness.
 
 The registry above is fed only by prefetch departures
 (`VectorTyche::getPacket`), which couples the replacement policy to a
-gdp-table prefetcher and limits classification to the producer index
+vector-chain-table prefetcher and limits classification to the producer index
 arrays the prefetcher streams. To evaluate the policy in isolation —
 and to cover demand-fetched lines and store streams — the registry
 can now also be fed from the demand path:
 
-1. `StaticInst::GdpInstInfo` (`src/cpu/static_inst.hh`) grew a
-   `UnitStrideStore` kind, implemented by a `gdpInstInfo()` override
+1. `StaticInst::VecMemInfo` (`src/cpu/static_inst.hh`) grew a
+   `UnitStrideStore` kind, implemented by a `vecMemInfo()` override
    on `VseMicroInst` (`src/arch/riscv/insts/vector.hh`) mirroring the
-   existing `VleMicroInst` one. `GdpChainTable::dispatch` matches
+   existing `VleMicroInst` one. `VectorChainTable::dispatch` matches
    kinds exactly, so stores still take no part in chain construction.
-2. `GdpChainTable` grew `demand_stream_pages` (Python param, default
+2. `VectorChainTable` grew `demand_stream_pages` (Python param, default
    False) and `notifyDemandAccess(si, paddr)`
-   (`src/cpu/gdp_table.{hh,cc}`): when enabled, a unit-stride vector
+   (`src/cpu/vector_chain_table.{hh,cc}`): when enabled, a unit-stride vector
    load OR store registers its physical page.
 3. The O3 LSQ calls it at translation finish —
    `LSQ::SingleDataRequest::finish` and `SplitDataRequest::finish`
@@ -1427,7 +1442,7 @@ can now also be fed from the demand path:
    existing per-core table (gdp/vtyche configs: both sources then
    feed the same registry) or, with a non-gdp prefetcher
    (`--prefetcher none`, `stride`, ...), creates a standalone
-   `GdpChainTable` wired to `cpu.core.gdp_table` and the policy's
+   `VectorChainTable` wired to `cpu.core.vector_chain_table` and the policy's
    `link_table` only (`rvv/vector_cache_hierarchy.py`,
    `rvv/unified_cache_hierarchy.py`) — chain construction runs idle
    in it; only the page registry is consumed.
@@ -1480,7 +1495,7 @@ promotion gives evicted lines no re-entry path.
 
 The response to churn lockout moves from line to page granularity:
 
-1. `GdpChainTable::promoteStreamPage(pa)` removes the page from the
+1. `VectorChainTable::promoteStreamPage(pa)` removes the page from the
    stream registry AND records it in a promoted-page FIFO+set
    (`promoted_page_entries`, default 1024 ≈ 4KB) that
    `registerStreamPage` consults — without the block, the demand path
@@ -1498,6 +1513,76 @@ The response to churn lockout moves from line to page granularity:
    a line's first legitimate use is otherwise indistinguishable from
    a re-reference — firing unlearning on first touch would
    self-destruct the policy on true streams within one sweep.
+
+### Monotone-arm gate (`--stream-demote-monotone`, 2026-08-10)
+
+The touch-evidence fixes above are all REACTIVE — they pay demotion
+damage before they can learn (and blackscholes's write-stream pages
+never generate the evidence at all: every pass's touch is a fresh
+residency's first touch, the churn lockout). The monotone-arm gate is
+PROACTIVE, built on one observation from the RiVec sources: every
+harmful case of demoted-line reuse in the suite comes from an
+address-identical re-sweep (blackscholes's `NUM_RUNS` wrapper,
+jacobi's `kernel(A,B); kernel(B,A)` ping-pong, somier's per-timestep
+phase pipeline) — and a re-sweep is directly observable as a demand
+access BELOW the stream's high-water mark.
+
+#### What the existing method did
+
+`notifyDemandAccess` registered every unit-stride vector load/store's
+page unconditionally (when `demand_stream_pages` is set), asserting
+"unit-stride ⇒ single-use" — exact within one sweep, blind across
+sweeps.
+
+#### What this fork adds
+
+1. `VectorChainTable` grows a **Stream Direction Table** (16 entries,
+   PC-keyed, LRU-victimized; `src/cpu/vector_chain_table.hh`): per stream
+   `startAddr/minAddr/maxAddr` (VA), a direction latch, and
+   `armed`/`revoked` bits. Tracking is in VIRTUAL address space — a
+   VA-contiguous sweep is not PA-contiguous across page frames, so a
+   PA-space high-water mark would false-revoke at frame boundaries.
+   The VA rides along from the LSQ call sites
+   (`src/cpu/o3/lsq.cc`, Single + Split `finish()`), which also now
+   pass the PC.
+2. **Arming**: a stream registers pages only after covering
+   `arm_distance` (default 4096 B) of VA monotonically — the literal
+   "enough distinct stream lines", since distance = distinct lines x
+   64 for a unit-stride sweep, and VLEN-independent because it is a
+   distance, not an access count.
+3. **Sticky revocation**: an access more than `backward_slack`
+   (default 1024 B, absorbs OoO completion jitter) below the
+   high-water mark (above, for descending streams) proves the sweep
+   recurs; the stream's lines have a future, so demoting them trades
+   hits for DRAM refetches. The entry disarms permanently (until the
+   ROI stats-reset wipe) AND its already-registered pages are dropped
+   from the registry — the page FIFO entries now carry the
+   registering PC (`StreamPageRec`) to make that walk exact. Without
+   the retroactive drop, pages registered before the re-sweep was
+   detected keep demoting fills for a whole further pass (the jacobi
+   timestep-2 trap).
+4. Scope: only DEMAND-side registrations are gated; prefetcher-side
+   `registerStreamPage` calls (vtyche/gdp `getPacket`) stay untagged
+   (pcTag 0) and ungated — the run script therefore requires
+   `--stream-demote-demand` with `--stream-demote-monotone`.
+   `StreamDemoteLRURP` is untouched: all the new intelligence is in
+   what enters and stays in the registry.
+5. Stats (`vector_chain_table` group): `monotoneStreamsArmed`,
+   `monotoneStreamsRevoked`, `monotonePagesDropped`,
+   `monotoneRegsSuppressed`. Direction-table state clears at ROI
+   resets only, NOT on DCT capacity clears (`clearAll`) — a lost
+   revocation would cost a whole re-sweep of demotion damage to
+   re-learn, while the page registry re-fills from the demand path
+   within a few accesses.
+
+Predicted (to be validated against
+`rivec_results/stream_replacement_data/`): blackscholes/jacobi/somier
+revert to ≈ base (revoked in ≤ 1 pass); axpy/matmul keep their wins
+(monotone single sweeps never revoke); pathfinder reverts to ≈ base
+(its win depended on demoting a recurring sweep — recoverable later
+via a footprint-conditional BIP fallback on revoked streams); spmv
+keeps the full demotion win (`streamsRevoked == 0`, single-sweep ROI,
+`_spmv/src/main.c:153-155`).
 
 ## VTyche: DRAM row-aware issue order (`row_schedule_bits`, 2026-08-07)
 
@@ -1625,3 +1710,1205 @@ clean way to re-test the hypothesis in regimes where activate rate
 degree) or matrices with real per-row clustering (venkat25, lhr07,
 Na5, whose banded structure gives more than the ~1.25 target lines per
 row poisson3Db offers).
+
+### Bounded reorder window (`reorder_window_size`, 2026-08-12)
+
+As introduced above, `rowSchedule()` scanned the head's **entire**
+priority group for a row-mate — effectively a CAM over the whole
+prefetch queue (up to `queue_size`, default 32 entries in
+`Prefetcher.py`'s `QueuedPrefetcher` base). That is both generous as
+hardware and, per the measurement above, part of why the mechanism
+hurt timeliness: an entry promoted from deep in the queue jumps over
+every older entry in between, and the 2026-08-07 A/B showed the
+resulting queue-residence growth (`pfRemovedFull` +94%, `pfLate`
++3.6%) swamping the activation saving.
+
+`VectorTychePrefetcher.reorder_window_size` (Unsigned, default `0` =
+unbounded, the pre-existing behavior) bounds the scan in
+`VectorTyche::rowSchedule()` (`src/mem/cache/prefetch/vector_tyche.cc`)
+to the first N prefetch-queue entries, counted from and including the
+head. A promotion can then only hoist an entry over at most N−1
+others, capping the age-order perturbation, and the model corresponds
+to a fixed-depth comparator window at the queue head rather than a
+full-queue CAM. Two details:
+
+- Window slots are **positional**: an in-window entry that fails the
+  existing due/priority checks still consumes a slot, exactly as a
+  hardware comparator wired to that queue position would.
+- `reorder_window_size=1` leaves only the head in the window, so no
+  reordering can occur — equivalent to FIFO, but with
+  `row_schedule_bits` still spending `rowScheduleMisses` bookkeeping.
+  The prior full-queue behavior remains available via the default `0`.
+
+All three safety invariants of the original mechanism (equal priority,
+due entries only, reorder-before-capture-peek) are unchanged; the
+window is a strictly tighter candidate filter inside the same scan.
+
+```bash
+--prefetcher vtyche --pf-param row_schedule_bits=13 \
+    --pf-param reorder_window_size=8
+```
+
+## Feature: vector_indirect_eval — synthetic gather-locality benchmark (2026-08-11)
+
+### What gem5 provides
+
+Nothing benchmark-side: gem5 has no synthetic workload infrastructure.
+The benchmark instead leans on two documented-nowhere properties of the
+simulator that we verified in source:
+
+1. **SE-mode physical frame assignment.** Every path funnels through
+   `Process::allocateMem` (`src/sim/process.cc:318-345`), which draws
+   frames from a `FreeList<Addr>` pool (`src/sim/mem_pool.hh:57`) that
+   carves best-fit ranges from their low end
+   (`src/base/free_list.hh:146-175`). At program load the pool has never
+   seen a free, so it degenerates to a bump allocator. `.bss` segments
+   are memset through the Always-allocating proxy at load time
+   (`src/base/loader/memory_image.cc:44-47`,
+   `src/mem/se_translating_port_proxy.cc:60-63`) — ascending VA order,
+   zero simulated cycles — so a static array gets contiguous ascending
+   frames: **PA = VA + c** across the whole array. Heap/mmap memory is
+   instead allocated one page per first touch
+   (`src/sim/mem_state.cc:387-396`), i.e. in access order — which is why
+   the benchmark's arrays must be static, not malloc'd.
+
+2. **DRAM address decode.** `DRAMInterface::decodePacket`
+   (`src/mem/dram_interface.cc:834-918`) splits a physical address, for
+   the default `SingleChannelDDR4_2400` (= DDR4_2400_8x8,
+   `src/python/gem5/components/memory/single_channel.py:63`; 8 KiB row,
+   16 banks, 2 ranks, 1 channel, `src/mem/DRAMInterface.py:618`), into:
+   byte-in-line 5:0, column 12:6, bank 16:13, rank 17, row 18+.
+   Consequences used by the benchmark: +8 KiB = next bank; **+256 KiB =
+   same bank, next row** (the conflict stride); a 4 KiB page always lies
+   inside one 8 KiB row, so "same virtual page ⇒ same frame ⇒ same DRAM
+   row" holds regardless of the load-time constant c (which is only
+   4 KiB-aligned — full-8 KiB-row experiments would be a coin flip).
+
+### What we added
+
+`rvv/vector_indirect_eval.c` (built by `rvv/Makefile.tests`, linked
+against `util/m5/build/riscv/out/libm5.a`, ROI markers follow RiVec
+`common/roi.h`): a single-pass `sum += A[B[i]]` gather kernel (all-e64:
+vle64 → vsll 3 → vluxei64 → vadd, one vredsum — avoiding the latent
+vle32-under-e64m2 widening-chain corruption) over a generator-built
+index array with exactly controllable locality:
+
+    vector_indirect_eval <mode> <N> <L> <pool_bytes> [W] [seed]
+
+B is built in blocks of L entries targeting one randomly drawn unit —
+offered same-unit locality is exactly (L−1)/L:
+
+- `line_locality`: unit = 64 B cache line (elements walk k mod 8).
+  Optional W interleaves tiles of W blocks round-robin so same-line
+  reuses land exactly W apart (stack distance W−1); W is line-mode-only
+  because DRAM rows open/close — interleaving would destroy
+  arrival-order row locality and conflate the knob with scheduler
+  reordering.
+- `row_locality`: unit = 4 KiB page-block (L ≤ 64 distinct lines in one
+  seeded scrambled order; line locality pinned at 0%).
+- `bank_conflicts`: unit = the first 4 KiB page of same-bank rows at
+  256 KiB stride, consecutive-repeat rejected. Only the row's first
+  page is used: the second page sits in a different bank whenever c is
+  an odd number of pages. Requires `pool ≥ 32·N·64` (same-bank rows are
+  1/32 of the address space). The only mode that depends on PA = VA + c.
+
+Every touched element is filled `A[j] = j` during generation (layout is
+already fixed by the load-time allocation, so no sequential fill pass is
+needed), making the correct ROI sum equal the sum of B — checked after
+the ROI (`RESULT: PASS/FAIL`). Before the ROI an independent structural
+pass over B re-verifies every parameter-promised property (block unity,
+per-block distinct lines, bank stride, lag-W spacing, exact distinct
+line/page recount) and prints machine-parseable `KEY: value` lines —
+`DISTINCT_LINES` is the exact compulsory-miss floor (repeat draws are
+allowed and counted, not prevented).
+
+Sizing defaults (pool ≥ ~100× vector L2 keeps accidental residency
+<1%): line_locality N=1M pool=256 MiB; row_locality N=256K pool=256 MiB;
+bank_conflicts N=128K pool=512 MiB. Run with the prefetcher MMU
+translation opt-in and `prefetch_on_pf_hit=false`.
+
+Validated 2026-08-11: 134-assertion host-native matrix (all modes ×
+L × W sweeps, determinism, all rejection paths) plus baseline gem5 runs
+checked by `rvv/check_vector_indirect_eval.py`:
+
+- line_locality N=64K L=4: dram.readBursts within 0.5% of the
+  DISTINCT_LINES + N/8 floor.
+- row_locality N=256K L=8: measured DRAM read row-hit rate 87.9% vs
+  88.8% expected (offered 87.5% composited with the B stream);
+  readBursts within 0.2% of N + N/8.
+- bank_conflicts N=128K L=1: row-hit rate 10.1% vs 11.0% expected
+  (A-side offered 0%); 47.8 ROI cycles/access vs row_locality's 10.0 —
+  the precharge/activate serialization the mode exists to create.
+
+Two stat-accounting facts the checker encodes: (1) L1 `demandMisses`
+reads ~N in line mode by design — MSHR merges count as misses — so
+`dram.readBursts` is the floor metric; (2) in the row modes every
+access reaches DRAM (expected reads = N + N/8): the N − DISTINCT
+revisits are long-distance and get evicted, and in bank_conflicts this
+is structural — the 256 KiB stride is a multiple of both caches'
+way spans, so every target aliases into a single cache set and
+revisits are never cache-absorbed.
+
+## Feature: ReVeLA prefetcher (`--prefetcher revela`, 2026-08-11)
+
+Implementation of "Exploiting Vector Code Semantics for Efficient Data
+Cache Prefetching" (Martinez Palau, Torrents, Armejach, Casas —
+ICS'24), the Register Vector Length Agnostic (ReVeLA) prefetcher, on
+this fork's ARA O3 model. See `revela.pdf` in the repo root.
+
+### The idea
+
+Vector Length Agnostic code strip-mines loops as
+`vl = vsetvl(n - i)`: the AVL passed in (the paper's Requested Vector
+Length, RVL) is the element count the loop still has to process, and
+the granted `vl` (GVL) is what one instruction can cover. A
+unit-stride access at `access@` therefore *announces* that
+`[access@ + GVL, access@ + RVL)` will be accessed by the following
+iterations — prefetch candidates that are certain, not predicted.
+Two properties fall out: near-perfect accuracy (only announced lines
+are requested) and a trigger decoupled from cache events (the paper
+evaluates its structures every cycle and issues whenever the memory
+system has headroom). Coverage is limited to announced unit-stride
+streams, so the paper positions ReVeLA as a *complement* to a
+conventional coverage prefetcher, not a replacement.
+
+### What stock gem5 provides
+
+- No notion of the vsetvl AVL after execution: `vl = min(AVL, VLMAX)`
+  is architectural state, the AVL itself is discarded. gem5's RISC-V
+  decoder embeds the *granted* `vl` and `vtype` in every vector
+  instruction's `ExtMachInst` (`src/arch/riscv/types.hh`, bitfields
+  57:41 and 39:32) because decode depends on them — so GVL is
+  recoverable from any vector memory micro-op, RVL is not.
+- Prefetchers (`src/mem/cache/prefetch/base.cc`, `queued.cc`) are
+  event-driven: `notify()` fires on cache accesses/misses and
+  `calculatePrefetch()` returns candidate addresses. There is no
+  every-cycle trigger path. The cache pulls queued prefetches only
+  when `mshrQueue.canPrefetch()` holds (`src/mem/cache/base.cc`),
+  which reserves `demand_mshr_reserve` MSHRs for demand traffic —
+  the mechanism the paper's ">= 8 free MSHRs" issue gate maps onto.
+
+### What this fork already had that ReVeLA reuses
+
+- The CPU-to-prefetcher sideband pattern: a per-core SimObject wired
+  to both `BaseCPU.<x>_table` and the prefetcher (GDP's
+  `VectorChainTable`, `src/cpu/vector_chain_table.hh`).
+- Issue-stage operand snooping in `src/cpu/o3/inst_queue.cc` (GDP
+  reads gather bases / .vx scalars off the operand read issue is
+  already doing) and the raw-encoding classification technique
+  (`StaticInst::getEMI()`, no ISA edits).
+- The LSQ translation-finish hook in `src/cpu/o3/lsq.cc` (GDP's
+  `notifyDemandAccess`), where a micro-op's ISA identity and VA meet.
+- `StaticInst::vecMemInfo()` (`src/cpu/static_inst.hh`), the
+  ISA-neutral classification virtual overridden by
+  `VleMicroInst`/`VseMicroInst` (`src/arch/riscv/insts/vector.hh`).
+- The self-clocked drain machinery from VTyche2
+  (`src/mem/cache/prefetch/vector_tyche2.cc`): an
+  `EventFunctionWrapper` that inserts prefetches outside notify(), a
+  latched translation context (Request + PrefetchInfo +
+  CacheAccessor from the last observed access), and VA-mode
+  prefetching with automatic MMU registration.
+
+### What this fork adds
+
+**1. RVL capture — `src/cpu/o3/inst_queue.cc` (issue stage).**
+`vset{i}vl{i}` is identified from the raw encoding (OP-V major opcode
+0x57, funct3 0b111 — `getEMI()`, no ISA edits) and its AVL snooped at
+issue: `vsetivli` takes the uimm from the rs1 field; `vsetvli`/
+`vsetvl` with rs1!=x0 read the rs1 register operand (sources are
+ready at issue, same as GDP's snoop); rs1=x0/rd!=x0 requests VLMAX —
+the code reveals no stream end, so the shadow is *invalidated*
+rather than guessed; rs1=x0/rd=x0 keeps vl and the shadow. The paper
+propagates RVL/GVL with every memory request; a single per-core
+shadow register models that exactly for strip-mined loops, where
+every iteration re-executes vsetvl before its loads/stores (stale
+shadows are additionally caught by the `AVL < vl` guard below).
+
+**2. GVL exposure — `src/cpu/static_inst.hh`,
+`src/arch/riscv/insts/vector.hh`.** `VecMemInfo` gains `microIdx`
+and `vl` fields, filled by the existing `VleMicroInst`/`VseMicroInst`
+overrides from the class's `microIdx` and `machInst.vl`. The STT
+update runs once per macro-op (micro-op 0 carries the base address)
+with the whole group's extent `vl * (EEW/8)` bytes. Indexed,
+strided, segment and whole-register ops keep `kind = None` and are
+ignored — they don't form VA-contiguous streams.
+
+**3. `RevelaStreamTable` — `src/cpu/RevelaTable.py`,
+`src/cpu/revela_table.{hh,cc}` (new files).** The paper's Stream
+Tracking Table as a per-core sideband SimObject
+(`BaseCPU.revela_table` + `RevelaPrefetcher.stream_table`, wired by
+the hierarchy exactly like the vector chain table; `src/cpu/base.{hh,cc}`,
+`src/cpu/BaseCPU.py` grew the parallel param). The O3 LSQ calls
+`notifyVectorAccess(si, vaddr)` at translation finish
+(`src/cpu/o3/lsq.cc`, both Single and Split requests — Split uses the
+unsplit `_mainReq` VA, one update per micro-op, not per fragment).
+Entries are `{current@, limit@, prefetched-up-to, valid, 8-bit LRU}`
+keyed by the loop-invariant limit address `access@ + RVL_bytes`
+(paper Section 3.2): forward hits advance
+`current@ <- access@ + GVL_bytes` and reset the LRU (aging all
+others; saturation at `lru_max(255)` invalidates stale streams);
+backward hits are ignored (OoO reordering); `current@ >= limit@`
+invalidates (final access); misses allocate over an invalid entry or
+the largest-LRU victim. Two deliberate deviations from the paper's
+flowchart, both documented in the header: `prefetched_distance` is
+stored as an *address* (`prefetchedUpTo`) rather than a line count —
+identical information, but the CPU side doesn't know the cache line
+size — and allocation is skipped when `RVL <= GVL` (nothing left to
+prefetch; a dead entry would only depress the aggressivity). All
+state wipes at every stats reset (ROI convention, 2026-07-13).
+
+**4. `RevelaPrefetcher` — `src/mem/cache/prefetch/revela.{hh,cc}`,
+`Prefetcher.py` (new class).** The cache-side trigger logic (paper
+Section 3.3) on VTyche2's self-clocked drain skeleton: the drain
+fires every cycle while work is pending (fixed — the paper's cadence;
+the `drain_period` params on ReVeLA, VTyche and VTyche2 were all
+removed 2026-08-12: any other setting is a different design); each
+evaluation checks free queue room (`queue_size(16)`, the paper's
+prefetch queue), computes the aggressivity cap from the live-stream
+count — `max_prefetch_distance(64)` lines at <2 valid entries, /2 at
+<4, /4 at <8, /8 otherwise (the paper's 64/32/16/8 table) — and lets
+only the streams at the *minimum* prefetched distance emit
+`degree(1)` lines each, advancing `prefetchedUpTo`. Emissions from a
+demand-access notify use the standard `calculatePrefetch()` path;
+drain-tick emissions replicate `Queued::notify`'s insert loop with
+the latched translation context (the VTyche2 pattern). Addresses are
+virtual (paper Section 3.5: streams are VA-contiguous, PAs break at
+page frames) and translate through the registered MMU, so ReVeLA
+also prefetches TLB entries, as in the paper. MSHR throttling is the
+cache's own `canPrefetch()`/`demand_mshr_reserve` — set the hosting
+cache's reserve to 8 to reproduce the paper's gate exactly.
+
+**5. Wiring — `rvv/prefetcher_factory.py`,
+`rvv/riscv-rvv-se-ara-prefetcher.py`,
+`rvv/{vector_cache,unified_cache}_hierarchy.py`.**
+`--prefetcher revela` (vector side only in the split hierarchy — the
+guard mirrors gdp's), `--revela-stt-entries(16)` sizes the table
+(the paper's sensitivity axis; 4 entries already give 91% of the
+benefit), everything else via `--pf-param` (see MEMORY_CONFIG.md).
+The hierarchies create one `RevelaStreamTable` per core and hand it
+to both the core and the prefetcher, following the vector-chain-table pattern
+verbatim.
+
+### Invocation
+
+```bash
+build/RISCV/gem5.opt rvv/riscv-rvv-se-ara-prefetcher.py \
+    --enable-chaining --vlen 512 --vector-timing-throughput 4 \
+    --simd-units 2 \
+    --prefetcher revela --prefetcher-side vector --prefetcher-level l1 \
+    /path/to/riscv-binary
+
+# Paper-style sweeps:
+#   aggressivity: --pf-param max_prefetch_distance={8,16,32,64,128}
+#   STT size:     --revela-stt-entries={1,2,4,8,16,32}
+```
+
+`--prefetcher-level l1` is the closest analog of the paper's
+placement: their vector unit interfaces directly to the (single) LLC,
+and in the split hierarchy the vector L1D is the first cache the
+vector unit talks to. `l2` (the script default) works — the STT is
+fed from the LSQ either way — but at L2 the drain's re-arm and
+translation-context refresh only see L1-miss traffic.
+
+### Caveats
+
+- The RVL shadow is issue-order state updated speculatively:
+  wrong-path vsetvls can overwrite it. Like GDP's issue-time snoops
+  this is self-healing (the next good-path vsetvl re-writes it), and
+  the `AVL < vl` guard drops obviously-stale pairings; a genuinely
+  wrong-but-plausible AVL costs one junk STT entry, aged out by LRU.
+- Only unit-stride, non-segment vector loads/stores form streams.
+  Whole-register loads carry no AVL semantics; strided/indexed
+  accesses are not VA-contiguous (the paper ignores them too).
+- Stat visibility: the CPU-side table reports under
+  `system...revela_table` (`streamsAllocated`, `sttUpdates`,
+  `streamsCompleted`, `vsetvlSnooped`, ...); the prefetcher under the
+  hosting cache (`linesEmitted`, `selfDrainTicks`,
+  `aggressivityThrottled`, plus all standard `Queued` stats —
+  `pfIssued`, `pfUseful`, `pfUnused` give the paper's
+  useful/late/useless split together with `pfLate`).
+
+### Fix: cross-page translation kick for drain-inserted prefetches (2026-08-11)
+
+The first validation run (RiVec axpy, 256K doubles, `--prefetcher
+revela --prefetcher-level l1`) was performance-flat vs baseline with
+only 356 lines emitted against ~98K stream lines and `drainNoRoom` at
+1.78M: the prefetch queue wedged. Root cause, in stock gem5
+(`src/mem/cache/prefetch/queued.cc`): translations for cross-page
+candidates parked in `pfqMissingTranslation` are started ONLY by
+`getPacket()` — and the cache only calls `getPacket()` when
+`nextPrefetchReadyTime()` is finite, which requires a non-empty
+`pfq`. A cycle-driven prefetcher whose lookahead runs 1-2KiB ahead
+emits mostly cross-page candidates, so `pfq` drains to empty while
+all 16 queue slots sit untranslated → `MaxTick` → no more pulls → no
+translations → deadlock, broken only by rare port-idle fall-through
+pulls (`BaseCache::getNextQueueEntry`). Event-driven prefetchers
+dodge this by inserting during `notify()` with mostly near-page
+candidates, keeping `pfq` non-empty.
+
+Fix: `Queued::processMissingTranslations` moved from private to
+protected (`queued.hh`, access-only change, upstream behavior
+untouched), and `ReVeLA::drainTick`/`notify` kick it after inserting
+(`revela.cc`) — exactly the call `getPacket()` would have made if the
+cache were still pulling.
+
+### Validation (RiVec axpy, 2026-08-11)
+
+axpy 256K doubles (2 MiB/array vs 512 KiB vector L2), VLEN 512,
+4-lane timing, split hierarchy, revela on the vector L1D, all other
+knobs default. Baseline = same config, no prefetcher:
+
+- Correctness: `Result ok !!!` in both runs.
+- ROI cycles: 1,643,310 -> 695,451 = **2.36x speed-up** (paper
+  reports 2.25x for axpy at 256 GB/s, 2.73x at 512 GB/s).
+- Coverage: L1D demand MSHR misses 73,468 -> 7,932 (89% covered);
+  pfUseful 53,239 + pfLate 30,693 of 96,229 issued.
+- Accuracy: ~2% of issued prefetches unaccounted (mostly in-flight at
+  ROI end) — consistent with the paper's ~1% useless rate. 10,237
+  redundant issues were dropped on the cache's tag check
+  (`pfHitInCache`), an overlap artifact of the shadow-race entries
+  below.
+- Capture: `vsetvlSnooped` = 32,768 = exactly n/vl iterations;
+  STT accounting exact (updates + backward + allocs = 3 unit-stride
+  accesses x 32,768 iterations).
+
+Known wart (harmless here, worth watching): the RVL shadow is updated
+at ISSUE, and gem5 does not serialize `vsetvli` when vl/vtype are
+unchanged, so a next-iteration `vsetvli` can issue before the current
+iteration's loads translate. The mismatched shadow makes those loads
+STT-miss and allocate junk entries with slightly-short limits (80 of
+98,304 accesses in the pre-fix run; 6 in the fixed run). Junk entries
+self-heal (LRU aging, `staleInvalidations`) and their emissions cover
+the same arrays, but they inflate the valid-entry count (lower
+aggressivity cap) and can duplicate emissions (`pfBufferHit`,
+`pfHitInCache`). If it ever matters on other kernels, the fix is
+per-request RVL propagation (the paper's model) instead of the
+one-register shadow.
+
+## Feature: VHybrid prefetcher (`--prefetcher vhybrid`, 2026-08-12)
+
+**Existing mechanisms.** Two of this fork's prefetchers each solve half
+of the vector-gather problem: ReVeLA (`--prefetcher revela`,
+`src/mem/cache/prefetch/revela.{hh,cc}`) prefetches unit-stride streams
+whose full extents the program ANNOUNCES through the vsetvl AVL
+(CPU-side `RevelaStreamTable`, `src/cpu/revela_table.hh`), with the
+paper's aggressivity table and an every-cycle self-clocked trigger —
+but it cannot touch gathered data. VTyche (`--prefetcher vtyche`,
+`src/mem/cache/prefetch/vector_tyche.{hh,cc}`) prefetches gather
+targets by capturing index-array lines and converting them through the
+collapsed chain `target = base + (extend(idx) << shift)`
+(`VectorChainTable`, `src/cpu/vector_chain_table.hh`) — but its index
+stream walk is demand-anchored (`limitAddr` = demand + sd), which
+bounds index lead and therefore target timeliness.
+
+**What this fork adds.** `VHybrid`
+(`src/mem/cache/prefetch/vhybrid.{hh,cc}`, `VHybridPrefetcher` in
+`Prefetcher.py`, debug flag `VHybrid`) composes the two: ReVeLA's
+stream engine (STT + aggressivity + min-distance fairness + every-cycle
+drain, `revela.cc` logic reused structurally unchanged) REPLACES
+VTyche's stream walk, so index lookahead is licensed by the announced
+extent (up to `max_prefetch_distance` = 64 lines) instead of demand
+anchoring; VTyche's capture/convert half (IRT range capture at
+`getPacket`, fill payload latch, one-line-per-event lane-array
+conversion, cross-line dedup, `vector_tyche.cc` logic reused
+structurally unchanged) rides on those streams.
+
+The join: `RevelaStreamTable::SttEntry` gained one additive field,
+`lastPc` — the PC of the access that last updated the entry, stamped
+by the existing LSQ report path (`notifyVectorAccess`, which gained a
+`pc` argument; call sites `src/cpu/o3/lsq.cc`). A stream whose
+`lastPc` the chain table reports as a linked producer
+(`producerInfo()`) is an INDEX stream: its emitted lines register for
+fill capture and publish their physical pages for `--stream-demote`.
+Producer status is re-evaluated on use, never latched in the STT, so
+late-forming links and wholesale chain-table clears self-heal. The
+staleness abort uses the announced stream's demand cursor
+(`currentAddr` of the producer's live STT entry) where VTyche used its
+walk cursor.
+
+Per-tick emission order is targets-first, then the stream round with
+the remaining room; both count against one combined
+`pfq + pfqMissingTranslation` budget (`queue_size` = 64, VTyche's
+depth, since one queue now carries stream lines and target bursts).
+The drain keeps ReVeLA's `processMissingTranslations` kick (both
+traffic classes are heavily cross-page).
+
+**Wiring.** First prefetcher needing BOTH sideband tables:
+`stream_table` (+ CPU `revela_table`) and `link_table` (+ CPU
+`vector_chain_table`). The hierarchies' independent `_params` guards
+(`rvv/vector_cache_hierarchy.py`, `rvv/unified_cache_hierarchy.py`)
+wire both automatically; `rvv/prefetcher_factory.py` lists vhybrid in
+`VA_PREFETCHERS`, `VECTOR_CHAIN_TABLE_PREFETCHERS` and
+`REVELA_TABLE_PREFETCHERS`.
+
+**Deliberately absent: announcement stitching.** Streams announced
+per-strip (nested-loop CSR spmv: per-row vsetvl) keep their tiny
+extents and the STT's RVL<=GVL allocation skip. That shape is out of
+coverage BY DESIGN — the JDS spmv variant
+(`riscv-vectorized-benchmark-suite/_spmv`, `jds` CLI arg) is the
+sparse evaluation vehicle, matching how the ReVeLA paper's own spmv
+must be formulated (per its Figure 6 logic, per-row announcements on
+their 2KB-register machine would emit nothing, yet they report 1.37x).
+
+### SPMV flat (nonzero-parallel) kernel variant (`flat` CLI arg, 2026-08-16)
+
+**The existing method.** The RiVec spmv kernel
+(`riscv-vectorized-benchmark-suite/_spmv/src/spmv.c`) vectorizes
+per row: each row issues `vsetvl(avl = row nnz)`, so the announced
+extents are tiny fragments (poisson3Db: ~86K announcements averaging
+~4 elements) and stream boundaries recur every few elements. The
+`jds` variant stretches extents to jagged-diagonal length but still
+announces per diagonal.
+
+**What this adds.** A third format literal, `flat`
+(`_spmv/src/main.c`, same any-order CLI convention as `jds`),
+selecting a nonzero-parallel kernel
+(`spmv_intrinsics_flat`/`spmv_serial_flat`, `_spmv/src/spmv.c`) with
+Blelloch-style phase separation (Blelloch/Heroux/Zagha 1993): phase 1
+is ONE strip-mined loop over all nnz (value load, `ja` load, gather,
+multiply, store to a product array `t[nnz]`), so its first vsetvl
+announces the FULL nnz extent — the true end of contiguity — and
+row boundaries never constrain lane occupancy; phase 2 applies the
+row structure as unit-stride reductions over `t` via `ia[]`. The
+gather addresses are byte-identical to row-based CSR — only the
+announcement structure and lane utilization change, which makes
+CSR → JDS → flat a controlled announcement-granularity series for
+announcement-driven prefetchers (revela/vhybrid, and vtyche's
+`limit_gate`). Costs: 2·nnz extra memory traffic through `t`
+(allocated outside the ROI, same preprocessing argument as the JDS
+conversion), and unfused multiply-then-add accumulation versus the
+CSR kernel's fused `vfmacc` (covered by the verifier's 1e-6
+tolerance; the serial flat variant matches `spmv_serial` bitwise).
+
+**Validation.** Host-compiled serial build passes `.verif`
+comparison on all four matrices in all three formats; gem5 smoke run
+(football.csr, `flat`, vector binary) prints `Verification pass`.
+All three binaries (`spmv_vector/serial/autovec.exe`) rebuilt
+2026-08-16 with the same GNU toolchain flags as the 2026-08-12
+builds.
+
+### Limit-aware index slicing (`limit_aware_slicing`, 2026-08-13)
+
+**The existing gem5 mechanism.** Prefetch and fill traffic is
+line-granular: VHybrid's conversion drain (`convertLine`,
+`src/mem/cache/prefetch/vhybrid.cc`) inherited VTyche's whole-line
+semantics and pushed every raw word of a captured 64B index line
+through the shift-and-add array. Nothing in the cache tells the
+prefetcher where an ARRAY ends inside a line.
+
+**What this fork adds.** The announcement already knows: the STT
+entry's `limitAddr` (`src/cpu/revela_table.hh`, from the vsetvl AVL)
+is the index array's end. A captured line straddling it has tail
+bytes that are adjacent NON-index data — each would previously be
+interpreted as an index and become a garbage target at
+`base + (extend(raw) << shift)` (mostly self-filtered today by the
+canonical-address check and cross-page translation drops, but at the
+cost of MMU work, queue slots and dedup-window entries). Now each
+capture registration records `validBytes = min(64, limit@ − line@)`
+— on the prefetch-window path (`getPacket`) from the announcing STT
+entry in hand, on the demand-miss path via `announcedLimit(pc, line)`
+(smallest live `limitAddr` above the line for that producer PC; the
+conservative choice under PC aliasing — a mis-attribution can only
+suppress conversions, never fabricate targets). `convertLine` clamps
+its slice loop to `validBytes / elemBytes`; suppressed elements are
+counted in the `elementsBeyondLimit` stat. IMPORTANT design point:
+the clamp is at the ANNOUNCED ARRAY extent, not the per-instruction
+`vl` — clamping at each gather chunk's `vl` would amputate the
+cross-chunk lookahead (converting the next row's indices early) that
+makes the capture path timely on dense index arrays.
+
+**Scope.** VHybrid only: this is inherently an announcement-driven
+feature — standalone VTyche has no source for the array extent.
+Expected magnitude is one line-tail per announced extent (negligible
+on a single dense `ja[]`; material for many-short-array shapes such
+as JDS diagonals or tiled formats). `--pf-param
+limit_aware_slicing=false` restores whole-line conversion for
+ablation and for reproducing pre-2026-08-13 runs.
+
+### Conversion lane budget (`conversion_lanes`, 2026-08-13)
+
+**The existing mechanism.** VHybrid inherited VTyche's conversion
+width: the drain pushed one WHOLE captured index line through the
+shift-and-add array per event (`emissionLineLimited` counts events
+that had further lines waiting). The array's width — how many
+`base + (extend(idx) << shift)` circuits exist — was not a knob;
+effectively it equaled the line's element count (8 at e64, 16 at
+e32).
+
+**What this fork adds.** `conversion_lanes` bounds the ELEMENTS
+converted per drain event, the direct analog of GDP's
+`pipelines_per_gather` replay-width budget (`gdp.cc`, 2026-07-29
+sweep). `CapturedLine` gains a conversion cursor (`nextElem`): a
+line wider than the budget stays at the slice-buffer front and
+resumes on later events; `conversionWidthLimited` counts the
+cut-shorts (read against `emissionDeferred`/`emissionLineLimited` to
+see which budget binds). Semantics preserved across the split:
+within-line dedup carries through `PipeEntry::lineSeen` (a chunked
+line emits exactly the distinct target lines whole-line conversion
+would have), and a dedup-window entry still spans one SOURCE line —
+`pendingEmitted` accumulates across chunks and closes with the
+line's last chunk (`ConvertedLine::lastChunk`). The lane budget
+composes with `limit_aware_slicing`: the clamp shortens the element
+range, the budget paces it. `0` = unbounded (pre-2026-08-13
+behavior, the default); `8` = one full e64 line per event; `1` = the
+strictly serial pipe.
+
+### Queue-full drop policy (`drop_on_full`, 2026-08-13)
+
+**The existing gem5 mechanism.** VHybrid's one prefetch queue
+(`Queued::pfq`, `mem/cache/prefetch/queued.cc`) carries BOTH traffic
+classes — stream lines and converted indirect targets. On a full
+queue, `Queued::insert` makes room by evicting the queue's oldest
+entry (`pfRemovedFull`), and VHybrid's `drain_floor` deliberately
+licenses up to `drain_floor` such displacing pushes per demand event
+(VTyche's bounded-displacement anti-starvation; `drain_floor=0` is
+the stall-on-full ablation that collapsed GDP v2.1 on poisson3Db).
+Consequence: a burst of converted targets can evict staged STREAM
+prefetches — visible as vhybrid's `pfRemovedFull` 49K vs vtyche's
+6.5K in the Aug-12 JDS head-to-head.
+
+**What this fork adds.** `drop_on_full` (default false) is the third
+disposition at the same decision point: on a full queue the incoming
+TARGET is discarded (`targetsDroppedFull`) and the queue keeps its
+entries; the latch always drains, so no backpressure builds into the
+slice buffers (unlike stall). The `drain_floor` room-forcing is
+bypassed when set — the two are alternative answers to the same
+question. A dropped target is NOT recorded in the dedup window
+(`pendingEmitted`): no prefetch went out, so a later duplicate of
+that line may legitimately re-emit and succeed. The three policies:
+displace (newest-wins, default), stall (preserve conversion work,
+backpressure), drop (oldest-wins, free-flowing pipe).
+
+### vl-aware dedup scope and pre-lane placement
+### (`vl_window_dedup` / `vl_window_bytes` / `pre_lane_dedup`, 2026-08-14)
+
+**The existing gem5 mechanism.** VHybrid's within-conversion dedup
+(`PipeEntry::lineSeen`) is scoped to one captured index line, and the
+cross-line window (`dedup_buffer_size`) to a tuned number of index
+lines; both compare TARGET line addresses after the shift/add
+conversion. The deeper window's suppressions are a residency bet: a
+duplicate is dropped on the assumption its line is still in
+cache/MSHR when the later demand arrives.
+
+**vl scope (`vl_window_dedup`, default false).** RVV gives one dedup
+scope a hard guarantee: elements of a SINGLE gather instruction that
+share a target line are coalesced by the LSQ onto one MSHR no matter
+the cache state, so suppressing their duplicate prefetches is always
+safe. The vl window realigns the seen-set to that boundary — it
+clears when the element VA crosses a `vl_window_bytes` bucket
+(default 256 B of index stream = one full chunk at VLEN=2048; a full
+chunk always consumes VLEN/8 index bytes regardless of EEW, since
+vl x elemBytes = VLEN/8). Buckets are VA-aligned: exact instruction
+boundaries when the index array is chunk-aligned, else a constant
+phase shift (and capture gaps cannot desynchronize it, unlike an
+element counter). Stream tails shrink the window automatically via
+the `limit_aware_slicing` clamp. The `dedup_buffer_size` window
+stays orthogonal; `vl_window_dedup` with dd=0 is the pure
+"suppress only what the ISA guarantees" design. Hardware cost: one
+<= VLEN/EEW-entry CAM cleared per chunk, replacing per-line
+bookkeeping.
+
+**Pre-lane placement (`pre_lane_dedup`, default false).** Two
+indices map to the same target line iff
+`((extend(idx) << shift) + (base & 63)) >> 6` is equal — derived by
+dropping the line-aligned part of the base from
+`(base + (idx << shift)) >> 6`. Extension is wire fan-out, the shift
+is wire selection, and the base's sub-line offset (nonzero for
+sub-mmap-threshold mallocs, folded `&A[k]` bases, and always for
+AoS field gathers) is a per-form constant folded at CAM insertion —
+no full-width base add. The compare therefore runs BEFORE the lane
+array: a hit (`elementsPreDeduped`) consumes no shift/add circuit
+and no `conversion_lanes` budget slot, so a narrow lane array spends
+its budget only on distinct target lines (on poisson3Db JDS ~32% of
+elements are window-suppressible, i.e. a 2-lane array does ~3 lanes
+of distinct work). Composes with either scope; filtered
+(non-canonical) targets never enter the seen-set in either
+placement.
+
+**Validated 2026-08-14 (poisson3Db JDS trio):** default path
+bit-exact (12,390,026 cycles); vl window catches 181,408 duplicates
+vs 99,848 per-line (the predicted ~dd4 level) at noise-level cycle
+cost; pre-lane moves all of them ahead of the lanes
+(elementsPreDeduped 181,200, targetsDeduplicated 0) and cuts
+conversionWidthLimited 880,822 -> 832,055 at conversion_lanes=2 —
+duplicates measurably stop consuming lane budget.
+
+### Stream emission floor (`initial_distance`, revela + vhybrid, 2026-08-15)
+
+#### What the existing method did
+
+ReVeLA's trigger (ported in `src/mem/cache/prefetch/revela.cc`
+`emitRound()`, and reused by vhybrid's stream half in
+`src/mem/cache/prefetch/vhybrid.cc` `emitStreamRound()`) always ramps
+each stream's emission frontier up from the demand cursor. The
+CPU-side STT (`src/cpu/revela_table.cc`) initializes
+`prefetchedUpTo = currentAddr` at stream allocation (line ~147) and
+snaps it back up to `currentAddr` whenever demand overruns the
+frontier (line ~111) — so at every stream entry AND after every
+demand catch-up, the stream re-enters at prefetched distance zero.
+Lines emitted at distance ~0 are doomed-late: demand reaches them
+well inside one memory round trip, so they merge into the demand's
+MSHR (`pfHitInMSHR`, 85K in the s7 poisson3Db-JDS l1/m32 run) and
+hide little or no latency. Worse, the paper's min-distance-first
+fairness (revela Figure 7) gives exactly these doomed-late emissions
+top priority — a stream at distance 0 always outranks a healthy
+stream at distance 12 for the degree-limited emission slots.
+VTyche's stream side never has this phase: its `streaming_distance`
+enters every stream at a fixed offset ahead of demand.
+
+#### What this fork adds
+
+A per-prefetcher emission floor, `--pf-param initial_distance=N`
+(default 0 = paper behavior, bit-exact) on both `revela` and
+`vhybrid`. `applyInitialDistance()` (revela.cc / vhybrid.cc) runs in
+the emission round's stream scan: if a stream's frontier is closer
+than N lines to `currentAddr`, it jumps to
+`currentAddr + N*blkSize` (clamped to `limitAddr`), and the skipped
+lines are counted in the new `linesSkippedFloor` stat. The floor is
+applied prefetcher-side so the shared `RevelaStreamTable` semantics
+are untouched. Interaction with the aggressivity table:
+`aggressivityLimit()` now returns at least `initial_distance` —
+without this, a floor above the (stream-count-divided) ceiling would
+throttle a floored stream forever; with it, such a stream degenerates
+to a fixed-offset follower, which is the intended vtyche-like
+behavior. Skipped lines are never prefetched (demand pays their full
+miss — the coverage cost of the knob); on vhybrid, skipped INDEX
+lines still reach the conversion pipeline through the demand-miss
+capture registration path (vhybrid.cc `notify` path, line ~862), so
+gather targets self-heal, just late — exactly like the skipped
+region itself.
+
+## VTyche: announced-limit gate (`limit_gate`, 2026-08-15)
+
+### What the existing method did
+
+VTyche's index-array walk (`src/mem/cache/prefetch/vector_tyche.cc`
+`streamAhead()`) is demand-anchored and extent-blind: on each
+producer chunk event at `addr` it emits lines up to
+`addr + size*(streaming_distance+1)` with no notion of where the
+index array ends, so at every extent end it (a) prefetches up to
+`streaming_distance` chunks of adjacent non-index data and (b)
+registers those lines for capture, converting every raw word of the
+straddling line into a (garbage) gather target (`convertLine()`
+sliced the whole payload unconditionally). VHybrid avoids both by
+construction — its streams come from vsetvl-AVL announcements with a
+known `limitAddr`, and `clampBytes()` slices the straddling line —
+but that made extent semantics inseparable from the announcement-
+driven stream engine.
+
+### What this fork adds
+
+`--pf-param limit_gate=true` on `--prefetcher vtyche` (default
+false = bit-exact pre-gate behavior): an opt-in subscription to the
+same `RevelaStreamTable` announcement sideband
+(`src/cpu/revela_table.hh`) that revela/vhybrid use.
+`prefetcher_factory.py needs_revela_table()` is now params-aware, so
+the table (CPU `revela_table` + prefetcher `stream_table`) is wired
+only when the gate is requested — plain vtyche runs keep their
+table-free config, including scalar-side split-hierarchy placement.
+Two gate points, both keyed by `announcedLimit(pc, va)` (vhybrid's
+smallest-covering-limit aliasing rule, copied): `streamAhead()`
+stops the walk at the announced extent end (new stat
+`streamLimitClamped`), and capture registration stores
+`gateBytes()` = the bytes below the limit into the IRT entry /
+`CapturedLine.validBytes`, which the conversion (`convertChunk()`,
+renamed from `convertLine()` 2026-08-16) uses to slice only
+in-extent elements (new stat `elementsBeyondLimit`). Lines with no
+covering announcement get `validBytes=0` = whole-line conversion, so
+the gate is a strict no-op on announcement-blind code (CSR spmv).
+This isolates ReVeLA's software contract as a single ablation
+variable on top of the discovery design: measured headroom on the
+current suite is small (vhybrid's `elementsBeyondLimit` was 424 of
+2.37M elements on poisson3Db JDS; walk overrun is bounded by
+`streaming_distance` lines per extent), which is itself the point —
+the contract's extent information adds little that demand-anchored
+discovery does not already provide.
+
+## VTyche: VHybrid's conversion/emission knobs ported (2026-08-16)
+
+`--prefetcher vtyche` now accepts the four conversion/emission
+parameters VHybrid introduced, so the two designs can be swept on the
+same axes: `conversion_lanes`, `drop_on_full`, `vl_window_dedup` (+
+`vl_window_bytes`), and `pre_lane_dedup`. All default off/0 — a run
+without these `--pf-param`s behaves exactly as before, so existing
+sweep numbers stay comparable. VTyche2 is untouched.
+
+### What gem5/VTyche did before
+
+`vector_tyche.cc convertLine()` converted a captured index line
+whole — one shift-and-add lane per element, all in one drain event —
+with a batch-local duplicate scan on target line addresses, and
+`drainEmission()` forced the emission budget up to `drain_floor` when
+the queue was full (targets displace queued entries via
+`Queued::insert`, `mem/cache/prefetch/queued.cc`). The dedup-window
+contribution of a line lived inside the output latch
+(`ConvertedLine::emitted`).
+
+### What changed (mechanics follow `mem/cache/prefetch/vhybrid.cc`)
+
+- `convertLine()` became `convertChunk()`: `CapturedLine` gained a
+  `nextElem` conversion cursor and `ConvertedLine` a `lastChunk`
+  flag. At `conversion_lanes=N`, at most N elements fire per drain
+  event; an unfinished line stays at the slice-buffer front and
+  resumes next event (`conversionWidthLimited`). At the default 0
+  the whole line converts in one event, exactly as before.
+- The within-line seen-set moved from a batch-local scan to
+  `SttEntry::lineSeen`, so dedup keeps whole-line semantics across a
+  lane-budget split; `vl_window_dedup` rescopes it to
+  `vl_window_bytes`-aligned index-VA buckets (~one gather chunk,
+  `SttEntry::windowKey`), and `pre_lane_dedup` moves the compare
+  before the lanes onto truncated folded index keys (`preLaneKey()`;
+  hits count `elementsPreDeduped` and spend no lane-budget slot).
+- The dedup-window contribution moved to `SttEntry::pendingEmitted`
+  and closes with the line's LAST chunk, keeping one window entry
+  per source line under a lane split.
+- `drop_on_full=true` disables the `drain_floor` displacement
+  license in `drainEmission()`: overflow targets are dropped
+  (`targetsDroppedFull`) and the queue keeps its staged entries.
+  Dropped targets are not recorded in the dedup window, so a later
+  duplicate may re-emit.
+
+New stats: `elementsPreDeduped`, `conversionWidthLimited`,
+`targetsDroppedFull` — same meanings as VHybrid's. Parameter
+semantics are documented in full on `VectorTychePrefetcher`
+(`src/mem/cache/prefetch/Prefetcher.py`); the factory forwards them
+generically (`--pf-param conversion_lanes=8` etc.,
+`rvv/prefetcher_factory.py`).
+
+### Behavior notes
+
+- Interactions with v1-only features compose: the `limit_gate` byte
+  clamp applies before the lane budget (the beyond-limit tail is
+  charged once, on the line's first chunk), and `row_schedule_bits`
+  operates downstream on the queue, unaffected.
+- One deliberate difference from the pre-port code: a latch discarded
+  by a staleness abort or stale form now also forfeits its
+  half-built dedup-window contribution (`lineSeen`/`pendingEmitted`
+  clear), matching VHybrid; before, a partially-emitted latch's
+  contribution was silently lost the same way, so observable
+  behavior at default parameters is unchanged.
+
+## VTyche: multi-way indirect support (`consumers_per_producer`, 2026-08-16)
+
+One producer index load feeding SEVERAL gathers (`A[B[i]] + C[B[i]]`,
+the SoA multi-way pattern) is now prefetched for every target array:
+`--pf-param consumers_per_producer=M` (default 1). VTyche2 and GDP are
+untouched.
+
+### What the table/prefetcher did before
+
+The DCT head row held ONE consumer pointer, and backward propagation
+overwrote it at every gather dispatch (`vector_chain_table.cc`,
+backprop block) — a two-gather loop ping-ponged the slot every
+iteration (`linksFormed` churn), and vtyche's single `LinearForm` per
+`SttEntry` converted each captured index line for whichever gather won
+the race. The PT (forward propagation) was never the limitation: both
+gathers already read the same provenance entry.
+
+### What changed
+
+- `VectorChainTable` (`src/cpu/vector_chain_table.hh/.cc`,
+  `VectorChainTable.py`): the head row's `int consumer` became up to
+  `consumers_per_producer` slots (~4 bits each: 3-bit DCT pointer +
+  empty encoding). At capacity 1 backprop keeps the historical
+  overwrite bit-for-bit; at capacity > 1 it is insert-if-absent, a
+  distinct gather beyond capacity bouncing off (new stat
+  `consumerSlotsExhausted`). `producerInfo()` reports `numConsumers`;
+  `pipelineConfig()`/`chainSnapshot()` take a slot argument
+  (slot-0 default keeps GDP/VTyche2 call sites unchanged). PT, clear
+  semantics, generation counter, stream-page registry: untouched.
+- VTyche (`src/mem/cache/prefetch/vector_tyche.hh/.cc`): per-way
+  `ConsumerGroup` state {form, lineSeen, pendingEmitted, dedupWindow}
+  replaces the flat single-form fields; the slice buffer, IRT,
+  stream walk and `windowKey` (an index-VA property) stay SHARED —
+  the index side is never duplicated, the captured raw line
+  broadcasts to every way's shift/add lane group. Adoption walks all
+  linked slots, ways configuring independently. The latch is
+  element-major interleaved (`A[B[0]], C[B[0]], A[B[1]]...`) with a
+  per-target group tag routing per-way dedup/stale handling at
+  emission. `conversion_lanes` counts ELEMENT slots shared across
+  ways, charged on any-miss: with `pre_lane_dedup` every way's CAM
+  compares before lane allocation and an element every way gates on
+  is compacted out free (new stat `slotsCompacted`). Whole-latch
+  staleness flush requires ALL ways stale (`anyFresh`); a single
+  stale way forfeits only its own targets.
+- Wiring: the prefetcher's `consumers_per_producer` pf-param is the
+  single source of truth; `vector_cache_hierarchy.py` /
+  `unified_cache_hierarchy.py` copy it onto the `VectorChainTable`
+  they construct (guarded on `_params`, so gdp/vtyche2 keep 1).
+- Benchmark: `rvv/vector_indirect_eval.c` gained a trailing `ways`
+  arg (1|2). At 2 a second 64 MiB array C is gathered with the same
+  offset vector in the same loop (the 1-way loop is untouched);
+  C[j] = 2*j so the expected ROI sum is exactly 3x the 1-way sum.
+  Host-validated (scalar fallback) and gem5-validated.
+
+### Validation (2026-08-16, vlen 2048 / throughput 4 / simd-units 2, vtyche on vector L1)
+
+- `gdp_test.bin` m=1, pre-change binary vs post-change binary:
+  **0 differing common stats** (7,005,881 cycles both) — the
+  restructure plus the same-day conversion-knob port are
+  default-neutral, bit-for-bit.
+- `gdp_test.bin` (single gather) m=1 vs m=2 on the new binary:
+  **0 differing stats** — unused capacity is free.
+- `vector_indirect_eval` `line_locality 65536 4 33554432 1 1 2`
+  (2-way SoA), ROI stats:
+
+| stat | m=1 (control) | m=2 |
+|---|---|---|
+| `linksFormed` | 4,096 (churn: 2/iteration) | **2** (one per gather, stable) |
+| `elementsConverted` | 64,480 | 130,496 (2x: both ways) |
+| `targetsGenerated` | 16,112 | 32,608 |
+| `pfIssued` / `pfUseful` | 24,304 / 23,108 | 40,762 / 33,811 |
+| vector-L1D `overallMisses` | 70,454 | **26,983** (-62%) |
+| ROI `numCycles` | 734,566 | **436,367** (1.68x) |
+
+`consumerSlotsExhausted` 0 at m=2; kernel result PASS in every run.
+Raw runs in `rvv/out_multiway_val/`.
+
+## VectorChainTable sizing knobs exposed to the config script (2026-08-16)
+
+`--vector-dct-entries` and `--vector-max-transform-stages` make the
+CPU-side chain table's capacity sweepable from the command line. They
+size the table for whichever chain-table prefetcher is attached —
+`gdp`, `vtyche`, `vtyche2` and `vhybrid` all share ONE
+`VectorChainTable` per core, so vhybrid's indirect half is covered by
+the same two flags. Defaults (8 / 4) are the previous hardcoded
+values, so every existing command line is bit-neutral.
+
+### What the existing method was
+
+`VectorChainTable` (`src/cpu/VectorChainTable.py:27`) has always had
+`dct_entries` (default 8) and `max_transform_stages` (default 4) as
+`Param.Unsigned`, but nothing could set them. The config scripts
+constructed the table with only the stream-demotion fields:
+
+```python
+tbl = VectorChainTable(
+    demand_stream_pages=self._stream_demote_demand,
+    monotone_arm=self._stream_demote_monotone,
+)
+```
+
+(`rvv/vector_cache_hierarchy.py`, `rvv/unified_cache_hierarchy.py`).
+`--pf-param` was not an escape hatch either: it validates names
+against the selected *prefetcher's* `_params` and errors on anything
+else (`rvv/prefetcher_factory.py:165`), and these two live on the
+table SimObject, not the prefetcher. The DCT was therefore fixed at 8
+entries in every run to date.
+
+### What this fork adds
+
+Plumbing only — no C++ change, following the `--revela-stt-entries`
+precedent (`RevelaStreamTable`, the same shape of CPU-side sideband
+table):
+
+- `rvv/riscv-rvv-se-ara-prefetcher.py`: the two flags, plus argparse-
+  time guards (`>= 3` / `>= 1`) so the failure names the flag instead
+  of hitting the C++ `fatal_if` in `vector_chain_table.cc:34`.
+- `rvv/vector_cache_hierarchy.py`, `rvv/unified_cache_hierarchy.py`:
+  new ctor kwargs `vector_dct_entries` / `vector_max_transform_stages`
+  stored on the hierarchy and passed at BOTH `VectorChainTable`
+  construction sites in each file — the prefetcher-wiring site in
+  `_finish_prefetcher()` and the demand-only site that builds a table
+  with no prefetcher for `--stream-demote --stream-demote-demand`
+  runs.
+
+### What the two knobs actually control
+
+- `dct_entries` — chain-table capacity. `dctInsert()` clears the WHOLE
+  table and bumps the generation counter when it fills (Tyche's
+  `clear_dct` semantics), so a small DCT wipes learned chains more
+  often. It also bounds the backward-propagation walk that finds a
+  chain's head (`hops < dctEntries`, `vector_chain_table.cc:442`).
+- `max_transform_stages` — separate cap on transform links between
+  producer and gather (`rev.size() >= maxTransformStages`,
+  `vector_chain_table.cc:734`); an over-long chain returns an invalid
+  snapshot and simply does not link. Raising `dct_entries` alone will
+  not admit longer transform chains.
+
+Neither is packed in the simulator: `lastDctPtr` and the consumer
+slots are `int`, and `ChainSnapshot::ops` is a `std::vector`, so any
+value runs. The "3-bit pointers" note in
+`src/cpu/vector_chain_table.hh:17` is hardware storage accounting
+pinned to the default of 8 — the ~961 B figure for GDP's tables needs
+redoing if a larger DCT is adopted as the design point.
+
+### Validation (2026-08-16, `gdp_test.bin`)
+
+Config-only change, verified by reading back `config.ini`:
+
+| run | flags | `config.ini` |
+|---|---|---|
+| split hierarchy, vhybrid on vector L1 | `--vector-dct-entries 16 --vector-max-transform-stages 6` | `dct_entries=16`, `max_transform_stages=6` |
+| unified hierarchy, vhybrid on L1 | `--vector-dct-entries 24 --vector-max-transform-stages 3` | `dct_entries=24`, `max_transform_stages=3` |
+| demand-only table (`--prefetcher none --stream-demote l2 --stream-demote-demand`) | `--vector-dct-entries 12` | `dct_entries=12`, `max_transform_stages=4` |
+
+All three ran to completion; the split-hierarchy run printed
+`gdp_test: ... -> PASS`. `--vector-dct-entries 2` exits with the
+argparse-time guard message.
+
+## TSVC MEDIUM campaign driver (`rvv/tsvc_sweep.py`, 2026-08-16)
+
+The 8/16/26 sweep plan (four prefetcher arms x 4 kernels x 2 iteration
+counts x 2 ip[]-locality pairs x 2 MSHR pairs) needed a driver, and
+running it surfaced two TSVC bugs that only appear at MEDIUM.
+
+### What the existing method was
+
+`tsvc-gem5/run.sh` / `run-subset.sh` drive one kernel per gem5
+invocation against the OLD config script (`riscv-rvv-se-ara.py`, no
+prefetcher support), and `spmv_param_sweep.py` /
+`vector_indirect_sweep.py` drive prefetcher sweeps but are wired to
+RiVec spmv and `vector_indirect_eval` inputs. Neither could express a
+TSVC prefetcher campaign.
+
+### What this fork adds
+
+`rvv/tsvc_sweep.py`, following the established sweep conventions
+(DONE/FAILED markers per run dir, resumable, `--jobs`, `--only`,
+`--collect-only`, `GEM5_SWEEP_RUNNER=native` for kazi). Two things are
+specific to TSVC:
+
+- **One invocation runs all four kernels.** TSVC's `init()`
+  (`common.c`) builds a LEN_1D Fisher-Yates permutation before any ROI,
+  which at MEDIUM costs ~2.5 min of host time regardless of which
+  kernels the argv filter selects (`should_run`, `tsvc.c`). Batching
+  turns 232 kernel-ROIs into 58 invocations. It is state-equivalent to
+  separate runs, not a confound: every prefetcher wipes learned state
+  on the stats-reset callback (`base.cc:122` registers
+  `resetLearnedState`) and `VectorChainTable` clears at ROI boundaries
+  (`vector_chain_table.cc:37`), so each kernel's ROI still begins with
+  a cold predictor.
+- **Two stats dumps per kernel.** `ROI_END` is
+  `m5_dump_reset_stats(); m5_work_end();` (`common.h:77`) and the
+  work_end pseudo-op dumps again, so each kernel leaves its real ROI
+  section followed by a ~5-instruction artifact; gem5's end-of-run dump
+  adds one more after the last kernel. `kernel_sections()` filters on
+  `simInsts >= 1000` and takes the first N — a naive
+  `zip(KERNELS, sections)` misattributes every kernel after the first.
+
+Checksums are parsed by field, not by shape: a finished kernel's line
+carries the kernel name TWICE (`initialise_arrays` prints `"%5s\t"`
+with no newline, then `time_function` prints
+`"%-12s\t%12llu\t%f\n"`).
+
+### Bug found: `set_1d_array` reciprocal-square overflow (fixed)
+
+`common.c` computed `1. / (real_t)((i+1) * (i+1))` in `int`. At
+i=65535 the product is exactly 2^32, wraps to 0, and the element
+becomes `1.0/0.0 = inf`. That is s4113's `c[]` at MEDIUM and above, so
+its checksum was `inf` — which would have made cross-config checksum
+agreement pass trivially and give false confidence. Now squared in
+`double`: exact for every LEN_1D we run, and bit-identical to the old
+values at TINY and SMALL where the overflow never triggered (so no era
+break for existing `tsvc_results/` data).
+
+### Checksum validation strategy
+
+Native x86 goldens are INVALID for the current TSVC: `ip[]` is a
+rand()-based permutation (`common.c`, the locality generator added
+2026-08-16) and glibc's `rand()` differs from the RISC-V build's
+newlib `rand()`, so a native build produces an entirely different index
+array. `generate_golden.sh` also never passes `-L/-W/-S`, so it cannot
+target a locality pair even in principle. Two defenses replace it:
+
+- **Cross-config agreement** (free): all runs sharing
+  (kernel, L, W, iterations) must report the same checksum. The latent
+  vle32-under-e64m2 widening-chain corruption is timing-dependent, so a
+  prefetcher that perturbs timing would break agreement.
+- **novec reference**: `tsvc_novec_MEDIUM` at each (L,W). s353/s4112/
+  s4113 are element-wise and must match exactly; s4115 is a sum
+  reduction, so vectorization order moves the low bits and it is
+  compared with a relative tolerance.
+
+## VTyche: read-port index capture (`capture_on_read_hit`, 2026-08-17)
+
+An index line that is **already resident** in the cache when its demand
+read arrives can now still be captured and converted:
+`--pf-param capture_on_read_hit=true` (default `false`, so every
+existing run is bit-identical). VTyche2, GDP and VHybrid are untouched.
+
+### What the existing method did
+
+VTyche's conversion engine is fed exclusively by *fills*. Two paths
+register a line in the Index Routing Table (IRT) and then wait:
+
+- the **prefetch-window** path in `VectorTyche::getPacket()`
+  (`src/mem/cache/prefetch/vector_tyche.cc`) — a departing prefetch
+  whose VA falls inside a configured producer's stream window is index
+  data, so its line PA is registered (`capturesRegistered`);
+- the **demand-miss** path in `calculatePrefetch()` — an index-array
+  demand miss carries both VA and PA, so its lines are registered
+  directly (`capturesRegisteredMiss`), explicitly *skipping* lines that
+  `cache.inCache()` reports resident, since no fill will come for them.
+
+`notifyFill()` then matches the arriving fill's block PA against the
+IRT, erases the entry, and latches the payload into the owning
+producer's slice buffer (`fillsCaptured`).
+
+The gap: **a resident line never fills**, so a registration taken for
+one is dead weight that ages out of the bounded IRT deque without ever
+producing index data. This is the dominant capture loss on any loop
+where several producer PCs walk the same index array, because each
+producer's stream walk covers its siblings' slices and makes their
+index lines resident *before* their own demand loads reach them.
+Measured on TSVC `s353` (five interleaved gather chains) with
+`pipelines=5`, vector L1, MSHRs (16,20), L=1 W=1:
+
+| | pipelines=2 | pipelines=5 |
+|---|---|---|
+| `pipelinesSaturated` | 6384 | 0 |
+| `capturesRegistered` | 1901 | 18740 |
+| `fillsCaptured` | 2021 | **4855** |
+| `elementsConverted` | 27920 | 62800 |
+| `coverage` | 0.105 | 0.140 |
+
+Lifting the pipeline lockout registered 9.9x the lines but latched only
+2.4x — **74% of registrations could never latch.** `ip[]` is 1 MB =
+16384 distinct lines, so the fill path was reaching under a third of
+them.
+
+### What this fork adds
+
+A third capture path that sources the payload from the cache read port
+instead of a fill:
+
+- `notify()` (already overridden to latch the drain's translation
+  context) also latches the in-flight access packet into a transient
+  `hitPkt` member when the access is a satisfied demand **read hit**,
+  and clears it as soon as `Queued::notify` returns. The gate is the
+  same predicate the core uses to decide a read hit carries data
+  (`PrefetchInfo`'s constructor, `src/mem/cache/prefetch/base.cc` — the
+  IMP read-hit fix): `!isCacheMiss() && pkt->isRead() &&
+  !pkt->cmd.isHWPrefetch()`, plus `pfi.hasData()`. This is sound
+  because `access()` copies the block into the packet
+  (`satisfyRequest` -> `setDataFromBlock`) *before* the Hit probe fires
+  (`src/mem/cache/base.cc`), so the bytes are readable in the callback.
+- `captureFromReadHit()` latches each whole resident line the access
+  covers straight into the producer's slice buffer, reusing the fill
+  path's `CapturedLine` staging, freshness gate (`anyFresh`) and
+  buffer-full shedding (`bufferBusyDrops`). New stat: `hitsCaptured`.
+- `dropRegistration()` retires any IRT entry for a line captured this
+  way, so a later fill cannot double-convert it.
+
+No core file changed. The read hit hands over the payload, the VA and
+the PA simultaneously, so this path needs **no IRT round trip at all** —
+the registry exists only because fill packets are PA-only and arrive
+asynchronously.
+
+### What it does and does not buy
+
+It buys *capture*, not *lookahead*. Index line X lives in exactly one
+producer's slice, and the hit happens at that producer's own index
+load — roughly eight instructions before its gather. The mechanism is
+therefore MLP expansion (one captured line becomes up to
+`blkSize/elemBytes` target requests issued as a burst, versus the LSQ
+issuing gather elements serially through a handful of MSHRs), plus the
+fact that the sibling chains get index data *at all*.
+
+`capture_on_read_hit` is only useful together with a `pipelines` value
+at least as large as the number of concurrent index producers: capture
+is gated on `anyConfigured(ps)`, so producers denied a pipeline never
+register and never reach either capture path. On `s353` that means
+`--pf-param pipelines=5 --pf-param capture_on_read_hit=true`.
+
+Sweep 6 of `rvv/tsvc_sweep.py` (`s6_vtychep5rh_*`, sheet
+`vtyche_p5rh`) is sweep 5's grid with the flag added, so the two sheets
+diff cell-for-cell.
+
+## Feature: PageRank benchmark — vectorizable graph workload (2026-08-17)
+
+**What gem5/RiVEC provided.** Nothing: the RiVEC suite has no graph
+benchmark (its 12 kernels are dense/sparse linear algebra and PARSEC
+ports), and the Ligra `PageRank_riscv` build in `~/ligra` is a scalar
+`edgeMap` framework kernel with no correctness check
+(`~/ligra/RVV_BUILD_NOTES.md`).
+
+**What was added.** A validated, intrinsics-vectorized PageRank at
+`~/riscv-vectorized-benchmark-suite/_pagerank/`, following `_spmv`'s
+conventions exactly (magic-sniffed binary input, `.verif` elementwise
+comparison, `#ifdef USE_RISCV_VECTOR` kernel split, `Makefile.gcc`
+registration, ROI markers from `common/roi.h`).
+
+Formulation: the iterative-SpMV power method of EECS-2019-6
+("Nested-Parallelism PageRank on RISC-V Vector Multi-Processors",
+Amid 2019, §1.2), `y(k) = d·P·y(k−1) + (1−d)/|V|`, with the exact
+semantics of the GAP Benchmark Suite's `pr_spmv.cc` (Jacobi pull:
+damping 0.85, init 1/N, L1-error convergence, defaults 20 iters /
+tol 1e-4) so results cross-validate against gapbs. Per iteration:
+phase 1 is a unit-stride `vfmul` (`contrib = scores × inv_outdeg`,
+reciprocals precomputed outside the ROI to avoid ARA's serial FP
+divider); phase 2 is a per-vertex strip-mined `vle64`(indices) →
+`vsll` → `vloxei64` gather → ordered `vfredosum` over the in-neighbor
+list — `_spmv`'s CSR shape minus the values array, i.e. a pure
+gather-reduce with a u64 index stream (`ja[]`), the pattern the vector
+prefetchers target.
+
+Files: `src/graph_format.h` (magic `PGRKCSR1`; u64 N, NZ, in-CSR
+`ia`/`ja`, `outdeg`), `src/pagerank.c` (serial + intrinsics one-
+iteration kernels), `src/main.c` (loader with dense-`.el` text
+fallback, ROI around the whole power iteration, buffered per-iteration
+error prints, NaN-proof `.verif` compare), `el2pr.c` (host converter:
+SNAP edge list → dense-id remap → sorted in-CSR image + float64 golden
+`.verif` + optional remapped `.el` dump for gapbs).
+
+Inputs (in `_pagerank/input/`): `tiny` (64-vertex irregular synthetic,
+smoke tests), `wiki-Vote` (SNAP, 7115 v / 103689 e — EECS-2019-6's
+smallest evaluation graph; converges in 17 iterations), `amazon0302`
+(SNAP, 262111 v / 1234877 e — EECS-2019-6's medium graph; runs the
+full 20 iterations).
+
+Validation chain: (1) converter float64 golden vs an independent
+Python implementation — every printed digit matches (sum
+0.4176928988, top vertex original id 4037 = the published SNAP result
+for wiki-Vote); (2) vs GAP's `pr_spmv` (float32) run on the remapped
+edge list — max per-vertex |Δ| 1.3e-9, identical top-5; (3) host-native
+serial run verifies all three inputs including the text-fallback path;
+(4) gem5 ARA runs (VLEN 512, chaining) verify serial and vector
+variants; vector output is bitwise identical to serial because the
+strip reductions are ordered and seeded left-to-right.
+
+**gem5 pitfall found on the way (affects `_spmv` too).** This gem5
+implements the RVV tail-agnostic policy by writing all-ones — a NaN
+bit pattern — into tail lanes. `_spmv`'s `spmv_intrinsics` idiom
+(accumulate lane partials with a shrinking `vsetvl`, then one
+`vfredosum` re-widened to `VSETVL(nnz_row)`) therefore reads clobbered
+lanes for every row whose nnz is > VLMAX and not a multiple of VLMAX,
+and its result is NaN (confirmed by a per-row replica on football.csr:
+26/115 rows NaN at VLEN=512). `_spmv`'s verification does not catch
+this because `fabs(nan − ref) > TOL` is false — a NaN passes. The
+pagerank kernel avoids both traps: it carries the ordered reduction
+across strips through the scalar seed (`part_res[0]`), never reading
+tail lanes, and its verifier uses the negated comparison
+`!(fabs(Δ) <= TOL)` so NaN fails. `_spmv` itself was left untouched
+(fixing it changes the kernel's ARA work profile and would break
+comparability with collected timing series — the spmv address stream
+does not depend on the corrupted `y[]` values, so prefetcher/timing
+numbers remain meaningful); apply the same two fixes there if value
+correctness is ever needed.
+
+Build & run:
+
+```bash
+cd ~/riscv-vectorized-benchmark-suite
+make -f Makefile.gcc pagerank_serial pagerank_vector pagerank_autovec
+
+# host-side input prep (already done for tiny/wiki-Vote/amazon0302):
+cd _pagerank && gcc -O2 -o el2pr el2pr.c -lm
+./el2pr input/wiki-Vote.txt input/wiki-Vote.pr input/wiki-Vote.verif
+
+# gem5 (from /gem5 in the docker container):
+build/RISCV/gem5.opt rvv/riscv-rvv-se-ara-prefetcher.py \
+    --enable-chaining --vlen 512 --vector-timing-throughput 4 --simd-units 2 \
+    -p "/riscv-vectorized-benchmark-suite/_pagerank/input/wiki-Vote.pr \
+        /riscv-vectorized-benchmark-suite/_pagerank/input/wiki-Vote.verif" \
+    /riscv-vectorized-benchmark-suite/_pagerank/bin/pagerank_vector.exe
+```
+
+Program CLI: `<graph.pr|graph.el> [max_iters] [tol] [file.verif]` —
+numeric args are positional (iters, then tol), any non-numeric arg is
+the verif path. The `.verif` goldens correspond to the defaults
+(20, 1e-4); regenerate with `el2pr -i/-t` when overriding. The ROI is
+deterministic for a fixed input+params (early exit depends only on the
+data), and per-iteration error lines are buffered in memory during the
+ROI and printed after `ROI_END()` so no syscalls pollute the stats.

@@ -39,7 +39,7 @@ SimObject('Prefetcher.py', sim_objects=[
     'BOPPrefetcher', 'SBOOEPrefetcher', 'STeMSPrefetcher', 'PIFPrefetcher',
     'FetchDirectedPrefetcher', 'VectorIndirectMemoryPrefetcher',
     'TychePrefetcher', 'GDPPrefetcher', 'VectorTychePrefetcher',
-    'VectorTyche2Prefetcher'
+    'VectorTyche2Prefetcher', 'RevelaPrefetcher', 'VHybridPrefetcher'
     ])
 
 Source('access_map_pattern_matching.cc')
@@ -65,3 +65,5 @@ Source('tyche.cc')
 Source('gdp.cc')
 Source('vector_tyche.cc')
 Source('vector_tyche2.cc')
+Source('revela.cc')
+Source('vhybrid.cc')

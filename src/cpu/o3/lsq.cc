@@ -47,7 +47,8 @@
 
 #include "base/compiler.hh"
 #include "base/logging.hh"
-#include "cpu/gdp_table.hh"
+#include "cpu/vector_chain_table.hh"
+#include "cpu/revela_table.hh"
 #include "cpu/o3/cpu.hh"
 #include "cpu/o3/dyn_inst.hh"
 #include "cpu/o3/iew.hh"
@@ -865,10 +866,22 @@ LSQ::SingleDataRequest::finish(const Fault &fault, const RequestPtr &request,
             }
             // Demand-side stream-page registration: the translated PA
             // and the instruction's ISA identity meet here (see
-            // GdpChainTable::notifyDemandAccess).
-            if (auto *gt = _inst->getCpuPtr()->gdpTable) {
+            // VectorChainTable::notifyDemandAccess). The VA rides along
+            // for monotone-progress tracking (a VA property: streams
+            // are not PA-contiguous across page frames).
+            if (auto *gt = _inst->getCpuPtr()->vectorChainTable) {
                 gt->notifyDemandAccess(_inst->staticInst.get(),
+                                       _inst->pcState().instAddr(),
+                                       request->getVaddr(),
                                        request->getPaddr());
+            }
+            // ReVeLA stream tracking: unit-stride vector accesses
+            // update the STT with their VA (streams are VA-contiguous;
+            // see cpu/revela_table.hh).
+            if (auto *rt = _inst->getCpuPtr()->revelaTable) {
+                rt->notifyVectorAccess(_inst->staticInst.get(),
+                                       _inst->pcState().instAddr(),
+                                       request->getVaddr());
             }
             setState(State::Request);
         } else {
@@ -909,12 +922,23 @@ LSQ::SplitDataRequest::finish(const Fault &fault, const RequestPtr &req,
                 _inst->memReqFlags = _mainReq->getFlags();
                 // Demand-side stream-page registration; a split access
                 // straddles a page boundary, so register every
-                // successfully translated fragment's page.
-                if (auto *gt = _inst->getCpuPtr()->gdpTable) {
+                // successfully translated fragment's page (each with
+                // its own VA/PA pair).
+                if (auto *gt = _inst->getCpuPtr()->vectorChainTable) {
                     for (int j = 0; j < i; j++) {
                         gt->notifyDemandAccess(_inst->staticInst.get(),
+                                               _inst->pcState().instAddr(),
+                                               _reqs[j]->getVaddr(),
                                                _reqs[j]->getPaddr());
                     }
+                }
+                // ReVeLA stream tracking: one update per micro-op with
+                // its full VA range, not per fragment — the STT tracks
+                // streams, and _mainReq holds the unsplit base VA.
+                if (auto *rt = _inst->getCpuPtr()->revelaTable) {
+                    rt->notifyVectorAccess(_inst->staticInst.get(),
+                                           _inst->pcState().instAddr(),
+                                           _mainReq->getVaddr());
                 }
                 if (_mainReq->isCondSwap()) {
                     assert (i == _fault.size());

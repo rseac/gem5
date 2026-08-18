@@ -44,8 +44,10 @@
 #include <limits>
 #include <vector>
 
+#include "base/bitfield.hh"
 #include "base/logging.hh"
-#include "cpu/gdp_table.hh"
+#include "cpu/vector_chain_table.hh"
+#include "cpu/revela_table.hh"
 #include "cpu/tyche_table.hh"
 #include "cpu/o3/dyn_inst.hh"
 #include "cpu/o3/fu_pool.hh"
@@ -695,10 +697,10 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
         cpu->tycheTable->dispatch(new_inst->staticInst.get(),
                                   new_inst->pcState().instAddr());
     }
-    // GDP chain construction: vector instructions, in program order so
-    // register provenance is exact (see cpu/gdp_table.hh).
-    if (cpu->gdpTable && new_inst->isVector()) {
-        cpu->gdpTable->dispatch(new_inst->staticInst.get(),
+    // Vector chain-table construction: vector instructions, in program order so
+    // register provenance is exact (see cpu/vector_chain_table.hh).
+    if (cpu->vectorChainTable && new_inst->isVector()) {
+        cpu->vectorChainTable->dispatch(new_inst->staticInst.get(),
                                 new_inst->pcState().instAddr());
     }
 
@@ -752,9 +754,9 @@ InstructionQueue::insertNonSpec(const DynInstPtr &new_inst)
         cpu->tycheTable->dispatch(new_inst->staticInst.get(),
                                   new_inst->pcState().instAddr());
     }
-    // GDP chain construction (see insert() above).
-    if (cpu->gdpTable && new_inst->isVector()) {
-        cpu->gdpTable->dispatch(new_inst->staticInst.get(),
+    // Vector chain-table construction (see insert() above).
+    if (cpu->vectorChainTable && new_inst->isVector()) {
+        cpu->vectorChainTable->dispatch(new_inst->staticInst.get(),
                                 new_inst->pcState().instAddr());
     }
 
@@ -959,27 +961,60 @@ InstructionQueue::scheduleReadyInsts()
             continue;
         }
 
-        // GDP: sources are ready at issue — snoop the gather's rs1
+        // Vector chain table: sources are ready at issue — snoop the gather's rs1
         // (base) or a .vx transform's scalar operand off the operand
-        // read it is already doing (see cpu/gdp_table.hh).
-        if (cpu->gdpTable && issuing_inst->isVector()) {
+        // read it is already doing (see cpu/vector_chain_table.hh).
+        if (cpu->vectorChainTable && issuing_inst->isVector()) {
             const StaticInst *si = issuing_inst->staticInst.get();
             const Addr g_pc = issuing_inst->pcState().instAddr();
-            const bool is_gather = si->gdpInstInfo().kind ==
-                StaticInst::GdpInstInfo::IndexedLoad;
-            if (is_gather || cpu->gdpTable->wantsScalar(g_pc)) {
+            const bool is_gather = si->vecMemInfo().kind ==
+                StaticInst::VecMemInfo::IndexedLoad;
+            if (is_gather || cpu->vectorChainTable->wantsScalar(g_pc)) {
                 for (int i = 0; i < si->numSrcRegs(); i++) {
                     if (si->srcRegIdx(i).is(IntRegClass)) {
                         const uint64_t v =
                             issuing_inst->getRegOperand(si, i);
                         if (is_gather) {
-                            cpu->gdpTable->armBase(si, g_pc, v);
+                            cpu->vectorChainTable->armBase(si, g_pc, v);
                         } else {
-                            cpu->gdpTable->captureScalar(g_pc, v);
+                            cpu->vectorChainTable->captureScalar(g_pc, v);
                         }
                         break;
                     }
                 }
+            }
+        }
+
+        // ReVeLA: vset{i}vl{i} carries the Requested Vector Length
+        // (its AVL operand) — the element count the strip-mined loop
+        // still has to process. Snoop it off the operand read the
+        // issue is already doing (see cpu/revela_table.hh). Identified
+        // from the raw encoding (getEMI, the no-ISA-edit technique):
+        // OP-V major opcode 0x57 with funct3 0b111.
+        if (cpu->revelaTable && issuing_inst->isVector()) {
+            const StaticInst *si = issuing_inst->staticInst.get();
+            const uint64_t emi = si->getEMI();
+            if (bits(emi, 6, 0) == 0x57 && bits(emi, 14, 12) == 0x7) {
+                const unsigned rs1 = bits(emi, 19, 15);
+                const unsigned rd = bits(emi, 11, 7);
+                if (bits(emi, 31, 30) == 0x3) {
+                    // vsetivli: the AVL is the uimm in the rs1 field.
+                    cpu->revelaTable->notifyVsetvl(rs1);
+                } else if (rs1 != 0) {
+                    // vsetvli/vsetvl: the AVL is the rs1 value.
+                    for (int i = 0; i < si->numSrcRegs(); i++) {
+                        const RegId &r = si->srcRegIdx(i);
+                        if (r.is(IntRegClass) && r.index() == rs1) {
+                            cpu->revelaTable->notifyVsetvl(
+                                issuing_inst->getRegOperand(si, i));
+                            break;
+                        }
+                    }
+                } else if (rd != 0) {
+                    // rs1=x0, rd!=x0: AVL = VLMAX, no stream end known.
+                    cpu->revelaTable->notifyVsetvlUnbounded();
+                }
+                // rs1=x0, rd=x0 keeps vl: the shadow stays as-is.
             }
         }
 

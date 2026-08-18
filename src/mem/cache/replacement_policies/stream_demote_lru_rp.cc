@@ -1,6 +1,6 @@
 /**
  * Stream-demoting LRU implementation. See stream_demote_lru_rp.hh for
- * the two demotion modes and cpu/gdp_table.hh for the stream-page
+ * the two demotion modes and cpu/vector_chain_table.hh for the stream-page
  * registry the classification reads.
  */
 
@@ -25,7 +25,7 @@ StreamDemoteLRU::StreamDemoteLRU(const Params &p)
     sdStats(this)
 {
     fatal_if(tbl == nullptr, "%s: no link_table set. StreamDemoteLRU "
-             "needs the same GdpChainTable instance the prefetcher and "
+             "needs the same VectorChainTable instance the prefetcher and "
              "CPU share (the config script wires all three).", name());
 }
 

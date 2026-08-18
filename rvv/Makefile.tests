@@ -16,7 +16,7 @@ GDP_TEST         = gdp_test
 TYCHE_TEST       = tyche_test
 GDP_EXT_TEST     = gdp_ext_test
 
-all: $(CHAINING_TEST).bin $(SCALAR_TEST).bin $(LOAD_CHAIN_TEST).bin $(LATENCY_TEST).bin $(GDP_TEST).bin $(TYCHE_TEST).bin
+all: $(CHAINING_TEST).bin $(SCALAR_TEST).bin $(LOAD_CHAIN_TEST).bin $(LATENCY_TEST).bin $(GDP_TEST).bin $(TYCHE_TEST).bin vector_indirect_eval.bin
 
 %.bin: %.c
 	$(CC) $(CFLAGS) -o $@ $<
@@ -46,6 +46,31 @@ $(TYCHE_TEST).bin: $(TYCHE_TEST).c
 $(GDP_EXT_TEST).bin: $(GDP_EXT_TEST).c
 	riscv64-unknown-elf-gcc $(CFLAGS) -o $@ $<
 	riscv64-unknown-elf-objdump -d $@ > $(GDP_EXT_TEST).dump
+
+# Synthetic gather-locality benchmark (see DOCUMENTATION.MD). Links
+# gem5's libm5 for the m5_reset_stats/m5_dump_reset_stats ROI markers
+# (RiVec roi.h convention, enabled with -DUSE_M5OPS).
+#
+# Compiled with the SAME flags as the TSVC kernels
+# (tsvc-gem5/makefiles/Makefile.GNU: CC -std=gnu99, flags + vecflags)
+# so codegen — vectorization, code model, section layout — is
+# comparable across the synthetic and TSVC workloads.
+TSVC_FLAGS = -std=gnu99 -O3 -mcmodel=medany -march=rv64gcv_zifencei \
+             -mabi=lp64d -static -fno-common -ffunction-sections \
+             -fdata-sections -Wall -ftree-vectorize
+# Static A pool capacity: newlib's crt0 clears the whole .bss in
+# simulated time (~192M cycles at the source default of 512 MiB), so
+# size A to the largest pool_bytes actually used. pool_bytes > this
+# is rejected at startup, never silently truncated.
+# Override for full-size runs (-B: a variable override alone does
+# not dirty the target): make -B A_MAX_BYTES=536870912 ...
+A_MAX_BYTES ?= 67108864
+VECTOR_EVAL = vector_indirect_eval
+$(VECTOR_EVAL).bin: $(VECTOR_EVAL).c Makefile.tests
+	riscv64-unknown-elf-gcc $(TSVC_FLAGS) -DUSE_M5OPS -I../include \
+	    -DA_MAX_BYTES=$(A_MAX_BYTES) \
+	    -o $@ $< ../util/m5/build/riscv/out/libm5.a
+	riscv64-unknown-elf-objdump -d $@ > $(VECTOR_EVAL).dump
 
 clean:
 	rm -f *.bin *.dump

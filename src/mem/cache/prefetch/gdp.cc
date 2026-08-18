@@ -1,6 +1,6 @@
 /**
  * GDP (Gather Dataflow Prefetcher) implementation. See gdp.hh for
- * the design and cpu/gdp_table.hh for the CPU-side half.
+ * the design and cpu/vector_chain_table.hh for the CPU-side half.
  */
 
 #include "mem/cache/prefetch/gdp.hh"
@@ -35,8 +35,8 @@ GDP::GDP(const GDPPrefetcherParams &p)
     gdpStats(this)
 {
     fatal_if(tbl == nullptr, "%s: no link_table set. GDP needs the "
-             "GdpChainTable that is also attached to the CPU's "
-             "gdp_table param (the config script wires both).", name());
+             "VectorChainTable that is also attached to the CPU's "
+             "vector_chain_table param (the config script wires both).", name());
     fatal_if(streamingDistance < 1, "streaming_distance must be >= 1");
     fatal_if(sliceBufferEntries < 1, "slice_buffer_entries must be >= 1");
     fatal_if(pipelines < 1, "pipelines must be >= 1");
@@ -45,7 +45,7 @@ GDP::GDP(const GDPPrefetcherParams &p)
 void
 GDP::resetLearnedState()
 {
-    // The GdpChainTable registers its own reset callback; only this
+    // The VectorChainTable registers its own reset callback; only this
     // prefetcher's runtime state is cleared here.
     streamTrackingTable.clear();
     configuredCount = 0;
@@ -134,10 +134,10 @@ GDP::registerCapture(Addr line_pa, Addr line_va, Addr producer_pc,
 }
 
 Addr
-GDP::applyChain(const GdpChainTable::ChainSnapshot &cfg,
+GDP::applyChain(const VectorChainTable::ChainSnapshot &cfg,
                  uint64_t value) const
 {
-    using VOp = GdpChainTable::VOp;
+    using VOp = VectorChainTable::VOp;
     for (const auto &s : cfg.ops) {
         switch (s.op) {
           case VOp::SExt: {
@@ -302,7 +302,7 @@ GDP::calculatePrefetch(const PrefetchInfo &pfi,
     const Addr pc = pfi.getPC();
     const bool is_secure = pfi.isSecure();
 
-    const GdpChainTable::ProducerInfo info = tbl->producerInfo(pc);
+    const VectorChainTable::ProducerInfo info = tbl->producerInfo(pc);
     if (!info.found) {
         drainReplay(addresses);
         return;
@@ -332,7 +332,7 @@ GDP::calculatePrefetch(const PrefetchInfo &pfi,
             if (!ps.configured && configuredCount >= pipelines) {
                 gdpStats.pipelinesSaturated++;
             } else {
-                GdpChainTable::ChainSnapshot snap =
+                VectorChainTable::ChainSnapshot snap =
                     tbl->pipelineConfig(info.dctPtr);
                 if (snap.valid) {
                     if (!ps.configured) {

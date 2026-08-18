@@ -221,15 +221,24 @@ class Queued : public Base
      */
     void addToQueue(std::list<DeferredPacket> &queue, DeferredPacket &dpp);
 
+  protected:
     /**
      * Starts the translations of the queued prefetches with a
      * missing translation. It performs a maximum specified number of
      * translations. Successful translations cause the prefetch request to be
      * queued in the queue of ready requests.
+     *
+     * Protected (upstream: private) so prefetchers that insert outside
+     * notify() — e.g. revela.cc's self-clocked drain — can start
+     * translations themselves: the only upstream caller is getPacket(),
+     * which the cache stops calling once pfq is empty
+     * (nextPrefetchReadyTime() is MaxTick while every candidate sits in
+     * pfqMissingTranslation), wedging the queue.
      * @param max maximum number of translations to perform
      */
     void processMissingTranslations(unsigned max);
 
+  private:
     /**
      * Indicates that the translation of the address of the provided  deferred
      * packet has been successfully completed, and it can be enqueued as a

@@ -21,12 +21,14 @@ from m5.objects import (
     GDPPrefetcher,
     IndirectMemoryPrefetcher,
     IrregularStreamBufferPrefetcher,
+    RevelaPrefetcher,
     STeMSPrefetcher,
     StridePrefetcher,
     TychePrefetcher,
     VectorIndirectMemoryPrefetcher,
     VectorTychePrefetcher,
     VectorTyche2Prefetcher,
+    VHybridPrefetcher,
 )
 from m5.params import NULL
 
@@ -42,6 +44,8 @@ PREFETCHERS = {
     "isb": IrregularStreamBufferPrefetcher,
     "stems": STeMSPrefetcher,
     "tyche": TychePrefetcher,
+    "revela": RevelaPrefetcher,
+    "vhybrid": VHybridPrefetcher,
 }
 
 
@@ -69,17 +73,18 @@ def _coerce(value):
 # on virtual addresses, so the CPU MMU must be registered on the prefetcher
 # (BasePrefetcher.registerMMU) or every page-crossing prefetch target is
 # silently dropped (Queued::insert requires an MMU to cross a page).
-VA_PREFETCHERS = {"vimp", "gdp", "vtyche", "vtyche2", "tyche"}
+VA_PREFETCHERS = {"vimp", "gdp", "vtyche", "vtyche2", "tyche", "revela",
+                  "vhybrid"}
 
 # Prefetchers needing a per-core TycheChainTable wired to both the
 # prefetcher (chain_table) and the CPU (tyche_table); see
 # src/cpu/tyche_table.hh.
 CHAIN_TABLE_PREFETCHERS = {"tyche"}
 
-# Prefetchers needing a per-core GdpChainTable wired to both the
-# prefetcher (link_table) and the CPU (gdp_table); see
-# src/cpu/gdp_table.hh.
-GDP_TABLE_PREFETCHERS = {"gdp", "vtyche", "vtyche2"}
+# Prefetchers needing a per-core VectorChainTable wired to both the
+# prefetcher (link_table) and the CPU (vector_chain_table); see
+# src/cpu/vector_chain_table.hh.
+VECTOR_CHAIN_TABLE_PREFETCHERS = {"gdp", "vtyche", "vtyche2", "vhybrid"}
 
 
 def needs_chain_table(name):
@@ -88,10 +93,28 @@ def needs_chain_table(name):
     return name in CHAIN_TABLE_PREFETCHERS
 
 
-def needs_gdp_table(name):
+def needs_vector_chain_table(name):
     """True when the selected prefetcher is fed by the CPU-side
-    GdpChainTable channel."""
-    return name in GDP_TABLE_PREFETCHERS
+    VectorChainTable channel."""
+    return name in VECTOR_CHAIN_TABLE_PREFETCHERS
+
+
+# Prefetchers needing a per-core RevelaStreamTable wired to both the
+# prefetcher (stream_table) and the CPU (revela_table); see
+# src/cpu/revela_table.hh.
+REVELA_TABLE_PREFETCHERS = {"revela", "vhybrid"}
+
+
+def needs_revela_table(name, params=None):
+    """True when the selected prefetcher is fed by the CPU-side
+    RevelaStreamTable channel. vtyche joins only when its opt-in
+    announced-limit gate is on (``--pf-param limit_gate=true``), so
+    plain vtyche runs keep their table-free wiring (and their
+    split-hierarchy side freedom) bit-exactly."""
+    params = params or {}
+    if name == "vtyche" and bool(_coerce(params.get("limit_gate", 0))):
+        return True
+    return name in REVELA_TABLE_PREFETCHERS
 
 
 def needs_mmu(name, params=None):

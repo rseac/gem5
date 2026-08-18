@@ -433,7 +433,7 @@ class VectorIndirectMemoryPrefetcher(QueuedPrefetcher):
 class GDPPrefetcher(QueuedPrefetcher):
     """Gather Dataflow Prefetcher (GDP): prefetches A[f(B[i])] vector
     gathers with no training — the pattern is extracted
-    architecturally. The CPU side (cpu/gdp_table.hh) records the
+    architecturally. The CPU side (cpu/vector_chain_table.hh) records the
     transform chain between a unit-stride producer load and its gather
     (DCT) and links them in one iteration (backward propagation at the
     gather's dispatch); this prefetcher streams the index array ahead
@@ -442,8 +442,8 @@ class GDPPrefetcher(QueuedPrefetcher):
     transform ops + a dedicated base adder — so any A[f(B[i])] the
     chain expresses is prefetched exactly. No confidence, no kill
     switch, no training. Vector-side design (requires
-    --prefetcher-side vector). Wire ONE GdpChainTable per core to
-    both this prefetcher's link_table and the CPU's gdp_table.
+    --prefetcher-side vector). Wire ONE VectorChainTable per core to
+    both this prefetcher's link_table and the CPU's vector_chain_table.
     See mem/cache/prefetch/gdp.hh."""
 
     type = "GDPPrefetcher"
@@ -459,10 +459,10 @@ class GDPPrefetcher(QueuedPrefetcher):
     use_virtual_addresses = True
     queue_size = 64
 
-    link_table = Param.GdpChainTable(
+    link_table = Param.VectorChainTable(
         NULL,
         "CPU-side chain/link table (must be the same instance as the "
-        "CPU's gdp_table param)",
+        "CPU's vector_chain_table param)",
     )
     streaming_distance = Param.Unsigned(
         8,
@@ -514,7 +514,7 @@ class VectorTychePrefetcher(QueuedPrefetcher):
     """VTyche (Vector Tyche): an A[B[i]] gather prefetcher — GDP's
     architectural discovery with IMP's linear equation for generation.
 
-    Shares GDP's CPU-side GdpChainTable (producer identification,
+    Shares GDP's CPU-side VectorChainTable (producer identification,
     producer->gather link, base snoop) and GDP's runtime skeleton
     (architectural index-array stream, range-based fill capture), but
     collapses the recorded transform chain ONCE, at adoption, into
@@ -536,8 +536,8 @@ class VectorTychePrefetcher(QueuedPrefetcher):
     contribution.
 
     Vector-side design (requires --prefetcher-side vector). Wire ONE
-    GdpChainTable per core to both this prefetcher's link_table and the
-    CPU's gdp_table. See mem/cache/prefetch/vector_tyche.hh."""
+    VectorChainTable per core to both this prefetcher's link_table and the
+    CPU's vector_chain_table. See mem/cache/prefetch/vector_tyche.hh."""
 
     type = "VectorTychePrefetcher"
     cxx_class = "gem5::prefetch::VectorTyche"
@@ -552,10 +552,10 @@ class VectorTychePrefetcher(QueuedPrefetcher):
     use_virtual_addresses = True
     queue_size = 64
 
-    link_table = Param.GdpChainTable(
+    link_table = Param.VectorChainTable(
         NULL,
         "CPU-side chain/link table (must be the same instance as the "
-        "CPU's gdp_table param). Shared with GDP: the discovery half "
+        "CPU's vector_chain_table param). Shared with GDP: the discovery half "
         "of the two designs is identical.",
     )
     streaming_distance = Param.Unsigned(
@@ -587,6 +587,22 @@ class VectorTychePrefetcher(QueuedPrefetcher):
         "for capture; a matching fill is routed to the owning "
         "producer's conversion array",
     )
+    capture_on_read_hit = Param.Bool(
+        False,
+        "Also capture an index line off the cache read port when the "
+        "demand read HITS, instead of only from a fill. An already "
+        "resident index line never produces a fill, so the IRT entry "
+        "registered for it can never latch - the dominant capture loss "
+        "on multi-chain loops, where one producer's stream walk makes "
+        "the sibling producers' index lines resident before their own "
+        "demands reach them (s353 at pipelines=5: 18740 lines "
+        "registered, only 4855 latched). A read hit carries the bytes, "
+        "the VA and the PA together, so the line is latched straight "
+        "into the slice buffer with no IRT round trip (hitsCaptured). "
+        "This buys no lookahead over a fill capture - the hit is at the "
+        "owning producer's own cursor - the gain is that the sibling "
+        "chains get index data at all.",
+    )
     drain_floor = Param.Int(
         8,
         "Minimum targets emitted per access event when the prefetch "
@@ -608,19 +624,6 @@ class VectorTychePrefetcher(QueuedPrefetcher):
         "Steady-state behavior is identical either way (the limitAddr "
         "high-water mark already makes ongoing emission frontier-only).",
     )
-    drain_period = Param.Cycles(
-        1,
-        "Self-clocked drain period. While conversion work is buffered "
-        "(slice buffers or output latches non-empty), the drain fires "
-        "on its own event every this-many cycles instead of waiting "
-        "for the next demand access — so buffered index lines keep "
-        "converting and emitting through core stalls and bursts. The "
-        "stream walk stays demand-anchored (the window only advances "
-        "with demand), so this moves emission earlier WITHIN the "
-        "window, never past it. The self-clocked path waits for real "
-        "queue room rather than forcing drain_floor. 0 restores the "
-        "legacy demand-clocked drain (pre-Aug-2026 behavior).",
-    )
     dedup_buffer_size = Param.Unsigned(
         0,
         "Cross-line dedup window, in index lines (0 = disabled). "
@@ -631,6 +634,84 @@ class VectorTychePrefetcher(QueuedPrefetcher):
         "already serializes lines, so N sets only the window depth. "
         "Closes the redundancy the per-line dedup cannot see: "
         "neighboring index lines re-targeting the same data lines.",
+    )
+    conversion_lanes = Param.Unsigned(
+        0,
+        "Shift-and-add lane circuits in the conversion array: at "
+        "most this many index ELEMENTS convert to target addresses "
+        "per drain event; a captured line wider than the budget "
+        "stays at the slice-buffer front and resumes next event "
+        "(conversionWidthLimited counts the cut-shorts). Within-line "
+        "dedup and the dedup window keep whole-line semantics across "
+        "the split. 0 = unbounded (whole line per event, the classic "
+        "VTyche array; 8 = one full e64 line per event). GDP's "
+        "pipelines_per_gather analog for the collapsed-chain array; "
+        "same semantics as VHybrid's conversion_lanes.",
+    )
+    drop_on_full = Param.Bool(
+        False,
+        "Queue-full disposition for converted indirect targets. True: "
+        "the overflow target is DROPPED and the queue keeps its "
+        "staged entries — protects stream lines from target-burst "
+        "displacement in the shared queue (targetsDroppedFull counts "
+        "them; dropped targets are not recorded in the dedup window "
+        "since no prefetch went out, so later duplicates may still "
+        "re-emit). False (default): the drain_floor license applies — "
+        "up to drain_floor targets push into the full queue per "
+        "event, evicting its oldest entries (pfRemovedFull). "
+        "drain_floor=0 remains the third disposition: stall, holding "
+        "targets latched until room appears.",
+    )
+    vl_window_dedup = Param.Bool(
+        False,
+        "vl-aware dedup scope: the within-window seen-set clears at "
+        "vl_window_bytes-aligned index-stream boundaries (~one gather "
+        "chunk) instead of per captured index line. Within one "
+        "instruction the LSQ coalesces same-line elements onto one "
+        "MSHR regardless of cache state, so this window suppresses "
+        "exactly the guaranteed-safe duplicates and never bets on "
+        "line residency (the dedup_buffer_size window remains "
+        "orthogonal and can be disabled alongside). False = the "
+        "classic per-source-line seen-set.",
+    )
+    vl_window_bytes = Param.Unsigned(
+        256,
+        "Index-stream span of one vl window, in bytes; a FULL gather "
+        "chunk always consumes VLEN/8 index bytes regardless of EEW "
+        "(vl x elemBytes = VLEN/8), so 256 = one chunk at VLEN=2048. "
+        "Power of two, >= the cache line size. Window boundaries are "
+        "VA-aligned buckets: exact instruction boundaries when the "
+        "index array is chunk-aligned, a constant phase shift "
+        "otherwise; stream tails shrink via the limit_gate clamp "
+        "when that gate is enabled.",
+    )
+    pre_lane_dedup = Param.Bool(
+        False,
+        "Run the dedup compare BEFORE the shift/add lane array, on "
+        "truncated folded indices: same-target-line iff "
+        "((extend(idx)<<shift) + (base & 63)) >> 6 is equal — index "
+        "extension is wire fan-out and the sub-line base fold is a "
+        "6-bit constant add at insertion, so a hit consumes no lane "
+        "circuit and no conversion_lanes budget slot "
+        "(elementsPreDeduped counts them). False = compare after "
+        "conversion on target line addresses (the classic order). "
+        "Composes with either dedup scope.",
+    )
+    consumers_per_producer = Param.Unsigned(
+        1,
+        "Consumer ways per producer index load: shift/add lane "
+        "groups fed by ONE broadcast slice buffer, one group (own "
+        "base/shift/ext form + dedup state) per linked gather, so "
+        "multi-way patterns like A[B[i]] and C[B[i]] prefetch every "
+        "target array. Emission is element-major interleaved "
+        "(A[B[0]], C[B[0]], A[B[1]], ...). conversion_lanes counts "
+        "ELEMENT slots shared across ways, charged on any-miss: an "
+        "element every way's pre-lane CAM gates on is compacted out "
+        "free (slotsCompacted). The index side (capture, IRT, walk, "
+        "staging) is never duplicated. Must match the chain table's "
+        "consumers_per_producer — the config script copies this "
+        "value onto the table it wires. 1 (default) = the classic "
+        "single-way behavior, bit-identical stats.",
     )
     row_schedule_bits = Param.Unsigned(
         0,
@@ -647,13 +728,44 @@ class VectorTychePrefetcher(QueuedPrefetcher):
         "RoRaBaCoCh mapping, where column bits occupy paddr[12:6] so "
         "one DRAM row is an 8KiB-aligned physical region.",
     )
+    reorder_window_size = Param.Unsigned(
+        0,
+        "Row-schedule reorder window depth, in prefetch-queue entries "
+        "counted from the head, head included (0 = unbounded, scan "
+        "the head's whole priority group — the pre-existing "
+        "behavior). When set, rowSchedule only considers the first N "
+        "queue entries when searching for a row-mate to promote, "
+        "modeling a fixed-depth comparator window at the queue head "
+        "instead of a CAM over the entire queue. Entries inside the "
+        "window that fail the due/priority checks still occupy window "
+        "slots. Only meaningful when row_schedule_bits is non-zero.",
+    )
+    stream_table = Param.RevelaStreamTable(
+        NULL,
+        "Optional CPU-side Stream Tracking Table (ReVeLA's "
+        "announcement sideband; must be the same instance as the "
+        "CPU's revela_table param). Only read when limit_gate is "
+        "true; the config script wires it on demand.",
+    )
+    limit_gate = Param.Bool(
+        False,
+        "Announced-limit gate (ReVeLA's extent semantics as an "
+        "ablation on the discovery design): clamp the index-array "
+        "walk at the vsetvl-AVL-announced extent end and slice the "
+        "straddling line's conversion at the announced byte limit, "
+        "so end-of-extent overrun prefetches and garbage-tail "
+        "targets are never generated. Lines with no covering "
+        "announcement are unaffected (strict no-op on "
+        "announcement-blind code such as CSR spmv). Requires "
+        "stream_table.",
+    )
 
 
 class VectorTyche2Prefetcher(QueuedPrefetcher):
     """VTyche2: VTyche with DECOUPLED metadata/data lead.\n\n    Deep index staging (index_distance) + cursor-scheduled\n    near release (release_distance): index lines are fetched\n    and captured far ahead (cheap SRAM staging, L2 residency),\n    while converted targets and just-in-time L1 promotions are\n    released only when the walk cursor closes to within\n    release_distance chunks. Separates the two failure modes a\n    single distance couples: late targets (fix with deep\n    index_distance) vs evicted-before-use targets (fix with\n    shallow release_distance).\n\n    Base design: VTyche, an A[B[i]] gather prefetcher — GDP's
     architectural discovery with IMP's linear equation for generation.
 
-    Shares GDP's CPU-side GdpChainTable (producer identification,
+    Shares GDP's CPU-side VectorChainTable (producer identification,
     producer->gather link, base snoop) and GDP's runtime skeleton
     (architectural index-array stream, range-based fill capture), but
     collapses the recorded transform chain ONCE, at adoption, into
@@ -675,8 +787,8 @@ class VectorTyche2Prefetcher(QueuedPrefetcher):
     contribution.
 
     Vector-side design (requires --prefetcher-side vector). Wire ONE
-    GdpChainTable per core to both this prefetcher's link_table and the
-    CPU's gdp_table. See mem/cache/prefetch/vector_tyche.hh."""
+    VectorChainTable per core to both this prefetcher's link_table and the
+    CPU's vector_chain_table. See mem/cache/prefetch/vector_tyche.hh."""
 
     type = "VectorTyche2Prefetcher"
     cxx_class = "gem5::prefetch::VectorTyche2"
@@ -691,10 +803,10 @@ class VectorTyche2Prefetcher(QueuedPrefetcher):
     use_virtual_addresses = True
     queue_size = 64
 
-    link_table = Param.GdpChainTable(
+    link_table = Param.VectorChainTable(
         NULL,
         "CPU-side chain/link table (must be the same instance as the "
-        "CPU's gdp_table param). Shared with GDP: the discovery half "
+        "CPU's vector_chain_table param). Shared with GDP: the discovery half "
         "of the two designs is identical.",
     )
     index_distance = Param.Unsigned(
@@ -721,7 +833,7 @@ class VectorTyche2Prefetcher(QueuedPrefetcher):
         "Max target addresses emitted per drain firing (0 = "
         "unlimited). Spreads a due batch across firings instead of "
         "dumping ~a chunk's worth of targets at the release-gate "
-        "edge: with drain_period=1, release_pace=2 spreads ~28 "
+        "edge: with the every-cycle drain, release_pace=2 spreads ~28 "
         "targets over >=14 cycles, smoothing queue/MSHR contention "
         "at the cost of <15%% of the release margin for the batch's "
         "last target.",
@@ -769,19 +881,6 @@ class VectorTyche2Prefetcher(QueuedPrefetcher):
         "Steady-state behavior is identical either way (the limitAddr "
         "high-water mark already makes ongoing emission frontier-only).",
     )
-    drain_period = Param.Cycles(
-        1,
-        "Self-clocked drain period. While conversion work is buffered "
-        "(slice buffers or output latches non-empty), the drain fires "
-        "on its own event every this-many cycles instead of waiting "
-        "for the next demand access — so buffered index lines keep "
-        "converting and emitting through core stalls and bursts. The "
-        "stream walk stays demand-anchored (the window only advances "
-        "with demand), so this moves emission earlier WITHIN the "
-        "window, never past it. The self-clocked path waits for real "
-        "queue room rather than forcing drain_floor. 0 restores the "
-        "legacy demand-clocked drain (pre-Aug-2026 behavior).",
-    )
     dedup_buffer_size = Param.Unsigned(
         0,
         "Cross-line dedup window, in index lines (0 = disabled). "
@@ -794,6 +893,257 @@ class VectorTyche2Prefetcher(QueuedPrefetcher):
         "neighboring index lines re-targeting the same data lines.",
     )
 
+
+
+class RevelaPrefetcher(QueuedPrefetcher):
+    """ReVeLA: the Register Vector Length Agnostic prefetcher
+    (Martinez Palau et al., ICS'24). Exploits the gap between the
+    Requested Vector Length (the AVL a strip-mined VLA loop passes to
+    vsetvl — the elements still to process) and the granted vl: a
+    unit-stride vector access at access@ announces with certainty
+    that [access@ + vl*eew, access@ + AVL*eew) will be accessed by
+    the following iterations.
+
+    The CPU side (RevelaStreamTable, cpu/revela_table.hh) snoops the
+    AVL at vsetvl issue and tracks streams in a Stream Tracking Table
+    updated by the LSQ at translation finish. This cache side runs
+    the paper's trigger logic on a self-clocked every-cycle drain:
+    whenever the prefetch queue has room, the streams at the minimum
+    prefetched distance each advance one line, capped by an
+    aggressivity limit that shrinks as more streams go live
+    (64/32/16/8 lines at <2/<4/<8/>=8 valid entries).
+
+    Near-perfect accuracy by construction (only announced lines are
+    requested), limited coverage — the paper positions it as a
+    COMPLEMENT to a conventional coverage prefetcher, not a
+    replacement. Vector-side design (requires --prefetcher-side
+    vector in the split hierarchy). Wire ONE RevelaStreamTable per
+    core to both this prefetcher's stream_table and the CPU's
+    revela_table. See mem/cache/prefetch/revela.hh."""
+
+    type = "RevelaPrefetcher"
+    cxx_class = "gem5::prefetch::ReVeLA"
+    cxx_header = "mem/cache/prefetch/revela.hh"
+
+    # Vector data streams only; instruction accesses are irrelevant.
+    on_inst = False
+    # Every demand access must notify (hit or miss): notifies latch
+    # the drain's translation context and re-arm the drain event.
+    prefetch_on_access = True
+    # Streams are VA-contiguous but not PA-contiguous across page
+    # frames (paper Section 3.5): track VAs and translate through the
+    # registered MMU.
+    use_virtual_addresses = True
+    # The paper's 16-entry prefetch queue.
+    queue_size = 16
+
+    stream_table = Param.RevelaStreamTable(
+        NULL,
+        "CPU-side Stream Tracking Table (must be the same instance as "
+        "the CPU's revela_table param; the config script wires both).",
+    )
+    max_prefetch_distance = Param.Unsigned(
+        64,
+        "Aggressivity ceiling in cache lines: the farthest a stream "
+        "may run ahead of its last demand access when fewer than 2 "
+        "streams are live; /2, /4, /8 as the valid STT entry count "
+        "crosses 2, 4, 8 (the paper's Aggressivity Table, swept 8-128 "
+        "in its sensitivity analysis).",
+    )
+    degree = Param.Unsigned(
+        1,
+        "Lines emitted per minimum-distance stream per trigger "
+        "evaluation (the paper emits 1 per stream per cycle).",
+    )
+    initial_distance = Param.Unsigned(
+        0,
+        "Emission floor in cache lines ahead of a stream's demand "
+        "cursor: at stream entry and after every demand catch-up the "
+        "frontier jumps to current@ + this many lines instead of "
+        "ramping from current@, skipping the doomed-late emissions a "
+        "distance-zero ramp spends its bandwidth on (VTyche's "
+        "streaming_distance analogue). Skipped lines are never "
+        "prefetched — demand pays their full miss. If it exceeds the "
+        "aggressivity limit, the ceiling is raised to it (the stream "
+        "degenerates to a fixed-offset follower). 0 = paper behavior.",
+    )
+
+
+class VHybridPrefetcher(QueuedPrefetcher):
+    """VHybrid: ReVeLA's announcement-driven stream engine driving
+    VTyche's capture/convert half.
+
+    Streams come from the vsetvl-AVL announcements in the CPU-side
+    RevelaStreamTable (aggressivity table, min-distance fairness,
+    every-cycle trigger) instead of VTyche's demand-anchored walk, so
+    index lookahead is licensed by the announced extent. A stream
+    whose last-updating PC the VectorChainTable knows as a linked
+    producer is index data: its emitted lines register for fill
+    capture, payloads latch into per-producer slice buffers, and the
+    drain converts one whole line per event through the parallel
+    shift-and-add lane array (target = base + (extend(idx) << shift)),
+    releasing deduped targets ahead of the stream round each tick.
+
+    No announcement stitching: per-strip-announced streams keep their
+    extents, so nested-loop CSR spmv is out of coverage by design
+    (use the JDS spmv variant). Vector-side design; wire ONE
+    RevelaStreamTable to stream_table + the CPU's revela_table AND
+    ONE VectorChainTable to link_table + the CPU's vector_chain_table
+    (the config script wires all four). See
+    mem/cache/prefetch/vhybrid.hh."""
+
+    type = "VHybridPrefetcher"
+    cxx_class = "gem5::prefetch::VHybrid"
+    cxx_header = "mem/cache/prefetch/vhybrid.hh"
+
+    # Index loads are data reads; ignore instruction accesses.
+    on_inst = False
+    # The STT-side trigger and producer adoption need every access,
+    # hit or miss.
+    prefetch_on_access = True
+    # Streams and index values are virtual; train on VAs and translate
+    # through the registered MMU.
+    use_virtual_addresses = True
+    # VTyche's queue depth (not ReVeLA's 16): one queue carries index
+    # stream lines AND converted target bursts.
+    queue_size = 64
+
+    stream_table = Param.RevelaStreamTable(
+        NULL,
+        "CPU-side Stream Tracking Table (must be the same instance as "
+        "the CPU's revela_table param; the config script wires both).",
+    )
+    link_table = Param.VectorChainTable(
+        NULL,
+        "CPU-side chain/link table (must be the same instance as the "
+        "CPU's vector_chain_table param; the config script wires "
+        "both).",
+    )
+    max_prefetch_distance = Param.Unsigned(
+        64,
+        "Aggressivity ceiling in cache lines (ReVeLA's table): /2, "
+        "/4, /8 as the valid STT entry count crosses 2, 4, 8.",
+    )
+    degree = Param.Unsigned(
+        1,
+        "Stream lines emitted per minimum-distance stream per trigger "
+        "evaluation.",
+    )
+    initial_distance = Param.Unsigned(
+        0,
+        "Emission floor in cache lines ahead of a stream's demand "
+        "cursor (see RevelaPrefetcher.initial_distance; same "
+        "semantics on the shared STT). Skipped index lines are still "
+        "captured for conversion through the demand-miss registration "
+        "path, so gather targets self-heal — late, exactly like the "
+        "skipped region itself. 0 = current behavior.",
+    )
+    stream_only = Param.Bool(
+        False,
+        "Ablation: streams only, never capture/convert (reduces to "
+        "ReVeLA on the shared STT).",
+    )
+    slice_buffer_entries = Param.Unsigned(
+        2,
+        "Captured raw index lines each producer's slice buffer holds "
+        "(VTyche's param, same semantics: a fill arriving with the "
+        "buffer full is dropped whole).",
+    )
+    pipelines = Param.Unsigned(
+        2, "Concurrently configured producer pipelines"
+    )
+    routing_entries = Param.Unsigned(
+        32,
+        "Index Routing Table (IRT) capacity: index lines registered "
+        "for capture; a matching fill is routed to the owning "
+        "producer's conversion array",
+    )
+    drain_floor = Param.Int(
+        8,
+        "Minimum targets emitted per demand event when the prefetch "
+        "queue is full (VTyche's bounded displacement; 0 = pure "
+        "stall-on-full).",
+    )
+    limit_aware_slicing = Param.Bool(
+        True,
+        "Clamp index-line conversion at the announced stream extent "
+        "(the vsetvl-AVL limit@ already tracked in the STT): a "
+        "captured 64B line straddling the array end converts only "
+        "the elements inside [line@, limit@) — the tail bytes are "
+        "adjacent non-index data and each would otherwise become a "
+        "garbage target at base + (raw << shift). One line-tail per "
+        "announced extent; suppressed elements are counted in "
+        "elementsBeyondLimit. False = pre-2026-08-13 whole-line "
+        "conversion (ablation).",
+    )
+    conversion_lanes = Param.Unsigned(
+        0,
+        "Shift-and-add lane circuits in the conversion array: at "
+        "most this many index ELEMENTS convert to target addresses "
+        "per drain event; a captured line wider than the budget "
+        "stays at the slice-buffer front and resumes next event "
+        "(conversionWidthLimited counts the cut-shorts). Within-line "
+        "dedup and the dedup window keep whole-line semantics across "
+        "the split. 0 = unbounded (whole line per event, the "
+        "pre-2026-08-13 behavior; 8 = one full e64 line per event). "
+        "GDP's pipelines_per_gather analog for the collapsed-chain "
+        "array.",
+    )
+    drop_on_full = Param.Bool(
+        False,
+        "Queue-full disposition for converted indirect targets. True: "
+        "the overflow target is DROPPED and the queue keeps its "
+        "staged entries — protects stream lines from target-burst "
+        "displacement in the shared queue (targetsDroppedFull counts "
+        "them; dropped targets are not recorded in the dedup window "
+        "since no prefetch went out, so later duplicates may still "
+        "re-emit). False (default): the drain_floor license applies — "
+        "up to drain_floor targets push into the full queue per "
+        "event, evicting its oldest entries (pfRemovedFull). "
+        "drain_floor=0 remains the third disposition: stall, holding "
+        "targets latched until room appears.",
+    )
+    vl_window_dedup = Param.Bool(
+        False,
+        "vl-aware dedup scope: the within-window seen-set clears at "
+        "vl_window_bytes-aligned index-stream boundaries (~one gather "
+        "chunk) instead of per captured index line. Within one "
+        "instruction the LSQ coalesces same-line elements onto one "
+        "MSHR regardless of cache state, so this window suppresses "
+        "exactly the guaranteed-safe duplicates and never bets on "
+        "line residency (the dedup_buffer_size window remains "
+        "orthogonal and can be disabled alongside). False = the "
+        "per-source-line seen-set (pre-2026-08-14 behavior).",
+    )
+    vl_window_bytes = Param.Unsigned(
+        256,
+        "Index-stream span of one vl window, in bytes; a FULL gather "
+        "chunk always consumes VLEN/8 index bytes regardless of EEW "
+        "(vl x elemBytes = VLEN/8), so 256 = one chunk at VLEN=2048. "
+        "Power of two, >= the cache line size. Window boundaries are "
+        "VA-aligned buckets: exact instruction boundaries when the "
+        "index array is chunk-aligned, a constant phase shift "
+        "otherwise; stream tails shrink naturally via the "
+        "limit_aware_slicing clamp.",
+    )
+    pre_lane_dedup = Param.Bool(
+        False,
+        "Run the dedup compare BEFORE the shift/add lane array, on "
+        "truncated folded indices: same-target-line iff "
+        "((extend(idx)<<shift) + (base & 63)) >> 6 is equal — index "
+        "extension is wire fan-out and the sub-line base fold is a "
+        "6-bit constant add at insertion, so a hit consumes no lane "
+        "circuit and no conversion_lanes budget slot "
+        "(elementsPreDeduped counts them). False = compare after "
+        "conversion on target line addresses (pre-2026-08-14 "
+        "behavior). Composes with either dedup scope.",
+    )
+    dedup_buffer_size = Param.Unsigned(
+        0,
+        "Cross-line dedup window, in index lines (0 = disabled): "
+        "target lines emitted by the producer's last N processed "
+        "index lines are dropped instead of re-queued.",
+    )
 
 
 class TychePrefetcher(QueuedPrefetcher):

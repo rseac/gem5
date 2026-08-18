@@ -291,7 +291,7 @@ parser.add_argument(
     type=str,
     default=None,
     choices=["none", "stride", "imp", "vimp", "gdp", "vtyche",
-             "vtyche2", "isb", "stems", "tyche"],
+             "vtyche2", "isb", "stems", "tyche", "revela", "vhybrid"],
     help="Attach a hardware prefetcher to one cache. Implies "
     "(forces) --vector-cache. By default no cache has a prefetcher. "
     "Use --prefetcher-side and --prefetcher-level to place it. "
@@ -299,14 +299,54 @@ parser.add_argument(
     "Prefetcher: architectural transform-chain replay, exact "
     "A[f(B[i])] plus vector streaming), 'vtyche' (Vector Tyche: gdp's "
     "architectural discovery with imp's base+(index<<shift) equation, "
-    "A[B[i]] only, converted a whole index line at a time) "
+    "A[B[i]] only, converted a whole index line at a time), "
+    "'revela' (ReVeLA ICS'24: unit-stride streams announced by the "
+    "vsetvl AVL, every-cycle trigger, near-perfect accuracy), "
+    "'vhybrid' (revela's announcement-driven streams + vtyche's "
+    "capture/convert indirect half; needs both sideband tables, "
+    "wired automatically) "
     "and 'tyche' (scalar dependency-chain replay) are this "
     "fork's prefetchers; they train on virtual addresses, so the CPU "
     "MMU is registered automatically (override with --pf-param "
-    "use_virtual_addresses=false). gdp and vtyche need "
+    "use_virtual_addresses=false). gdp, vtyche and revela need "
     "--prefetcher-side vector; tyche needs --prefetcher-side scalar "
     "(it decodes scalar instructions, which never reach the vector "
     "caches).",
+)
+parser.add_argument(
+    "--revela-stt-entries",
+    type=int,
+    default=16,
+    help="ReVeLA only: Stream Tracking Table entries on the CPU-side "
+    "RevelaStreamTable (paper default 16, sensitivity-swept 1-32; 4 "
+    "already reaches 91%% of the benefit). Other ReVeLA knobs "
+    "(max_prefetch_distance, degree, queue_size) are "
+    "prefetcher params: use --pf-param.",
+)
+parser.add_argument(
+    "--vector-dct-entries",
+    type=int,
+    default=8,
+    help="gdp/vtyche/vtyche2/vhybrid: Dependency Chain Table entries on "
+    "the CPU-side VectorChainTable (default 8, minimum 3). One table is "
+    "built per core and shared by whichever of those prefetchers is "
+    "attached, so this sizes vhybrid's indirect half too. The whole "
+    "table clears when full, and it also bounds the consumer->head walk "
+    "length, so a small DCT both wipes learned chains more often and "
+    "caps how far back a walk may reach. Storage accounting in "
+    "src/cpu/vector_chain_table.hh assumes 8 (3-bit pointers); the sim "
+    "stores pointers as int, so larger values run but cost more "
+    "hardware than that note claims.",
+)
+parser.add_argument(
+    "--vector-max-transform-stages",
+    type=int,
+    default=4,
+    help="gdp/vtyche/vtyche2/vhybrid: maximum transform links between a "
+    "producer index load and the gather it feeds (VectorChainTable "
+    "max_transform_stages, default 4). Chains longer than this do not "
+    "link at all, so raising --vector-dct-entries alone will not admit "
+    "longer transform chains.",
 )
 parser.add_argument(
     "--prefetcher-side",
@@ -380,7 +420,7 @@ parser.add_argument(
     type=str,
     default="none",
     choices=["none", "l1", "l2", "both"],
-    help="Stream-aware cache replacement (needs a gdp-table "
+    help="Stream-aware cache replacement (needs a vector-chain-table "
     "prefetcher; on --unified-cache it applies to the shared caches, "
     "on the split hierarchy to the VECTOR chain): demote lines of the "
     "prefetcher-identified index/data stream pages to the LRU "
@@ -395,8 +435,8 @@ parser.add_argument(
     action="store_true",
     help="Feed the stream-page registry from DEMAND accesses: every "
     "unit-stride vector load/store registers its physical page at LSQ "
-    "translation finish (GdpChainTable demand_stream_pages). Lets "
-    "--stream-demote run without a gdp-table prefetcher (policy in "
+    "translation finish (VectorChainTable demand_stream_pages). Lets "
+    "--stream-demote run without a vector-chain-table prefetcher (policy in "
     "isolation, e.g. --prefetcher none/stride) and broadens "
     "classification from the prefetcher's producer index arrays to "
     "every unit-stride-touched array, including store streams. With a "
@@ -417,11 +457,24 @@ parser.add_argument(
     action="store_true",
     help="Second touch also unlearns the whole PAGE: removed from the "
     "stream registry and blocked from re-registration "
-    "(GdpChainTable promoted_page_entries FIFO), so new fills of a "
+    "(VectorChainTable promoted_page_entries FIFO), so new fills of a "
     "proven-reused page insert as plain LRU. Fixes the churn lockout "
     "that per-line second-touch promotion cannot (evicted lines "
     "re-enter demoted and are re-victimized before their second "
     "touch). Use together with --stream-demote-second-touch.",
+)
+parser.add_argument(
+    "--stream-demote-monotone",
+    action="store_true",
+    help="Monotone-arm gate on the demand-fed stream registry "
+    "(VectorChainTable monotone_arm): a unit-stride stream may demote "
+    "only after covering arm_distance (4KiB) of VA monotonically, and "
+    "the first backward jump beyond backward_slack STICKY-revokes it "
+    "and retroactively drops its registered pages — an access below "
+    "the stream's high-water mark proves the sweep recurs "
+    "(blackscholes NUM_RUNS / jacobi ping-pong / somier timesteps), "
+    "so its lines have reuse that demotion would destroy. Requires "
+    "--stream-demote-demand (only demand registrations are gated).",
 )
 
 args = parser.parse_args()
@@ -506,7 +559,8 @@ vector_l1d_prefetcher = None
 vector_l2_prefetcher = None
 prefetcher_mmu = False
 prefetcher_tyche_table = False
-prefetcher_gdp_table = False
+prefetcher_vector_chain_table = False
+prefetcher_revela_table = False
 if prefetcher_active or scalar_prefetcher_active or l2_prefetcher_active:
     # The split hierarchy hosts the prefetcher on whichever chain is
     # selected, so it is required — unless the caller asked for the
@@ -515,8 +569,9 @@ if prefetcher_active or scalar_prefetcher_active or l2_prefetcher_active:
         args.vector_cache = True
     from prefetcher_factory import build as build_prefetcher
     from prefetcher_factory import needs_chain_table
-    from prefetcher_factory import needs_gdp_table
+    from prefetcher_factory import needs_vector_chain_table
     from prefetcher_factory import needs_mmu as prefetcher_needs_mmu
+    from prefetcher_factory import needs_revela_table
 
 if prefetcher_active:
     try:
@@ -542,13 +597,24 @@ if prefetcher_active:
         sys.exit(1)
     # GDP's CPU-side records are extracted from vector loads; those
     # only reach a vector-side cache in the split hierarchy.
-    prefetcher_gdp_table = needs_gdp_table(args.prefetcher)
-    if prefetcher_gdp_table and not args.unified_cache \
+    prefetcher_vector_chain_table = needs_vector_chain_table(args.prefetcher)
+    if prefetcher_vector_chain_table and not args.unified_cache \
             and args.prefetcher_side != "vector":
         print(f"Error: --prefetcher {args.prefetcher} requires "
               "--prefetcher-side vector (its CPU-side records come "
               "from vector loads, which the VectorSplitter never "
               "routes to the scalar caches)")
+        sys.exit(1)
+    # ReVeLA's streams come from unit-stride vector accesses; in the
+    # split hierarchy only the vector chain observes them (the drain
+    # latches its translation context off demand accesses).
+    prefetcher_revela_table = needs_revela_table(args.prefetcher, pf_params)
+    if prefetcher_revela_table and not args.unified_cache \
+            and args.prefetcher_side != "vector":
+        print(f"Error: --prefetcher {args.prefetcher} requires "
+              "--prefetcher-side vector (its streams are unit-stride "
+              "vector accesses, which the VectorSplitter never routes "
+              "to the scalar caches)")
         sys.exit(1)
     # Route the single factory to one of four caches: {scalar,vector} x {l1,l2}.
     # The unified hierarchy has only one chain; its caches reuse the
@@ -576,11 +642,28 @@ if l2_prefetcher_active:
         sys.exit(1)
     scalar_l2_prefetcher = l2_factory
 
-if args.stream_demote != "none" and not prefetcher_gdp_table \
+if args.stream_demote != "none" and not prefetcher_vector_chain_table \
         and not args.stream_demote_demand:
-    print("Error: --stream-demote needs a gdp-table prefetcher "
+    print("Error: --stream-demote needs a vector-chain-table prefetcher "
           "(--prefetcher gdp or vtyche) or --stream-demote-demand "
           "to feed the stream-page registry")
+    sys.exit(1)
+
+if args.vector_dct_entries < 3:
+    # Same bound the C++ constructor enforces (vector_chain_table.cc);
+    # caught here so the message names the flag, not the param.
+    print("Error: --vector-dct-entries must be >= 3 (head + transform "
+          "link + gather)")
+    sys.exit(1)
+
+if args.vector_max_transform_stages < 1:
+    print("Error: --vector-max-transform-stages must be >= 1")
+    sys.exit(1)
+
+if args.stream_demote_monotone and not args.stream_demote_demand:
+    print("Error: --stream-demote-monotone gates only demand-side "
+          "registrations — it needs --stream-demote-demand (it would "
+          "be a silent no-op without it)")
     sys.exit(1)
 
 if scalar_prefetcher_active:
@@ -627,7 +710,11 @@ if args.vector_cache:
         vector_l2_prefetcher=vector_l2_prefetcher,
         prefetcher_needs_mmu=prefetcher_mmu,
         prefetcher_needs_chain_table=prefetcher_tyche_table,
-        prefetcher_needs_gdp_table=prefetcher_gdp_table,
+        prefetcher_needs_vector_chain_table=prefetcher_vector_chain_table,
+        vector_dct_entries=args.vector_dct_entries,
+        vector_max_transform_stages=args.vector_max_transform_stages,
+        prefetcher_needs_revela_table=prefetcher_revela_table,
+        revela_stt_entries=args.revela_stt_entries,
         l1d_mshrs=args.l1d_mshrs,
         l2_mshrs=args.l2_mshrs,
         vector_l1d_mshrs=args.vector_l1d_mshrs,
@@ -640,6 +727,7 @@ if args.vector_cache:
         stream_demote_demand=args.stream_demote_demand,
         stream_demote_second_touch=args.stream_demote_second_touch,
         stream_demote_page_promote=args.stream_demote_page_promote,
+        stream_demote_monotone=args.stream_demote_monotone,
     )
 elif args.unified_cache:
     from unified_cache_hierarchy import UnifiedCacheHierarchy
@@ -652,7 +740,11 @@ elif args.unified_cache:
         l2_prefetcher=scalar_l2_prefetcher,
         prefetcher_needs_mmu=prefetcher_mmu,
         prefetcher_needs_chain_table=prefetcher_tyche_table,
-        prefetcher_needs_gdp_table=prefetcher_gdp_table,
+        prefetcher_needs_vector_chain_table=prefetcher_vector_chain_table,
+        vector_dct_entries=args.vector_dct_entries,
+        vector_max_transform_stages=args.vector_max_transform_stages,
+        prefetcher_needs_revela_table=prefetcher_revela_table,
+        revela_stt_entries=args.revela_stt_entries,
         l1d_mshrs=args.l1d_mshrs,
         l2_mshrs=args.l2_mshrs,
         l1d_tgts_per_mshr=args.l1d_tgts_per_mshr,
@@ -661,6 +753,7 @@ elif args.unified_cache:
         stream_demote_demand=args.stream_demote_demand,
         stream_demote_second_touch=args.stream_demote_second_touch,
         stream_demote_page_promote=args.stream_demote_page_promote,
+        stream_demote_monotone=args.stream_demote_monotone,
     )
 else:
     cache_hierarchy = PrivateL1PrivateL2CacheHierarchy(
@@ -778,6 +871,42 @@ print("=" * 50)
 
 # board.set_se_binary_workload(binary, arguments=[args.parms])
 board.set_se_binary_workload(binary, arguments=args.parms.split())
+
+# Guest path identity for non-docker hosts (2026-08-13). When gem5
+# runs natively (no docker), the benchmark tree lives under a
+# different host prefix -- but every guest-VISIBLE string must stay
+# bit-identical to the docker runs: argv strings live on the simulated
+# stack, so a different path length shifts the guest memory layout and
+# perturbs ROI timing (measured ~3% cycles on the football kernel with
+# identical instruction counts). GEM5_GUEST_PATH_MAP=<guest>=<host>
+# rewrites argv back to the canonical guest prefix and installs a
+# RedirectPath (existing gem5 SE infrastructure, sim/redirect_path.hh)
+# so the guest's open() of the canonical prefix resolves to the host
+# files. Unset (every docker run), this block is inert.
+_path_map = os.environ.get("GEM5_GUEST_PATH_MAP")
+if _path_map:
+    from m5.objects import RedirectPath
+
+    _guest_prefix, _host_prefix = _path_map.split("=", 1)
+    # Syscall-time redirection is a SYSTEM param, not a Process one:
+    # Process::checkPathRedirect iterates system->redirectPaths
+    # (src/sim/process.cc), and the stdlib board is the System.
+    board.redirect_paths = [
+        RedirectPath(app_path=_guest_prefix, host_paths=[_host_prefix])
+    ]
+    for _core in board.get_processor().get_cores():
+        _workloads = _core.core.workload
+        try:
+            _workloads = list(_workloads)
+        except TypeError:
+            _workloads = [_workloads]
+        for _proc in _workloads:
+            # executable keeps the host path (the ELF is loaded from
+            # disk); only argv is rewritten to the guest-canonical form.
+            _proc.cmd = [
+                str(c).replace(_host_prefix, _guest_prefix)
+                for c in _proc.cmd
+            ]
 
 import m5  # For curTick()
 

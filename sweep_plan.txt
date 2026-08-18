@@ -1,0 +1,397 @@
+For the following sweeps, use VLEN=2048, lanes=4
+
+Sweep 1: Baseline SPMV
+
+Memory Hierarchy: Shared L1/L2
+
+- Test (16, 20) and (32, 40) MSHR counts on L1 and L2 caches respectively
+
+Sweep 2: SPMV vtyche
+
+Prefetcher: vtyche
+
+- Test attachment to L1, L2 (only one at a time)
+
+Sweep Parameters:
+
+- streaming_distance
+    - 2,4,8,16,32
+- slice_buffer_entries
+    - 2,4,8
+- dedup_buffer_size
+    - 0,2,4,8,16
+- row_schedule_bits
+    - 0,13
+- reorder_window_size
+    - 0,2,4,8,16
+
+Inputs:
+
+- poisson3DB matrix
+
+Memory Hierarchy: Shared L1/L2
+
+- Test (16, 20) and (32, 40) MSHR counts on L1 and L2 caches respectively
+
+Sweep 3: Synthetic Baseline
+
+Modes:
+
+N=262144
+
+- Coalescing Ability
+    - Test L=1,4,8,16, W=16,32
+- Row Locality
+    - Test L=1,2,4,8,16
+
+Memory Hierarchy: Shared L1/L2
+
+- Test (16, 20) and (32, 40) MSHR counts on L1 and L2 caches respectively
+
+Sweep 4: Synthetic vtyche
+
+Prefetcher: vtyche
+
+- Test attachment to L1, L2 (only one at a time)
+
+Sweep Parameters:
+
+- Use best parameters found from SPMV sweep (the ones that resulted in the highest IPC)
+
+Modes:
+
+N=262144
+
+- Coalescing Ability
+    - Test L=1,4,8,16, W=16,32
+- Row Locality
+    - Test L=1,2,4,8,16
+
+Memory Hierarchy: Shared L1/L2
+
+- Test (16, 20) and (32, 40) MSHR counts on L1 and L2 caches respectively
+
+8/13/26
+
+Sweep 1: SPMV stride
+
+Prefetcher: Stride
+
+- Test attachment to L1/L2
+
+Sweep Parameters:
+
+- degree
+    - 1,2,4,8,16
+- distance
+    - 0,1,2,4,8,16
+
+Inputs:
+
+- poisson3DB
+
+Memory Hierarchy: Shared L1/L2
+
+- Test (16, 20) and (32, 40) MSHR counts on L1 and L2 caches respectively
+
+Sweep 2: Synthetic stride
+
+N=262144
+
+- Test attachment to L1, L2 (only one at a time)
+
+Sweep Parameters:
+
+- Use best parameters found from SPMV sweep (the ones that resulted in the highest IPC)
+
+Modes: 
+
+N=262144
+
+- Coalescing Ability
+    - Test L=1,4,8, W=16,32
+
+8/14/26
+
+Sweep 1: SPMV vhybrid
+
+Prefetcher: vhybrid
+
+- Test attachment to L1/L2
+
+Sweep Parameters:
+
+- Full factorial sweep over the given parameters (48 separate runs)
+- Use best parameters found from SPMV sweep (the ones that resulted in the highest IPC) for the vtyche prefetcher (excluding any shared ones in this list)
+- max_prefetch_distance
+    - 64,128
+- degree
+    - 1,2,4
+- slice_buffer_entries
+    - 2,4
+- conversion_lanes
+    - 0,1,2,4
+- drop_on_full
+    - true
+
+Inputs:
+
+- poisson3DB
+
+Memory Hierarchy: Shared L1/L2
+
+- Test (16, 20) and (32, 40) MSHR counts on L1 and L2 caches respectively
+
+Sweep 2: Synthetic vtyche
+
+Prefetcher: vtyche
+
+- Test attachment to L1/L2
+
+Sweep Parameters:
+
+- Use best parameters found from SPMV sweep (the ones that resulted in the highest IPC, excluding the ones listed here)
+- dedup_buffer_size 
+    - 2,4,8,16
+
+Modes:
+
+N=262144
+
+- Coalescing Ability
+    - Test L=1,4,8,16, W=16,32 only on line_locality mode
+
+Memory Hierarchy: Shared L1/L2
+
+- Test (16, 20) and (32, 40) MSHR counts on L1 and L2 caches respectively
+
+8/15/26
+
+Sweep 1: SPMV vhybrid
+
+Prefetcher: vhybrid
+
+- Test attachment to L1/L2
+
+Sweep Parameters:
+
+- Use best parameters found from SPMV sweep (the ones that resulted in the highest IPC) 
+- vl_window_dedup
+    - true
+- pre_lane_dedup
+    - true
+
+Inputs:
+
+- poisson3DB
+
+Memory Hierarchy: Shared L1/L2
+
+- Test (16, 20) and (32, 40) MSHR counts on L1 and L2 caches respectively
+
+Sweep 2: Synthetic vhybrid
+
+Prefetcher: vhybrid
+
+- Test attachment to L1/L2
+
+Sweep Parameters:
+
+- Use best parameters found from SPMV sweep (the ones that resulted in the highest IPC)
+- vl_window_dedup
+    - true
+- pre_lane_dedup
+    - true
+
+Modes:
+
+N=262144
+
+- Coalescing Ability
+    - Test L=1,4,8,16, W=16,32 only on line_locality mode
+
+Memory Hierarchy: Shared L1/L2
+
+- Test (16, 20) and (32, 40) MSHR counts on L1 and L2 caches respectively
+
+8/15/26 part 2
+
+Sweep 1: SPMV vhybrid
+
+Prefetcher: vhybrid
+
+- Test attachment to L1/L2
+
+Sweep Parameters:
+
+- Use best parameters found from SPMV sweep (the ones that resulted in the highest IPC) 
+- initial_distance
+    - 2,4,8,16
+
+Inputs:
+
+- venkat, Na, lhr, poisson3DB
+
+Memory Hierarchy: Shared L1/L2
+
+- Test (16, 20) and (32, 40) MSHR counts on L1 and L2 caches respectively
+
+Sweep 2: SPMV vtyche
+
+Prefetcher: vtyche
+
+- Test attachment to L1/L2
+
+Sweep Parameters:
+
+- Use best parameters found from SPMV sweep (the ones that resulted in the highest IPC) 
+- limit_gate
+    - true
+
+Inputs:
+
+- venkat, Na, lhr, poisson3DB
+
+Memory Hierarchy: Shared L1/L2
+
+- Test (16, 20) and (32, 40) MSHR counts on L1 and L2 caches respectively
+
+8/16/26
+
+Sweep 1: TSVC base
+
+Prefetcher: None
+
+Kernels:
+
+- s353, s4112, s4113, s4115
+- Run 1,5 iterations on array sizes medium
+- Use the following (L,W) pairs: (1,1), (8, 32)
+
+Memory Hierarchy: Shared L1/L2
+
+- Test (16, 20) and (32, 40) MSHR counts on L1 and L2 caches respectively
+
+Sweep 2: TSVC stride
+
+Prefetcher: stride
+
+- Test attachment to L1/L2
+
+Kernels:
+
+- s353, s4112, s4113, s4115
+- Run 1,5 iterations on array sizes medium
+- Use the following (L,W) pairs: (1,1), (8, 32)
+
+Sweep Parameters:
+
+- Use best parameters from SPMV sweep that produced the highest IPC
+
+Memory Hierarchy: Shared L1/L2
+
+- Test (16, 20) and (32, 40) MSHR counts on L1 and L2 caches respectively
+
+Sweep 3: TSVC vtyche
+
+Prefetcher: vtyche
+
+- Test attachment to L1/L2
+
+Kernels:
+
+- s353, s4112, s4113, s4115
+- Run 1,5 iterations on array sizes medium
+- Use the following (L,W) pairs: (1,1), (8, 32)
+
+Sweep Parameters:
+- Use best parameters from SPMV sweeps
+- vector_dct_entries
+    - 32
+- drop_on_full
+    - true
+
+Memory Hierarchy: Shared L1/L2
+
+- Test (16, 20) and (32, 40) MSHR counts on L1 and L2 caches respectively
+
+Sweep 4: TSVC vhybrid
+
+Prefetcher: vhybrid
+
+- Test attachment to L1/L2
+
+Kernels:
+
+- s353, s4112, s4113, s4115
+- Run 1,5 iterations on array sizes medium
+- Use the following (L,W) pairs: (1,1), (8, 32)
+
+Sweep Parameters:
+- Use best parameters from SPMV sweeps
+- vector_dct_entries
+    - 32
+- drop_on_full
+    - true
+- limit_aware_slicing
+    - false
+
+Memory Hierarchy: Shared L1/L2
+
+- Test (16, 20) and (32, 40) MSHR counts on L1 and L2 caches respectively
+
+8/17/26
+
+Sweep 1: TSVC vtyche
+
+Prefetcher: vtyche
+
+- Test attachment to L1, L2 (only one at a time)
+
+Kernels:
+
+- s353, s4112, s4113, s4115
+- Run 1 iteration on array sizes medium
+- Use the following (L,W) pairs: (1,1), (8, 32)
+
+Sweep Parameters:
+
+Sweep these params one at a time, not full factorial.
+
+Center (held constant except for the axis under test):
+    streaming_distance   = 8      (measured optimum on these kernels)
+    slice_buffer_entries = 8      (campaign value)
+    dedup_buffer_size    = 0      (campaign value; SPMV data can't distinguish)
+    conversion_lanes     = 0      (unbounded, the classic array)
+    drain_floor          = 8
+    drop_on_full         = false
+    pre_lane_dedup       = false
+    capture_on_read_hit  = true
+    vector_dct_entries   = 32
+    pipelines            = 5
+
+- streaming_distance
+    - 2,4,8,16,32
+- slice_buffer_entries
+    - 2,4,8
+- dedup_buffer_size
+    - 0,2,4,8,16
+- conversion_lanes
+    - 0,2,4,8
+- drain_floor
+    - 0,1,2,4,8
+    - run with drop_on_full=false
+- drop_on_full
+    - false, true (drain_floor inactive for true, don't care value)
+- pre_lane_dedup
+    - false,true
+- capture_on_read_hit
+    - true
+- vector_dct_entries
+    - 32
+- pipelines
+    - 5
+
+Memory Hierarchy: Shared L1/L2
+
+- Test (16, 20) and (32, 40) MSHR counts on L1 and L2 caches respectively

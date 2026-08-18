@@ -2997,40 +2997,12 @@ real_t s353(struct args_t * func_args)
             a[i + 4] += alpha * b[ip[i + 4]];
         }
         
-        // Non-indexed equivalent. Valid ONLY for the stock ip[] init
-        // (common.c: each aligned 5-block holds {i+4, i+2, i, i+3, i+1});
-        // wrong if the randomized Fisher-Yates init is enabled. Size-
-        // independent: the closed form covers the 5-aligned prefix, and a
-        // scalar tail of < 5 iterations (compile-time-constant trip count,
-        // so it stays scalar — no vector gathers) goes through ip[]
-        // directly; only that tail still reads ip[]. Expected codegen:
-        // unit-stride / segment (vlseg5) / strided (vlse) vector memory
-        // ops, no vluxei/vsuxei — verify in the .dump.
-        /*
-        int lim = LEN_1D - LEN_1D % 5;
-        for (int i = 0; i < lim; i += 5) {
-            a[i]     += alpha * b[i + 4];
-            a[i + 1] += alpha * b[i + 2];
-            a[i + 2] += alpha * b[i];
-            a[i + 3] += alpha * b[i + 3];
-            a[i + 4] += alpha * b[i + 1];
-        }
-        for (int i = lim; i < LEN_1D; i++) {
-            a[i] += alpha * b[ip[i]];
-        }
-        */
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
     ROI_END(func_args);
     return calc_checksum(__func__);
 }
-
-// **********************************************************
-//                                *
-//             LANGUAGE COMPLETENESS            *
-//                                *
-// **********************************************************
 
 // %4.1
 // %4.2
@@ -3454,25 +3426,6 @@ real_t s491(struct args_t * func_args)
             a[ip[i]] = b[i] + c[i] * d[i];
         }
         
-        // Non-indexed equivalent (stock block-5 ip[] only, see s353 note;
-        // 5-aligned prefix + scalar ip[] tail makes it LEN_1D-agnostic).
-        // Scatter rewritten through the inverse permutation {2,4,1,3,0}:
-        // stores become unit-stride and the RHS elements are the permuted
-        // ones. Store order within a block differs from the original, but
-        // the five targets are disjoint, so the final a[] is identical.
-        /*
-        int lim = LEN_1D - LEN_1D % 5;
-        for (int i = 0; i < lim; i += 5) {
-            a[i]     = b[i + 2] + c[i + 2] * d[i + 2];
-            a[i + 1] = b[i + 4] + c[i + 4] * d[i + 4];
-            a[i + 2] = b[i + 1] + c[i + 1] * d[i + 1];
-            a[i + 3] = b[i + 3] + c[i + 3] * d[i + 3];
-            a[i + 4] = b[i]     + c[i]     * d[i];
-        }
-        for (int i = lim; i < LEN_1D; i++) {
-            a[ip[i]] = b[i] + c[i] * d[i];
-        }
-        */
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
@@ -3503,22 +3456,6 @@ real_t s4112(struct args_t * func_args)
             a[i] += b[ip[i]] * s;
         }
         
-        // Non-indexed equivalent (stock block-5 ip[] only, see s353 note;
-        // 5-aligned prefix + scalar ip[] tail makes it LEN_1D-agnostic).
-        // Same rewrite as s353, rolled form.
-        /*
-        int lim = LEN_1D - LEN_1D % 5;
-        for (int i = 0; i < lim; i += 5) {
-            a[i]     += b[i + 4] * s;
-            a[i + 1] += b[i + 2] * s;
-            a[i + 2] += b[i]     * s;
-            a[i + 3] += b[i + 3] * s;
-            a[i + 4] += b[i + 1] * s;
-        }
-        for (int i = lim; i < LEN_1D; i++) {
-            a[i] += b[ip[i]] * s;
-        }
-        */
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
@@ -3547,24 +3484,6 @@ real_t s4113(struct args_t * func_args)
             a[ip[i]] = b[ip[i]] + c[i];
         }
         
-        // Non-indexed equivalent (stock block-5 ip[] only, see s353 note;
-        // 5-aligned prefix + scalar ip[] tail makes it LEN_1D-agnostic).
-        // Change of variable j = ip[i]: a[j] = b[j] + c[ipinv(j)], so both
-        // the gather and the scatter disappear — a and b are unit-stride and
-        // only c is read through the inverse permutation {2,4,1,3,0}.
-        /*
-        int lim = LEN_1D - LEN_1D % 5;
-        for (int i = 0; i < lim; i += 5) {
-            a[i]     = b[i]     + c[i + 2];
-            a[i + 1] = b[i + 1] + c[i + 4];
-            a[i + 2] = b[i + 2] + c[i + 1];
-            a[i + 3] = b[i + 3] + c[i + 3];
-            a[i + 4] = b[i + 4] + c[i];
-        }
-        for (int i = lim; i < LEN_1D; i++) {
-            a[ip[i]] = b[ip[i]] + c[i];
-        }
-        */
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
@@ -3598,56 +3517,6 @@ real_t s4114(struct args_t * func_args)
             k += 5;
         }
         
-        // Non-indexed equivalent (stock block-5 ip[] only, see s353 note).
-        // Size- and n1-independent, and ip[] is never read. Intrinsics
-        // (precedent: s4117_vrgather) because c's 5-element window walks
-        // BACKWARD one block per group — load-lanes (vlseg5) cannot express
-        // that, and every autovectorized form is either a computed-index
-        // vluxei gather or element-serial strided vlse. Here all four
-        // streams are full-width unit-stride vle32/vse32; the reverse +
-        // block permutation happens in-register via vrgather with the
-        // loop-invariant selector sel[t] = VL-1 - (t-t%5) - p[t%5],
-        // p = {4,2,0,3,1}. VL is capped to a multiple of 5 so blocks never
-        // straddle a register; head/leftovers run scalar via IP_STOCK,
-        // pinned with novector so no gather can reappear. Note: like
-        // s4117_vrgather, the novec build of this kernel stays vector code.
-        /*
-        int beg = n1 - 1;
-        int first = beg + (5 - beg % 5) % 5;
-        if (first > LEN_1D) first = LEN_1D;
-        int lim = first + (LEN_1D - first) / 5 * 5;
-        #pragma GCC novector
-        for (int i = beg; i < first; i++) {
-            a[i] = b[i] + c[LEN_1D - IP_STOCK(i) + 1 - 2] * d[i];
-        }
-        int i = first;
-        size_t vlmax = __riscv_vsetvlmax_e32m1();
-        size_t VL = vlmax - vlmax % 5;
-        if (VL >= 5) {
-            uint32_t selbuf[vlmax];
-            // novector: vectorized, this fill emits a vnsrl (64->32 narrow)
-            // whose VPinVd + two half-writes on one pinned phys reg panic
-            // gem5's O3 dependency graph ("Dependency graph ... not empty",
-            // upstream latent bug). One-time <= vlmax scalar iterations.
-            #pragma GCC novector
-            for (size_t t = 0; t < VL; t++)
-                selbuf[t] = VL - 1 - (t - t % 5) - (4 + 3 * (t % 5)) % 5;
-            vuint32m1_t sel = __riscv_vle32_v_u32m1(selbuf, VL);
-            for (; i + (int)VL <= lim; i += VL) {
-                vfloat32m1_t vb = __riscv_vle32_v_f32m1(&b[i], VL);
-                vfloat32m1_t vd = __riscv_vle32_v_f32m1(&d[i], VL);
-                vfloat32m1_t vc =
-                    __riscv_vle32_v_f32m1(&c[LEN_1D - i - (int)VL], VL);
-                vfloat32m1_t vcx = __riscv_vrgather_vv_f32m1(vc, sel, VL);
-                __riscv_vse32_v_f32m1(&a[i],
-                    __riscv_vfmacc_vv_f32m1(vb, vcx, vd, VL), VL);
-            }
-        }
-        #pragma GCC novector
-        for (; i < LEN_1D; i++) {
-            a[i] = b[i] + c[LEN_1D - IP_STOCK(i) + 1 - 2] * d[i];
-        }
-        */
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
@@ -3678,44 +3547,6 @@ real_t s4115(struct args_t * func_args)
             sum += a[i] * b[ip[i]];
         }
         
-        // Non-indexed equivalent (stock block-5 ip[] only, see s353 note).
-        // Intrinsics (precedent: s4117_vrgather): without -ffast-math the
-        // autovectorizer must keep the sum in exact i-order, which zigzags
-        // across the 5 fields, so the best it can do is vl=2 SLP fragments.
-        // Here b's block is loaded unit-stride full-width, permuted
-        // in-register (vrgather, selector sel[t] = (t-t%5) + p[t%5]), and
-        // each strip is folded with the ordered vfredosum seeded by the
-        // running sum — bitwise-identical to the original i-order result.
-        // Leftovers (only when VL does not divide the trip count) run
-        // scalar via IP_STOCK, pinned novector. Note: like s4117_vrgather,
-        // the novec build of this kernel stays vector code.
-        /*
-        int lim = LEN_1D - LEN_1D % 5;
-        int i = 0;
-        size_t vlmax = __riscv_vsetvlmax_e32m1();
-        size_t VL = vlmax - vlmax % 5;
-        if (VL >= 5) {
-            uint32_t selbuf[vlmax];
-            // novector: see s4114 selbuf note (gem5 vnsrl panic).
-            #pragma GCC novector
-            for (size_t t = 0; t < VL; t++)
-                selbuf[t] = (t - t % 5) + (4 + 3 * (t % 5)) % 5;
-            vuint32m1_t sel = __riscv_vle32_v_u32m1(selbuf, VL);
-            vfloat32m1_t vsum = __riscv_vfmv_s_f_f32m1(sum, 1);
-            for (; i + (int)VL <= lim; i += VL) {
-                vfloat32m1_t va = __riscv_vle32_v_f32m1(&a[i], VL);
-                vfloat32m1_t vb = __riscv_vle32_v_f32m1(&b[i], VL);
-                vfloat32m1_t vbx = __riscv_vrgather_vv_f32m1(vb, sel, VL);
-                vfloat32m1_t vp = __riscv_vfmul_vv_f32m1(va, vbx, VL);
-                vsum = __riscv_vfredosum_vs_f32m1_f32m1(vp, vsum, VL);
-            }
-            sum = __riscv_vfmv_f_s_f32m1_f32(vsum);
-        }
-        #pragma GCC novector
-        for (; i < LEN_1D; i++) {
-            sum += a[i] * b[IP_STOCK(i)];
-        }
-        */
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
@@ -3743,15 +3574,7 @@ real_t s4116(struct args_t * func_args)
 
     real_t sum;
     int off;
-    // vrgather selector for the block permutation (same as s4115), hoisted
-    // out of the 100-rep timing loop.
-    size_t vlmax = __riscv_vsetvlmax_e32m1();
-    //size_t VL = vlmax - vlmax % 5;
-    //uint32_t selbuf[vlmax];
-    // novector: see s4114 selbuf note (gem5 vnsrl panic).
-    //#pragma GCC novector
-    //for (size_t t = 0; t < VL; t++)
-        //selbuf[t] = (t - t % 5) + (4 + 3 * (t % 5)) % 5;
+    
     for (int nl = 0; nl < 100*iterations; nl++) {
         sum = 0.;
         
@@ -3760,38 +3583,6 @@ real_t s4116(struct args_t * func_args)
             sum += a[off] * aa[j-1][ip[i]];
         }
         
-        // Non-indexed equivalent (stock block-5 ip[] only, see s353 note).
-        // Same intrinsics shape as s4115 applied to row aa[j-1]; the
-        // ordered vfredosum keeps the sum bitwise in i-order. Two per-rep
-        // costs matter at 100 reps: (1) sel is re-loaded from selbuf INSIDE
-        // the loop — kept live across dummy() it gets spilled/reloaded with
-        // csrr-vlenb addressing, and csrr is IsSerializeAfter in gem5, which
-        // drains the pipeline twice per rep and stops reps overlapping;
-        // (2) the last strip shrinks to the remaining multiple of 5, so
-        // only the two straddle elements run scalar (via IP_STOCK, which
-        // reproduces the original's read past LEN_2D-1 there). off drops
-        // out. Note: the novec build of this kernel stays vector code.
-        /*
-        real_t * row = aa[j-1];
-        int lim = (LEN_2D-1) - (LEN_2D-1) % 5;
-        int i = 0;
-        vuint32m1_t sel = __riscv_vle32_v_u32m1(selbuf, VL);
-        vfloat32m1_t vsum = __riscv_vfmv_s_f_f32m1(sum, 1);
-        while (VL >= 5 && lim - i >= 5) {
-            size_t vl = (size_t)(lim - i) < VL ? (size_t)(lim - i) : VL;
-            vfloat32m1_t va = __riscv_vle32_v_f32m1(&a[inc + i], vl);
-            vfloat32m1_t vr = __riscv_vle32_v_f32m1(&row[i], vl);
-            vfloat32m1_t vrx = __riscv_vrgather_vv_f32m1(vr, sel, vl);
-            vfloat32m1_t vp = __riscv_vfmul_vv_f32m1(va, vrx, vl);
-            vsum = __riscv_vfredosum_vs_f32m1_f32m1(vp, vsum, vl);
-            i += vl;
-        }
-        sum = __riscv_vfmv_f_s_f32m1_f32(vsum);
-        #pragma GCC novector
-        for (; i < LEN_2D-1; i++) {
-            sum += a[inc + i] * row[IP_STOCK(i)];
-        }
-        */
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
@@ -4269,6 +4060,12 @@ int main(int argc, char ** argv){
     for (int i = 1; i < argc; i++) {
         if ((strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--iterations") == 0) && i + 1 < argc) {
             iterations_val = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-L") == 0 && i + 1 < argc) {
+            ip_locality_L = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-W") == 0 && i + 1 < argc) {
+            ip_locality_W = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-S") == 0 && i + 1 < argc) {
+            ip_locality_seed = (unsigned) strtoul(argv[++i], NULL, 0);
         } else if (argv[i][0] != '-') {
             // Treat anything not starting with a dash as a kernel filter
             if (filter_count < 256) {
@@ -4281,6 +4078,9 @@ int main(int argc, char ** argv){
         g_num_filters = filter_count;
         g_filters = filter_list;
     }
+
+    printf("ip_locality: L=%d W=%d seed=%u\n",
+           ip_locality_L, ip_locality_W, ip_locality_seed);
 
 #ifdef TSVC_KERNELS
     /* Kernel whitelist baked in at compile time.

@@ -177,8 +177,13 @@ class BaseCPU(ClockedObject):
     tyche_table = Param.TycheChainTable(
         NULL, "Optional dependency chain table (Tyche prefetcher channel)"
     )
-    gdp_table = Param.GdpChainTable(
-        NULL, "Optional vector chain/link table (GDP prefetcher channel)"
+    vector_chain_table = Param.VectorChainTable(
+        NULL, "Optional vector chain/link table (shared CPU-to-"
+        "prefetcher channel: gdp/vtyche link_table, stream-page "
+        "registry, demand-side stream registration)"
+    )
+    revela_table = Param.RevelaStreamTable(
+        NULL, "Optional vector stream table (ReVeLA prefetcher channel)"
     )
     _cached_ports = ["icache_port", "dcache_port"]
 

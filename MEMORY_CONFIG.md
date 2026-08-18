@@ -405,7 +405,7 @@ fails with a clear `unknown --pf-param … valid: …` error.
   (subsumes a vector stream prefetcher: next chunk = `addr + size`,
   exact on varying partial-vl walks). No confidence/kill/training,
   one-iteration arming. Vector side only (`--prefetcher-side vector`;
-  per-core `GdpChainTable` wired automatically).
+  per-core `VectorChainTable` wired automatically).
   `streaming_distance(8)` lines — sets indirect lookahead too; full
   indirect timeliness needs distance x cadence >= 2 memory
   round-trips, so sweep 16-32, `stream_only(False)` ablation (stream
@@ -413,8 +413,12 @@ fails with a clear `unknown --pf-param … valid: …` error.
   slice buffer in front of each replay pipeline (watch
   `bufferBusyDrops`; poisson3Db knee at 4), `pipelines(2)`
   concurrently configured producers, `routing_entries(32)` Index
-  Routing Table capacity. Table knobs on the SimObject (not
-  `--pf-param`): `dct_entries(8)`, `max_transform_stages(4)`. Class
+  Routing Table capacity. Table knobs live on the shared
+  `VectorChainTable`, not the prefetcher, so they take script flags
+  rather than `--pf-param`: `--vector-dct-entries(8)` (min 3) and
+  `--vector-max-transform-stages(4)`. One table is built per core, so
+  those two flags size the chain table for whichever of
+  gdp/vtyche/vtyche2/vhybrid is attached. Class
   defaults as vimp: `use_virtual_addresses(True)` (MMU registered
   automatically), `prefetch_on_access(True)`, `queue_size(64)`.
 - **tyche** (`TychePrefetcher`, this fork — see DOCUMENTATION.MD): port
@@ -434,6 +438,27 @@ fails with a clear `unknown --pf-param … valid: …` error.
   `ipt_entries(32)`, `dense_threshold(115)`. Class defaults as vimp:
   `use_virtual_addresses(True)` (MMU registered automatically),
   `prefetch_on_access(True)`, `queue_size(64)`.
+- **revela** (`RevelaPrefetcher`, this fork — see DOCUMENTATION.MD):
+  the ICS'24 Register Vector Length Agnostic prefetcher. Prefetches
+  ONLY data the program has announced: the vsetvl AVL (elements the
+  strip-mined loop still has to process) marks each unit-stride
+  stream's end address, so every emitted line is known-future-accessed
+  (near-perfect accuracy, coverage limited to announced streams — the
+  paper positions it as a complement to a coverage prefetcher).
+  Trigger is a self-clocked every-cycle drain, not cache events.
+  Vector side only (`--prefetcher-side vector`; per-core
+  `RevelaStreamTable` wired automatically, sized by the script flag
+  `--revela-stt-entries(16)`, not `--pf-param`).
+  `max_prefetch_distance(64)` lines = the aggressivity ceiling,
+  halved at 2/4/8 live streams (the paper's 64/32/16/8 table; its
+  sensitivity sweep is 8-128), `degree(1)` lines per min-distance
+  stream per evaluation; the trigger evaluates every cycle (the
+  paper's fixed cadence, not a param). Class defaults: `use_virtual_addresses
+  (True)` (streams are VA-contiguous; MMU registered automatically),
+  `prefetch_on_access(True)` (notifies latch the drain's translation
+  context), `queue_size(16)` (the paper's prefetch queue). The
+  paper's ">=8 free MSHRs" issue gate maps onto the hosting cache's
+  `demand_mshr_reserve`, not a prefetcher param.
 - **isb** (`IrregularStreamBufferPrefetcher`): `degree(4)`,
   `chunk_size(256)`, `num_counter_bits(2)`.
 - **stems** (`STeMSPrefetcher`): `reconstruction_entries(256)`,

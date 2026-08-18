@@ -16,9 +16,6 @@
 #elif defined(HUGE)
     #define LEN_1D 4096000
     #define LEN_2D 2048
-#elif defined(SMALL)
-    #define LEN_1D 150360
-    #define LEN_2D 256
 #else
     #ifndef LEN_1D
         #define LEN_1D 32000
@@ -31,6 +28,11 @@
 // iterations is now a runtime variable
 extern int iterations_val;
 #define iterations iterations_val
+
+/* ip[] gather-locality knobs (common.c init(); tsvc.c argv -L/-W/-S) */
+extern int ip_locality_L;
+extern int ip_locality_W;
+extern unsigned ip_locality_seed;
 
 // Closed form of the stock ip[] initialisation in common.c: each aligned
 // 5-block holds {i+4, i+2, i, i+3, i+1} — (4 + 3*r) % 5 = {4,2,0,3,1} for

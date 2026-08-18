@@ -7,6 +7,12 @@
 #include <malloc.h>
 #include <string.h>
 
+/* ip[] locality knobs (see init()); set from tsvc.c argv -L/-W/-S.
+ * Defaults reproduce the fully-random-gather behavior. */
+int ip_locality_L = 1;
+int ip_locality_W = 1;
+unsigned ip_locality_seed = 12345;
+
 void set_1d_array(real_t * arr, int length, real_t value, int stride);
 void set_2d_array(real_t arr[LEN_2D][LEN_2D], real_t value, int stride);
 
@@ -138,7 +144,14 @@ void set_1d_array(real_t * arr, int length, real_t value, int stride)
         }
     } else if (stride == SET1D_RECIP_IDX_SQ) {
         for (int i = 0; i < length; i++) {
-            arr[i] = 1. / (real_t) ((i+1) * (i+1));
+            /* (i+1)*(i+1) in int overflows above LEN_1D 65535: at
+             * i=65535 the product is exactly 2^32, wraps to 0, and the
+             * element becomes 1.0/0.0 = inf (s4113's c[] at MEDIUM and
+             * up, making its checksum inf and useless as a corruption
+             * detector). Square in double instead — exact for every
+             * LEN_1D we run, and identical to the old values at TINY
+             * and SMALL, where the overflow never triggered. */
+            arr[i] = 1. / ((double) (i+1) * (double) (i+1));
         }
     } else {
         for (int i = 0; i < length; i += stride) {
@@ -157,6 +170,10 @@ void set_2d_array(real_t arr[LEN_2D][LEN_2D], real_t value, int stride)
 void init(int** ip, real_t* s1, real_t* s2){
     xx = (real_t*) memalign(ARRAY_ALIGNMENT, LEN_1D*sizeof(real_t));
     *ip = (int *) memalign(ARRAY_ALIGNMENT, LEN_1D*sizeof(real_t));
+
+    // Original TSVC ip initialization
+    // ip's regular and highly local pattern 
+    // was problematic for evaluating indirect prefetcher performance
     /*
     for (int i = 0; i + 4 < LEN_1D; i = i+5){
         (*ip)[i]   = (i+4);
@@ -166,33 +183,87 @@ void init(int** ip, real_t* s1, real_t* s2){
         (*ip)[i+4] = (i+1);
     }
     */
-    // Partial final block when LEN_1D is not a multiple of 5: identity
-    // mapping, so ip[] stays an in-bounds permutation. The stock loop above
-    // would both write past the end of ip[] and store indices >= LEN_1D.
-    /*
-    for (int i = LEN_1D - LEN_1D % 5; i < LEN_1D; i++) {
-        (*ip)[i] = i;
+    // Locality-parameterized ip[]: a permutation of
+    // 0..LEN_1D-1 built like vector_indirect_eval.c's line_locality
+    // generator, under the permutation constraint the scatter kernels
+    // (a[ip[i]] = ..., s4113/s4115/s4116) impose: duplicate indices
+    // would let RVV's UNORDERED vsuxei scatter diverge from the scalar
+    // build, breaking vec-vs-novec checksum equivalence. The synthetic
+    // generator samples lines with replacement, so it cannot be ported
+    // verbatim; this construction keeps its two knobs:
+    //
+    //   ip_locality_L   run length: L consecutive tile positions read
+    //                   the SAME target cache line (L | 16; a 64B line
+    //                   holds 16 real_t floats). L=1 = element-level
+    //                   full shuffle (the previous Fisher-Yates
+    //                   behavior); L=16 = whole-line runs.
+    //   ip_locality_W   reuse spacing: tiles interleave W runs
+    //                   round-robin, so same-line accesses sit W
+    //                   positions apart (synthetic's W).
+    //   ip_locality_seed  deterministic; vec and novec builds share
+    //                   this init, so checksums stay comparable.
+    //
+    // Construction: build a list of line VISITS (each of the LEN_1D/16
+    // lines appears 16/L times), Fisher-Yates it, then each visit
+    // consumes the line's next L still-unused elements via a per-line
+    // cursor. Every element appears exactly once (permutation); each
+    // line's visits land at independent shuffled positions, giving the
+    // long-range line reuse the synthetic gets from sampling with
+    // replacement. Visits are emitted in tiles of W, interleaved
+    // element-by-element, so same-line accesses sit W positions apart.
+    // Set via tsvc argv: -L <n> -W <n> -S <seed> (defaults 1/1/12345
+    // keep fully-random gathers).
+
+    {
+        const int epl = 64 / (int)sizeof(real_t); /* elements per line */
+        const int L = ip_locality_L;
+        const int W = ip_locality_W;
+        if (L < 1 || L > epl || epl % L != 0 || LEN_1D % L != 0) {
+            fprintf(stderr, "ip_locality_L=%d invalid: need L | %d and "
+                    "L | LEN_1D\n", L, epl);
+            exit(1);
+        }
+        if (W < 1) {
+            fprintf(stderr, "ip_locality_W=%d invalid\n", W);
+            exit(1);
+        }
+        const int nlines = LEN_1D / epl;
+        const int nvisits = LEN_1D / L;   /* each line visited epl/L times */
+        int *visit = (int *) malloc(nvisits * sizeof(int));
+        int *next = (int *) calloc(nlines, sizeof(int));
+        srand(ip_locality_seed);
+        for (int v = 0; v < nvisits; v++) {
+            visit[v] = v % nlines;
+        }
+        for (int v = nvisits - 1; v > 0; v--) {
+            int j = rand() % (v + 1);
+            int tmp = visit[v]; visit[v] = visit[j]; visit[j] = tmp;
+        }
+        /* Resolve each visit to its first element: the line's next
+         * unused L-chunk. After this, visit[] holds element indices. */
+        for (int v = 0; v < nvisits; v++) {
+            const int line = visit[v];
+            visit[v] = line * epl + next[line];
+            next[line] += L;
+        }
+        int pos = 0;
+        int t = 0;
+        for (; t + W <= nvisits; t += W) {
+            for (int k = 0; k < L; k++) {
+                for (int w = 0; w < W; w++) {
+                    (*ip)[pos++] = visit[t + w] + k;
+                }
+            }
+        }
+        for (; t < nvisits; t++) { /* tail: fewer than W visits left */
+            for (int k = 0; k < L; k++) {
+                (*ip)[pos++] = visit[t] + k;
+            }
+        }
+        free(visit);
+        free(next);
     }
-    */
-    // Randomized ip[]: Fisher-Yates shuffle of the 0..LEN_1D-1 ramp with a
-    // fixed seed (deterministic across runs). The stock init above only
-    // permutes within 5-element blocks, so b[ip[i]] still walks cache lines
-    // sequentially and a stream prefetcher covers it; a full shuffle makes
-    // the gathers genuinely indirect. Still a permutation, so every element
-    // is touched exactly once. To enable, uncomment this block (the ramp
-    // loop above is overwritten, so it can stay).
-    
-    srand(12345);
-    for (int i = 0; i < LEN_1D; i++) {
-         (*ip)[i] = i;
-    }
-     for (int i = LEN_1D - 1; i > 0; i--) {
-         int j = rand() % (i + 1);
-         int tmp = (*ip)[i];
-         (*ip)[i] = (*ip)[j];
-         (*ip)[j] = tmp;
-    }
-    
+
 
     set_1d_array(a, LEN_1D, 1.,1);
     set_1d_array(b, LEN_1D, 1.,1);

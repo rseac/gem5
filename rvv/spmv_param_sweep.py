@@ -37,9 +37,16 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-GEM5_ROOT = "/home/parkw/gem5"
-SUITE = "/home/parkw/riscv-vectorized-benchmark-suite"
+# Host paths are env-overridable (2026-08-13) so the same scripts drive
+# sweeps on remote machines with different users/homes: set
+# GEM5_SWEEP_ROOT / GEM5_SWEEP_SUITE before invoking.
+GEM5_ROOT = os.environ.get("GEM5_SWEEP_ROOT", "/home/parkw/gem5")
+SUITE = os.environ.get("GEM5_SWEEP_SUITE",
+                       "/home/parkw/riscv-vectorized-benchmark-suite")
 IMAGE = "ghcr.io/gem5/ubuntu-22.04_all-dependencies:v23-0"
+
+GEM5_CACHE = os.path.expanduser("~/.cache/gem5")
+LIGRA = "/home/parkw/ligra"
 
 DOCKER = [
     "docker", "run", "--rm",
@@ -48,8 +55,11 @@ DOCKER = [
     "--user", f"{os.getuid()}:{os.getgid()}",
     "-e", "HOME=/tmp",
     "-v", f"{GEM5_ROOT}:/gem5",
-    "-v", "/home/parkw/.cache/gem5:/tmp/gem5-cache",
-    "-v", "/home/parkw/ligra:/ligra",
+    "-v", f"{GEM5_CACHE}:/tmp/gem5-cache",
+    # ligra only exists on the original host; docker would create a
+    # root-owned stub dir for a missing bind source, so mount it
+    # conditionally (no sweep input lives there).
+    *(["-v", f"{LIGRA}:/ligra"] if os.path.isdir(LIGRA) else []),
     "-v", f"{SUITE}:/riscv-vectorized-benchmark-suite",
     "-e", "GEM5_RESOURCE_DIR=/tmp/gem5-cache",
     "-w", "/gem5",
@@ -66,8 +76,39 @@ CORE_ARGS = [
     "--simd-units", "2",
 ]
 
-BIN = "/riscv-vectorized-benchmark-suite/_spmv/bin/spmv_vector.exe"
-INPUT_DIR = "/riscv-vectorized-benchmark-suite/_spmv/input"
+# Native runner (2026-08-13): for hosts without docker access (no
+# root), GEM5_SWEEP_RUNNER=native runs gem5.opt directly on the host.
+# The container's shared-library closure and python3.10 stdlib must be
+# staged at GEM5_SWEEP_DEPS (default ~/gem5-deps; extract them from the
+# docker image on a machine that has it), and the driver must be
+# launched from the gem5 root so the relative gem5.opt/outdir paths
+# resolve. The DOCKER name is kept: it is simply the command prefix,
+# and in native mode it degenerates to `env` with the library paths.
+RUNNER = os.environ.get("GEM5_SWEEP_RUNNER", "docker")
+_GUEST_SUITE = "/riscv-vectorized-benchmark-suite"
+if RUNNER == "native":
+    _DEPS = os.environ.get("GEM5_SWEEP_DEPS",
+                           os.path.expanduser("~/gem5-deps"))
+    DOCKER = [
+        "env",
+        f"LD_LIBRARY_PATH={_DEPS}/lib/x86_64-linux-gnu",
+        f"PYTHONHOME={_DEPS}/usr",
+        f"GEM5_RESOURCE_DIR={GEM5_CACHE}",
+        f"GEM5_GUEST_PATH_MAP={_GUEST_SUITE}={SUITE}",
+    ]
+    # The binary resource must be a real host path (the resource layer
+    # checks existence and loads the ELF from it), but the INPUT paths
+    # stay in the container-canonical form: they are guest-visible argv
+    # strings, and any length change shifts the SE stack layout and
+    # perturbs ROI timing vs the docker runs. The run script's
+    # GEM5_GUEST_PATH_MAP support rewrites argv[0] back to the guest
+    # form and redirects the guest's open() of the canonical prefix to
+    # the host files, so native and docker runs are bit-identical.
+    BIN = f"{SUITE}/_spmv/bin/spmv_vector.exe"
+    INPUT_DIR = f"{_GUEST_SUITE}/_spmv/input"
+else:
+    BIN = f"{_GUEST_SUITE}/_spmv/bin/spmv_vector.exe"
+    INPUT_DIR = f"{_GUEST_SUITE}/_spmv/input"
 
 # Applied to every run of the named prefetcher, on top of the swept params.
 FIXED_PF_PARAMS = {
@@ -424,7 +465,7 @@ STAT_PATTERNS = {
         r"\.prefetcher\.capturesRegisteredMiss\s+(\S+)",
     "bufferBusyDrops": r"\.prefetcher\.bufferBusyDrops\s+(\S+)",
     "targetsGenerated": r"\.prefetcher\.targetsGenerated\s+(\S+)",
-    "linksFormed": r"\.gdp_table\.linksFormed\s+(\S+)",
+    "linksFormed": r"\.vector_chain_table\.linksFormed\s+(\S+)",
     "stalenessAborts": r"\.prefetcher\.stalenessAborts\s+(\S+)",
     "elementsReplayed": r"\.prefetcher\.elementsReplayed\s+(\S+)",
     "replayDeferred": r"\.prefetcher\.replayDeferred\s+(\S+)",
