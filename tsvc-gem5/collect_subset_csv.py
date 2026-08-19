@@ -21,48 +21,106 @@ def load_golden(iters, config):
 def collect_results(results_dir):
     data = []
     
-    # Identify subdirectories (could be configs or lanes)
-    subdirs = [d for d in os.listdir(results_dir) if os.path.isdir(os.path.join(results_dir, d))]
-    
-    # Check if we have the new multi-config structure: results_dir/CONFIG/lanes_N/kernel/iter_I
-    configs = [d for d in subdirs if d in ["TINY", "SMALL", "MEDIUM", "LARGE", "HUGE"]]
-    
-    if configs:
-        for config in configs:
-            config_path = os.path.join(results_dir, config)
-            lane_dirs = [d for d in os.listdir(config_path) if d.startswith("lanes_")]
-            for lane_dir in sorted(lane_dirs, key=lambda x: int(x.split("_")[1])):
-                lanes = lane_dir.split("_")[1]
-                lane_path = os.path.join(config_path, lane_dir)
-                for kernel in sorted(os.listdir(lane_path)):
-                    kernel_path = os.path.join(lane_path, kernel)
-                    if not os.path.isdir(kernel_path): continue
-                    process_kernel_iter(kernel, kernel_path, lanes, config, data)
-    elif any(d.startswith("lanes_") for d in subdirs):
-        # Middle structure: results_dir/lanes_N/kernel/iter_I
-        lane_dirs = [d for d in subdirs if d.startswith("lanes_")]
-        for lane_dir in sorted(lane_dirs, key=lambda x: int(x.split("_")[1])):
-            lanes = lane_dir.split("_")[1]
-            lane_path = os.path.join(results_dir, lane_dir)
-            for kernel in sorted(os.listdir(lane_path)):
-                kernel_path = os.path.join(lane_path, kernel)
-                if not os.path.isdir(kernel_path): continue
-                process_kernel_iter(kernel, kernel_path, lanes, "N/A", data)
-    else:
-        # Old structure: results_dir/kernel/iter_I
-        for kernel in sorted(os.listdir(results_dir)):
-            kernel_path = os.path.join(results_dir, kernel)
-            if not os.path.isdir(kernel_path): continue
-            process_kernel_iter(kernel, kernel_path, "N/A", "N/A", data)
+    # Recursively find all terminal.log files
+    for root, dirs, files in os.walk(results_dir):
+        if "terminal.log" in files:
+            # Path structure typically: results_dir/[CONFIG]/[vlen_V]/[lanes_L]/kernel/iter_I
+            parts = os.path.relpath(root, results_dir).split(os.sep)
+            config = "N/A"
+            lanes = "N/A"
+            vlen_dir = "N/A"
+            kernel = "N/A"
+            iters = "1"
+            
+            for part in parts:
+                if part in ["TINY", "SMALL", "MEDIUM", "LARGE", "HUGE"]:
+                    config = part
+                elif part.startswith("lanes_"):
+                    lanes = part.split("_")[1]
+                elif part.startswith("vlen_"):
+                    vlen_dir = part.split("_")[1]
+                elif part.startswith("iter_"):
+                    iters = part.split("_")[1]
+                else:
+                    kernel = part
+                    
+            golden = load_golden(iters, config)
+            log_path = os.path.join(root, "terminal.log")
+            # Check if stats.txt exists in m5out
+            stats_path = os.path.join(root, "m5out", "stats.txt")
+            roi_insts = "N/A"
+            roi_ipc = "N/A"
+            
+            if os.path.exists(stats_path):
+                try:
+                    with open(stats_path, 'r') as sf:
+                        scontent = sf.read()
+                    blocks = scontent.split("---------- Begin Simulation Statistics ----------")
+                    if len(blocks) > 1:
+                        # Block 1 is ROI
+                        sim_inst_m = re.search(r"simInsts\s+(\d+)", blocks[1])
+                        ipc_m = re.search(r"board\.processor\.cores\.core\.ipc\s+([\d\.]+)", blocks[1])
+                        if sim_inst_m: roi_insts = sim_inst_m.group(1)
+                        if ipc_m: roi_ipc = f"{float(ipc_m.group(1)):.4f}"
+                except Exception:
+                    pass
+                    
+            with open(log_path, 'r') as f:
+                content = f.read()
+                
+                roi_cycles_match = re.search(r"ROI Cycles \(Loop\):\s+(\d+)", content)
+                roi_vec_match = re.search(r"ROI Vector Insts:\s+(\d+)", content)
+                vlen_match = re.search(r"VLEN=(\d+)", content)
+                e2e_match = re.search(r"Total Execution Cycles:\s+(\d+)", content)
+                
+                vlen = vlen_match.group(1) if vlen_match else (vlen_dir if vlen_dir != "N/A" else "N/A")
+                
+                arch_match = re.search(rf"^\s*{kernel}.*?(\d+)\s+([\d\.]+)\s*$", content, re.MULTILINE)
+                checksum = arch_match.group(2) if arch_match else "N/A"
+                
+                status = "N/A"
+                if kernel in golden and checksum != "N/A":
+                    try:
+                        g_val = float(golden[kernel])
+                        c_val = float(checksum)
+                        if abs(g_val - c_val) < 1e-5:
+                            status = "PASS"
+                        else:
+                            status = "FAIL"
+                    except ValueError:
+                        status = "Error"
+                        
+                row = {
+                    "Kernel": kernel,
+                    "Iterations": iters,
+                    "Lanes": lanes,
+                    "Array Config": config,
+                    "VLEN": vlen,
+                    "ROI Insts": roi_insts,
+                    "ROI Vector Insts": roi_vec_match.group(1) if roi_vec_match else "N/A",
+                    "ROI Cycles": roi_cycles_match.group(1) if roi_cycles_match else "N/A",
+                    "ROI IPC": roi_ipc,
+                    "E2E Cycles": e2e_match.group(1) if e2e_match else "N/A",
+                    "Validation": status
+                }
+                data.append(row)
                 
     if not data:
         print("No data found to collect.")
         return
 
     csv_file = os.path.join(results_dir, "summary_results.csv")
+    fieldnames = ["Kernel", "Iterations", "Lanes", "Array Config", "VLEN", "ROI Insts", "ROI Vector Insts", "ROI Cycles", "ROI IPC", "E2E Cycles", "Validation"]
     
-    # Target headers: Kernel Iterations Lanes Array Config VLEN Cycles Instructions
-    fieldnames = ["Kernel", "Iterations", "Lanes", "Array Config", "VLEN", "Cycles", "Instructions", "Validation"]
+    # Sort data for clean presentation: Config -> VLEN -> Lanes -> Kernel -> Iterations
+    def sort_key(r):
+        cfg_order = {"TINY": 1, "SMALL": 2, "MEDIUM": 3, "LARGE": 4, "HUGE": 5}.get(r["Array Config"], 99)
+        v = int(r["VLEN"]) if r["VLEN"].isdigit() else 0
+        l = int(r["Lanes"]) if r["Lanes"].isdigit() else 0
+        i = int(r["Iterations"]) if r["Iterations"].isdigit() else 0
+        return (cfg_order, v, l, r["Kernel"], i)
+        
+    data.sort(key=sort_key)
     
     with open(csv_file, 'w', newline='') as f:
         dict_writer = csv.DictWriter(f, fieldnames=fieldnames)
