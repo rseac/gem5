@@ -93,12 +93,12 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         # (tyche_table) — the CPU-to-prefetcher sideband channel. See
         # src/cpu/tyche_table.hh and needs_chain_table().
         prefetcher_needs_chain_table: bool = False,
-        # GDP/VTyche: same wiring pattern for the VectorChainTable
+        # GDP/Viper: same wiring pattern for the VectorChainTable
         # (prefetcher.link_table + core.vector_chain_table). See
         # src/cpu/vector_chain_table.hh and needs_vector_chain_table().
         prefetcher_needs_vector_chain_table: bool = False,
         # VectorChainTable sizing, shared by every prefetcher fed from
-        # that channel (gdp/vtyche/vtyche2/vhybrid) since one table is
+        # that channel (gdp/viper/vtyche2/vhybrid) since one table is
         # built per core. Defaults match VectorChainTable.py.
         vector_dct_entries: int = 8,
         vector_max_transform_stages: int = 4,
@@ -346,7 +346,7 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
                     # from the demand side (policy-in-isolation runs).
                     assert self._stream_demote_demand, (
                         "stream_demote needs a vector-chain-table prefetcher "
-                        "(gdp/vtyche) or stream_demote_demand to feed "
+                        "(gdp/viper) or stream_demote_demand to feed "
                         "the stream-page registry"
                     )
                     from m5.objects import VectorChainTable

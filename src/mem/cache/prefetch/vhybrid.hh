@@ -1,6 +1,6 @@
 /**
  * VHybrid — announcement-driven gather prefetcher: ReVeLA's stream
- * engine driving VTyche's capture/convert half.
+ * engine driving Viper's capture/convert half.
  *
  * The composition (both halves reused structurally unchanged, so each
  * is directly comparable to its standalone parent):
@@ -10,11 +10,11 @@
  *    RevelaStreamTable (cpu/revela_table.hh) — no training, exact
  *    extents, the Aggressivity Table splitting the in-flight budget,
  *    min-distance fairness, and the every-cycle self-clocked drain.
- *    This replaces VTyche's demand-anchored per-producer stream walk:
+ *    This replaces Viper's demand-anchored per-producer stream walk:
  *    lookahead is licensed by the announced extent (up to
  *    max_prefetch_distance lines) instead of demand + sd.
  *
- *  - INDIRECT half = VTyche (mem/cache/prefetch/vector_tyche.hh): the
+ *  - INDIRECT half = Viper (mem/cache/prefetch/viper.hh): the
  *    VectorChainTable (cpu/vector_chain_table.hh) names producer
  *    unit-stride loads, links each to its gather in one iteration and
  *    snoops the gather's base; the chain collapses at adoption into
@@ -129,7 +129,7 @@ class VHybrid : public Queued
      *  False = after conversion, on target line addresses. */
     const bool preLaneDedup;
 
-    /** The collapsed chain (VTyche's LinearForm, unchanged) */
+    /** The collapsed chain (Viper's LinearForm, unchanged) */
     struct LinearForm
     {
         bool valid = false;
@@ -166,7 +166,7 @@ class VHybrid : public Queued
 
     /**
      * Per-producer pipeline state, keyed by producer PC. This is
-     * VTyche's SttEntry minus the stream walk (lastAddr survives only
+     * Viper's SttEntry minus the stream walk (lastAddr survives only
      * to throttle adoption to chunk events; the walk itself lives in
      * the RevelaStreamTable now).
      */
@@ -220,7 +220,7 @@ class VHybrid : public Queued
         statistics::Scalar drainNoRoom;
         statistics::Scalar aggressivityThrottled;
         statistics::Scalar linesSkippedFloor;
-        // Indirect half (VTyche's counters)
+        // Indirect half (Viper's counters)
         statistics::Scalar producerChunks;
         statistics::Scalar formsAdopted;
         statistics::Scalar chainNotReady;
@@ -246,7 +246,7 @@ class VHybrid : public Queued
     } vhybridStats;
 
     /** Self-clocked drain (every cycle, both halves; same latched
-     *  translation-context pattern as revela.hh/vector_tyche.hh) */
+     *  translation-context pattern as revela.hh/viper.hh) */
     EventFunctionWrapper drainEvent;
     RequestPtr drainCtxReq;
     std::unique_ptr<PrefetchInfo> drainCtxPfi;
@@ -263,7 +263,7 @@ class VHybrid : public Queued
      *  staged in `addresses` this event */
     void emitStreamRound(std::vector<AddrPriority> &addresses);
 
-    // ---- indirect half (VTyche logic against pipeTable) ----
+    // ---- indirect half (Viper logic against pipeTable) ----
     LinearForm collapse(const VectorChainTable::ChainSnapshot &s) const;
     /** The form's index extension (sign/zero, extBits) alone */
     uint64_t extendRaw(const LinearForm &f, uint64_t raw) const;
@@ -308,7 +308,7 @@ class VHybrid : public Queued
                            std::vector<AddrPriority> &addresses,
                            const CacheAccessor &cache) override;
     /** Peek the departing prefetch: index-stream lines register for
-     *  capture and publish their page (range capture, VTyche's) */
+     *  capture and publish their page (range capture, Viper's) */
     PacketPtr getPacket() override;
     void notifyFill(const CacheAccessProbeArg &acc) override;
     void resetLearnedState() override;

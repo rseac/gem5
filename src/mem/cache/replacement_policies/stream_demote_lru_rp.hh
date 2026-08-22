@@ -4,7 +4,7 @@
  *
  * LRU, except that lines belonging to registered STREAM pages (single
  * -use index/data arrays walked by a vector kernel — pages published
- * by the VTyche/GDP prefetcher through the shared VectorChainTable) are
+ * by the Viper/GDP prefetcher through the shared VectorChainTable) are
  * demoted to the LRU position instead of being promoted:
  *
  *  - demote_on_insert = true  (L2 use): a stream line inserts already

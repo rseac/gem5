@@ -957,6 +957,8 @@ payload they came from when dedup does not bite.
 | `address_queue_entries` | 2 | converted batches held per pipeline |
 | `pipelines` | 2 | concurrently configured producers |
 | `routing_entries` | 32 | IRT capacity |
+| `retired_tail_entries` | 32 | retired-IRT tail depth (converted lines remembered after they leave the pending IRT); 0 disables |
+| `capture_read_hit_own_producer` | True | read-hit capture of a line this producer already converted: True = capture anyway (pre-tail behaviour), False = suppress |
 | `drain_floor` | 8 | minimum emissions per event when the queue is full; 0 = pure stall |
 
 ### Behavior changes
@@ -2912,3 +2914,775 @@ the verif path. The `.verif` goldens correspond to the defaults
 deterministic for a fixed input+params (early exit depends only on the
 data), and per-iteration error lines are buffered in memory during the
 ROI and printed after `ROI_END()` so no syscalls pollute the stats.
+
+
+## VTyche: retire-don't-erase IRT tail (`capture_read_hit_own_producer`, 2026-08-19)
+
+`capture_on_read_hit` (above) converts an index line off the read port
+when the demand read hits. On a single-chain loop it converts every
+index line **twice**, and the better the streaming half works, the more
+of it there is. This adds a small retired tail to the Index Routing
+Table so the second conversion can be identified and, optionally,
+dropped: `--pf-param capture_read_hit_own_producer=false`.
+
+### What the existing method did
+
+`notifyFill()` (`src/mem/cache/prefetch/vector_tyche.cc`) located the
+arriving fill's IRT entry and **erased** it:
+
+```cpp
+const IrtEntry rec = *it;
+indexRoutingTable.erase(it);
+```
+
+After that erase the prefetcher retained no evidence that the line had
+ever been converted. `captureFromReadHit()` therefore had no way to
+distinguish two very different read hits on the same index line:
+
+1. **Self-inflicted duplicate** — VTyche's own stream walk prefetched
+   the index line, `notifyFill()` converted it, and the producer's
+   demand read then necessarily *hits* on the line the prefetcher just
+   installed. The read-hit path converts the identical elements a
+   second time, generating a second, byte-identical batch of indirect
+   targets.
+2. **Genuine sibling capture** — a *different* producer's stream walk
+   made the line resident, so this producer has never seen the data.
+   This is the multi-chain (unrolled-gather) case
+   `capture_on_read_hit` was written for.
+
+The arithmetic from the TSVC LARGE campaign (`s4112`, one gather chain,
+`LEN_1D` 1024000, 16 int32 indices per 64 B line = 64000 `ip[]` lines):
+
+| | count | vs. 64000 lines |
+|---|---|---|
+| `fillsCaptured` | 64004 | 1.00x |
+| `hitsCaptured` | 62659 | 0.98x |
+| `elementsConverted` | 2015440 | **2.0x** `LEN_1D` |
+
+Every element converted twice. The contrast with `s353` (five
+interleaved chains, `formsAdopted` = 3) is what shows a *global*
+`capture_on_read_hit` flag is the wrong granularity: there
+`fillsCaptured + hitsCaptured` is only 0.9x registrations, i.e. the
+read-hit path is load-bearing and must not be turned off.
+
+### What this fork adds
+
+A bounded retired tail beside the pending IRT — key only, no payload:
+
+```cpp
+struct RetiredEntry { Addr linePaddr; Addr producerPC; bool secure; };
+std::list<RetiredEntry> retiredRoutingTail;   // FIFO, retired_tail_entries
+```
+
+- `retireRegistration(line_pa, producer_pc, secure)` records a
+  conversion. A re-retirement of a record already present *splices* it
+  to the back rather than duplicating it, so a line converted
+  repeatedly does not age out under its own traffic and the tail holds
+  one record per (line, producer).
+- `wasConvertedBy(line_pa, producer_pc, secure)` is the CAM read.
+- `notifyFill()` still erases the pending entry — it must, or a second
+  fill would re-convert — but now calls `retireRegistration()`
+  **after** the payload is actually latched. A fill dropped on a stale
+  form (`staleConfigs`) or a full slice buffer (`bufferBusyDrops`)
+  converted nothing, so it leaves no tail record and a later read hit
+  on that line is still real work.
+- `captureFromReadHit()` consults the tail before spending a slice
+  buffer entry. The key includes `producerPC`, so case 1 above matches
+  and case 2 does not.
+- The read-hit path retires its own captures too, so a repeated read
+  hit by the same producer on the same line is treated identically to
+  a fill-then-hit pair.
+
+New stats (`system.cpu.<cache>.prefetcher.`):
+
+| Stat | Meaning |
+|---|---|
+| `recapturesDetected` | read-hit captures of a line this same producer had already converted — counted whether or not they were suppressed |
+| `recapturesSuppressed` | of those, the ones actually skipped |
+
+The tail is FIFO-bounded by `retired_tail_entries` (default 32, the
+same order as `routing_entries` and as `streaming_distance` in lines).
+Ageing out is deliberate, not a shortcoming: a line converted long
+enough ago that 32 other conversions have intervened is past both the
+`dedup_buffer_size` horizon and any plausible cache residency window,
+so re-converting it on a genuine revisit is the correct answer — the
+same reasoning as the dedup window's bounded scan
+(`inDedupWindow()`).
+
+### Behavior changes
+
+None by default. `capture_read_hit_own_producer` defaults to `True`,
+which is exactly the pre-tail behaviour, so every run in the TSVC
+LARGE campaign and sweep 6 stays comparable. At the default the tail is
+still maintained and `recapturesDetected` still counts, so a rerun
+measures the size of the duplication without changing timing;
+`recapturesSuppressed` stays 0 until the flag is turned off.
+
+**Validated 2026-08-19** (MEDIUM, center params + pipelines=5 +
+capture_on_read_hit, L8W32, `validation_aug19/V1` vs `V2`, checksums
+golden): at the default, detected == hitsCaptured exactly on the
+single-chain kernels (s4112 15,632) and **detected = 0 on s353** —
+every one of its 9,458 read-hit captures is a genuine sibling capture,
+so the per-producer key separates the two cases perfectly (V1 and V2
+s353 rows are bit-identical). With suppression on: elementsConverted
+2.0x -> 1.0x LEN_1D, pfIssued -33% (292K -> 195K), pfHitInCache -42%
+(228K -> 132K), pfUseful flat (+0.4%), cycles flat (0.996-1.005) — the
+win is bandwidth/energy-side, as expected on gem5's free-drop cache.
+`retired_tail_entries=0` disables the tail entirely (no detection, no
+suppression) and removes even that bookkeeping.
+
+The flag only has an effect when `capture_on_read_hit=true`; with the
+read-hit path off there are no read-hit captures to suppress.
+
+### Storage
+
+`retired_tail_entries` x (PA line tag + PC + secure bit). At the
+default 32 entries with a 40-bit PA (34-bit line tag) and a 40-bit PC:
+32 x 75 b = 2400 b = **300 B**, on top of the ~961 B already accounted
+for the rest of the design.
+
+
+## VTyche: capture admission backpressure (`capture_queue_gate`, 2026-08-19)
+
+`--pf-param capture_queue_gate=N` skips new captures while the prefetch
+queue backlog is at or above N entries. Default 0 = disabled, so every
+existing run is bit-identical.
+
+### What the existing method did
+
+VTyche has backpressure at **emission** — `drainEmission()` stalls
+against a full `pfq` (`emissionDeferred`), and v2.1's stall-on-full
+replay keeps half-emitted batches parked — but none at **capture
+admission**. The walk keeps registering index lines
+(`registerCapture()` in `getPacket()` and `calculatePrefetch()`,
+`src/mem/cache/prefetch/vector_tyche.cc`) and the fill/read-hit paths
+keep latching payloads into slice buffers regardless of whether their
+targets could ever issue. When the queue is saturated, batches sit in
+the slice buffer until the demand cursor passes their index line, and
+the staleness abort discards them wholesale (`stalenessAborts`).
+
+Measured in the TSVC LARGE campaign (see `tsvc_large_results/`): at
+L1W1 the pfq (queue_size 64) is chronically full — `emissionDeferred`
+1.9–2.5M events against ~800K drain ticks — and **~50% of all captured
+lines are staleness-aborted** in many configs (median 13% campaign-wide,
+56% worst case at cl1-sd32 s353 L8W32). Every one of those was a
+registration, a fill or read-hit latch, and sometimes a partial
+conversion, spent on a batch that was then thrown away.
+
+### What this fork adds
+
+One predicate at the admission points (three when written; the
+demand-miss registration path was removed the same day, see the next
+section):
+
+```cpp
+bool VectorTyche::captureBacklogged() const {
+    return captureQueueGate != 0 &&
+           pfq.size() + pfqMissingTranslation.size() >= captureQueueGate;
+}
+```
+
+- **Prefetch-window registration** (`getPacket()`): the departing
+  stream prefetch still issues and `registerStreamPage()` still runs
+  (the demotion registry is not capture work) — only the
+  `registerCapture()` is skipped.
+- **Read-hit capture** (`captureFromReadHit()`): the whole latch is
+  skipped before any payload is copied.
+
+The backlog counts `pfqMissingTranslation` as well as `pfq` because
+indirect targets are nearly all cross-page (`pfSpanPage` ≈ 100% of
+targets on TSVC), so the translation-pending queue is real pipeline
+depth, not a corner case.
+
+The stream walk is never gated: the architectural stream is the useful
+readahead and its candidates go through the normal queue-full handling.
+The gate sheds only the capture/convert half — exactly the work whose
+product cannot issue while the queue is full.
+
+New stat: `capturesGated` (admissions skipped, one count per line or
+read-hit call).
+
+### Sizing guidance
+
+`queue_size - blkSize/index_bytes` admits a capture only when a full
+line's worth of converted targets could actually queue: at the default
+queue_size 64 with int32 indices, `capture_queue_gate=48`.
+
+### What it does not fix
+
+A gated line is not deferred, it is *lost* — if the queue drains before
+the demand cursor reaches that line, the gate traded a would-have-been-
+timely capture for nothing. The bet is that at sustained congestion the
+staleness abort would have discarded it anyway; `capturesGated` vs the
+change in `stalenessAborts` measures how often the bet pays.
+
+**Validated 2026-08-19** (MEDIUM, L1W1, gate=48 vs off,
+`validation_aug19/V3` vs `V4`): mechanically correct — stalenessAborts
+collapse (s4112 10,340 -> 119) and capturesGated fires (~15K/kernel) —
+but the bet only pays on some kernels: s4112 pfUseful +6%/cycles flat,
+s4115 +9%/flat, **s4113 -17%/cycles +4.4%, s353 -38%/cycles +15.9%**.
+capturesGated (15.4K) exceeded the aborts it replaced (10.3K): the gate
+also discards captures that would have issued. gate=48 is NOT a
+recommended setting on this evidence; the default (0 = off) stands, and
+a useful version likely needs defer-not-drop or a higher threshold.
+
+
+## VTyche: demand-miss IRT registration removed (2026-08-19)
+
+The demand-miss capture path is deleted: `calculatePrefetch()` no
+longer registers index lines in the IRT when the index-array demand
+access misses. `registerCapture()` loses its `from_miss` flag and the
+`capturesRegisteredMiss` stat is gone (`rvv/spmv_param_sweep.py`'s
+scraper skips absent stats, and GDP keeps its own copy of both, so
+nothing breaks).
+
+### What the path was
+
+One of the two IRT registration paths documented in the
+`capture_on_read_hit` section (2026-08-17): an index-array demand miss
+carries VA and PA together, so its lines were registered directly,
+skipping `cache.inCache()`-resident lines. It existed to catch lines
+the stream walk had not covered — stream startup, and whenever the
+walk fell behind the demand cursor.
+
+### Why it is unnecessary
+
+- **It barely fired.** TSVC LARGE: `capturesRegisteredMiss` was 1-146
+  per kernel at L8W32 and 1.4-5.5K at L1W1, against ~64K
+  prefetch-window registrations - at most ~8% of registrations, in the
+  regime (L1W1) where ~50% of captures were staleness-aborted anyway.
+- **It captured exactly the doomed population.** A line the demand
+  already missed on is a line the walk failed to cover in time; its
+  fill arrives with the demand, its conversion targets issue *behind*
+  the gather that needs them, and the staleness abort or
+  `pfRemovedDemand` eats them. Registering it spends IRT slots (32
+  total) that evict still-useful prefetch-window entries.
+- **The walk self-heals.** The demand miss that would have registered
+  is also the chunk event that advances `streamAhead()`, so the walk
+  re-covers the region within one event either way.
+
+Expected visible deltas on re-runs: `capturesRegisteredMiss` gone;
+`fillsCaptured` down by roughly its old value in the L1W1 regime;
+`stalenessAborts` down by a similar amount; `pfUseful` ~flat (the
+removed captures were late by construction).
+
+**Validated 2026-08-19**: `capturesRegisteredMiss` absent from stats,
+all checksums golden (`validation_aug19/`, all four runs).
+
+
+## VectorChainTable: vtmp/v0-v1 provenance aliasing fix (2026-08-19)
+
+The chain table's provenance table (PT) indexed every vector RegId with
+`& 31`. gem5's vector-memory macros stage their index operand through
+the eight internal registers vtmp0..7 (`VecMemInternalReg0 = 32`,
+`src/arch/riscv/regs/vector.hh`), so vtmp0/vtmp1 aliased onto
+architectural **v0/v1's** PT slots. A gather's `VCpyVs` bookkeeping
+micro, which deliberately copies index provenance into the vtmp slots
+for the access micros to look up, therefore **clobbered v1's live tag**
+at every gather commit.
+
+### Measured symptom (TSVC LARGE, s353)
+
+gcc allocates v1 as chain 2's ip-slice data register, and gather 0
+commits between chain 2's `vle32.v v1` and its `vsext.vf2 v6,v1`
+(binary at `tsvc-gem5/bin/GNU/tsvc_vec_LARGE`, s353 loop at 1af56-1b084).
+Chain 2's extend therefore anchored to *chain 0's* vsll every
+iteration:
+
+- `linksFormed` = 6,403 instead of 5 — gathers 0 and 2 ping-ponging
+  head H0's single consumer slot (`consumers_per_producer=1`);
+- `chainsRejected` = 12,796 ≈ 1/iteration — chain 2's walked chain
+  became ext,sll,ext,sll: not collapsible;
+- `formsAdopted` = 3 of 5 — chain 2's own head never received a
+  consumer, so **one of the five chains produced no indirect
+  prefetches at all** (real s353 coverage loss, not a stat artifact).
+
+s4112/s4113/s4115 were immune (linksFormed = 1): their codegen keeps no
+live index provenance in v1 across a gather's commit window.
+
+### The fix
+
+Three coordinated changes, no behavioral knob (this is a model bug):
+
+1. `src/cpu/vector_chain_table.hh`: the PT grows from 32 to **40
+   slots** — the architectural vregs plus the vtmps.
+2. `src/cpu/vector_chain_table.cc`: every `& 31` mask dropped
+   (destination collection, gather source lookup, `VCpyVs`
+   propagation, arithmetic source classification), with bounds guards
+   instead of masking.
+3. `src/arch/riscv/insts/vector.hh` (`VlIndexMicroInst::vecMemInfo`,
+   fork-added code): the micro's `vs2RegIdx` is *relative* (which vtmp
+   copy of the index group — see `VlIndexMicroConstructor`,
+   `src/arch/riscv/isa/templates/vector_mem.isa:1029`), so it now
+   reports the absolute index `VecMemInternalReg0 + vs2RegIdx`,
+   keying the same slots `VCpyVs` writes.
+
+A second latent corruption disappears with the same change: strided /
+whole-register / segment micros whose *destinations* are internal
+registers previously invalidated `pt[0..7]` (architectural v0-v7's
+tags) on every commit; they now invalidate the vtmp slots they
+actually write.
+
+### Expected effect
+
+On s353: `linksFormed` → ~5, `chainsRejected` → ~0, `formsAdopted` →
+5, and chain 2 starts contributing indirect prefetches (coverage
+should rise). All other TSVC kernels bit-identical in table behavior
+(their PT slots 0/1 carried no live tags at gather commits). Any past
+s353 chain-table numbers (links/rejects/adoptions) predate this fix
+and are not comparable.
+
+**Validated 2026-08-19** (MEDIUM, center params, `validation_aug19/V1`):
+s353 linksFormed **5** (pre-fix churn ~2/iteration), chainsRejected
+**0**, formsAdopted **5** (was 3), and all four kernels' checksums
+match the pre-fix goldens (functional behavior untouched — the fix is
+observability-plumbing only).
+
+
+## Ara-shaped cache hierarchy (`--ara-cache`, 2026-08-19)
+
+A third hierarchy option beside the split (`--vector-cache`) and unified
+(`--unified-cache`) chains: **the L1D is scalar-only and the L2 is
+shared** — vector accesses bypass the L1 entirely, the shape of the real
+Ara SoC (CVA6's private L1D; the VLSU talks straight to the shared
+L2/AXI).
+
+### Topology (per core)
+
+```
+             core dcache_port
+                    |
+              VectorSplitter          (src/mem/vector_splitter.cc, reused unchanged)
+              /            \
+      l1d-cache-N        vector-buffer-N   (tiny 1-cycle "vbuf")
+              \              /
+               L2XBar ———————
+                    |
+                l2-cache-N            (shared)
+                    |
+                  membus
+```
+
+L1I and the page-table walker stay on the scalar path, as in the stdlib
+parent. Coherence is ordinary snooping on the per-core coherent L2XBar:
+a vector read of a line dirty in the scalar L1D gets the snooped data, a
+vector store invalidates the L1D copy, and the splitter forwards snoops
+from either mem-side port up to the CPU for LSQ ordering.
+
+### The vector buffer (vbuf)
+
+`rvv/ara_cache_hierarchy.py` inserts a tiny cache (default **512B / 8
+lines, 1-cycle, 16 MSHRs**) between the splitter's vector port and the
+crossbar, for two reasons:
+
+1. **Protocol (discovered by crash, not foreseen in the design).** The
+   O3 LSQ pointer-matches its responses
+   (`LSQ::SplitDataRequest::recvTimingResp`, `src/cpu/o3/lsq.cc:1242`
+   asserts the packet is one of `_packets`), but a cache supplying
+   dirty data to a snooped request responds with a **copy** of the
+   packet (`Cache::doTimingSupplyResponse`). A cacheless LSQ port
+   directly on a snooping crossbar therefore dies on the first vector
+   read of scalar-written data — i.e., on every workload with a scalar
+   init phase. (Connecting the raw port also panics the stock
+   `SnoopFilter`: "missing the original request",
+   `src/mem/snoop_filter.cc:278`.) gem5's classic memory system
+   requires the direct peer in such a topology to be a cache — the
+   same reason coherent DMA gets an `iocache`
+   (`_setup_io_cache`). The vbuf is that cache.
+2. **Modeling.** It stands in for the VLSU's request buffering: its
+   MSHR count (`--ara-vbuf-mshrs`, default 16) bounds the vector
+   unit's outstanding memory transactions (the AXI depth), and its few
+   lines give the coalescing window real VLSUs have.
+
+Measured on the gdp_test smoke run: vbuf demand miss rate **99.7%**
+(276,750 of 277,527) — at 8 lines it is not acting as a data cache;
+every vector access still pays the L2 path.
+
+### CLI
+
+```
+--ara-cache                      select the hierarchy (excl. with
+                                 --vector-cache / --unified-cache)
+--ara-vbuf-size    (512B)        vbuf capacity
+--ara-vbuf-mshrs   (16)          VLSU outstanding-transaction bound
+--l1d / --l2, --l1d-mshrs / --l2-mshrs   as usual
+--prefetcher X --prefetcher-level l2     vector-side prefetchers MUST
+                                 attach at the shared L2 (the L1D never
+                                 sees a vector access; l1 is rejected
+                                 with an explanatory error).
+--scalar-prefetcher              may attach to the scalar L1D alongside.
+--prefetcher-side                ignored (one chain).
+--l2-prefetcher / --stream-demote   rejected (unsupported here).
+```
+
+The sideband wiring (VectorChainTable / TycheChainTable /
+RevelaStreamTable, MMU registration) is identical to the sibling
+hierarchies.
+
+### Validation (2026-08-19, `validation_aug19/A1..A4`)
+
+- **A1** (gdp_test, base): checksum PASS; splitter routing exact
+  (scalarReqs == L1D demandAccesses = 1,083,778; vectorReqs == vbuf
+  demandAccesses = 277,527); conflictStalls active (15).
+- **guard**: `--prefetcher vtyche --prefetcher-level l1` rejected with
+  the explanatory error.
+- **A2** (gdp_test, vtyche@L2): full pipeline wired from the L2 vantage
+  — chain-table link formed, form adopted, chunk events observed,
+  stream candidates issued. (gdp_test is too small/warm to exercise
+  conversion; see A3/A4.)
+- **A3/A4** (TSVC MEDIUM L8W32, base / vtyche@L2 with pipelines=5 +
+  capture_on_read_hit): **all 8 checksums match the goldens.** vtyche
+  trains fully from the L2 vantage — s353 5 links / 5 forms (the PT
+  fix visible here too), ~16,000 index-line fills per single-chain
+  kernel (= every ip[] line), full conversion. Speedups over the ara
+  base: s353 1.31x, s4112 1.42x, s4113 1.21x, s4115 1.40x, coverage
+  0.96-1.00 on three of four kernels — larger relative wins than on
+  the sibling hierarchies because the ara base pays L2 latency on
+  every vector access, which is exactly the hardware story this
+  topology is for.
+
+### Comparability
+
+Every vector access pays the L2 path in this hierarchy, so cycles are a
+**new baseline era**: not comparable to split- or unified-hierarchy
+results.
+
+
+## VTyche: batch-granular residency feedback (`drop_batch_confidence`, 2026-08-19)
+
+`--pf-param drop_batch_confidence=N` turns the cache's own drop verdict
+into a residency oracle: when the cache drops one of vtyche's targets
+because the line is already resident (`pfHitInCache`), the drop is
+attributed to the **batch** that generated it, and after N drops from
+the same batch, the batch's remaining targets are forfeited. Default 0
+= disabled, bit-identical to before.
+
+### What a batch is
+
+The set of indirect targets converted from ONE captured index line (one
+64B line of the index array = `blkSize/EEW` raw indices, 16 for int32).
+It is already the design's working unit — the slice buffer holds
+`CapturedLine`s, conversion drains one per event, `targetsDeduplicated`
+counts "duplicate lines within one batch" — and it is the granularity
+at which residency was measured on TSVC: 16.00 distinct target lines
+per ip[] source line, resident **all-or-nothing** (87.5% of source
+lines have a target set identical to the line two batches back). One
+drop therefore predicts the sibling targets are resident too: one
+probe pays for up to 15 kills. This is the lightweight version of the
+residency-registry designs from the earlier pfHitInCache analysis - the
+cache tracks residency, the prefetcher just samples its verdicts.
+
+### What the existing method did
+
+Nothing could react to drops: `Base::pfHitInCache()`
+(`src/mem/cache/prefetch/base.hh`) was a non-virtual stat bump, so the
+prefetcher never learned that its last packet died at the residency
+check (`BaseCache` drop path, `src/mem/cache/base.cc:955-975`). Post-rde
+the resident-drop population is the accuracy limiter wherever
+prefetches are timely (memory-side accuracy 0.88-1.00): the ip[] reuse
+structure at L8W32 and s353's cross-producer duplication.
+
+### What this fork adds
+
+1. **Core hook** (the one core-file change): `pfHitInCache()` is now
+   `virtual`, default body unchanged. The cache calls it synchronously
+   right after `getPacket()` returned the packet, so the prefetcher can
+   attribute the drop to the exact address it just issued.
+2. **Batch tagging** (`vector_tyche.cc`): each emitted target line is
+   tagged with its source index line's VA (`emittedFrom`, bounded FIFO
+   of 2x queue_size). The existing `getPacket()` peek consumes the tag
+   into a one-shot latch. Stream candidates carry no tag and are
+   invisible to the feedback — the stream half is never touched.
+3. **The override**: on an attributed drop, tally it against the batch
+   (`batchDropSamples`; small recent-batch list). At the
+   `drop_batch_confidence` threshold (`batchesAborted`):
+   - the batch's targets still staged in `pfq` are removed (same
+     idiom as `pfRemovedDemand`);
+   - the batch's not-yet-emitted remainder is suppressed at the
+     emission push site (bounded `abortedBatches` FIFO, 8 entries —
+     an aged-out abort lets a genuine later revisit re-emit).
+   Both count in `targetsFlushedOnDrop`.
+
+Known leak, by design: targets already parked in
+`pfqMissingTranslation` cannot be removed (`translationComplete`
+asserts its entry is still listed), so they issue and get dropped by
+the cache as before, bounded by the translation-queue depth.
+
+### The confidence knob
+
+`drop_batch_confidence=1` aborts on the first drop — correct when
+residency is all-or-nothing per batch (the TSVC-measured case).
+Higher values demand more evidence before sacrificing a batch, for
+workloads where batches are only partially resident (first-drop-abort
+would forfeit the non-resident remainder there). `pfHitInMSHR` drops
+never count: in-flight is not resident, and those siblings are still
+worth issuing.
+
+### Expected effect (not yet run)
+
+s4112 sd16_l2_m16_L8W32 arithmetic predicted: issued 583K -> ~275K,
+accuracy 0.43 -> ~0.9 at zero coverage cost.
+
+### Measured (2026-08-19, s8 sweep + s13 spmv; controls = s7 rde rows)
+
+Validation (MEDIUM s4112, dbc=1): drops -72%, accuracy 0.31 -> 0.59,
+pfUseful -2.1%, checksum golden - mechanism confirmed.
+
+Full sweep, dbc in {1,2} on the 8 TSVC LARGE winner cells (split
+local/kazi, bit-exact parity verified) and poisson3Db jds at the
+vector_indirect best cell:
+
+- **Accuracy always improves**, dramatically where the resident-drop
+  population was the limiter: sd16_l2 L8W32 0.38-0.44 -> 0.78-0.81
+  (dbc1); the sd32_l1 cells the retired tail aged out of reach now
+  respond too (0.25 -> 0.52).
+- **Cycles never improve.** TSVC geomean vs the rde controls: dbc1
+  1.114, dbc2 1.055. l1-attach cells ~neutral (1.00-1.05); the
+  damage concentrates where the all-or-nothing premise FAILS:
+  TSVC L1W1 l2-attach (random per-line ip[], scattered residency)
+  dbc1 = +40-72% cycles, coverage 0.95 -> 0.56; spmv poisson3Db
+  (28.6/32 unique lines per chunk) dbc0 2.053x -> dbc1 1.534x ->
+  dbc2 1.758x, coverage 0.94 -> 0.71 -> 0.85.
+- **dbc2 dominates dbc1 everywhere on cycles but never beats dbc0.**
+  At L8W32 l2-attach dbc2 is nearly free (cycles +0.4-1.7%, coverage
+  0.99) while accuracy still roughly doubles (0.38 -> 0.70-0.74).
+
+Interpretation: in gem5's timing model drops cost nothing, so the ONLY
+cycle-relevant effect of the feature is the coverage it sacrifices -
+any collateral at all is a net loss. The batch-coherent-residency
+premise holds on TSVC's L8W32 block-reuse pattern and nowhere else
+tested. **Keep the default 0 for performance runs**; the knob's value
+is traffic/accuracy shaping (issued -33% at zero coverage cost in its
+best cell), which matters for modeled bandwidth/energy, not sim
+cycles. Rows appended to tsvc_large.xlsx vtyche sheet
+(axis=drop_batch_confidence, s8_vtyche_dbc*); spmv runs in
+vector_indirect_results/runs/s13_p3db_*.
+
+### Fractional batch discard (`drop_batch_fraction`, 2026-08-21)
+
+`--pf-param drop_batch_fraction=F` (float in (0, 1], default 1.0 =
+bit-identical whole-remainder abort) softens the confidence verdict:
+once a batch crosses `drop_batch_confidence`, only fraction F of its
+REMAINING targets is discarded instead of all of them.
+
+Motivation: the s8/s13 sweep showed the all-or-nothing abort is only
+correct where residency is batch-coherent (TSVC L8W32); on scattered
+residency (poisson3Db, 28.6/32 unique lines per chunk) every forfeited
+sibling was a needed one (coverage 0.94 -> 0.71 at dbc1). F gives the
+knob a middle ground: discard in proportion to the evidence rather
+than betting the whole batch on one probe.
+
+Mechanism: `abortedBatches` entries now carry a Bresenham accumulator
+(`acc += F; drop when acc >= 1, acc -= 1`), shared between the
+abort-time prefetch-queue flush and the push-site suppression in
+`drainEmission`, so exactly fraction F of the batch's remaining
+targets is dropped, spread evenly (F=0.5 drops every second target,
+F=0.25 every fourth). A kept staged target keeps its `emittedFrom`
+batch tag, so if the cache later drops it as resident too, the drop
+re-tallies (`batchDropRecs` re-arms after each abort) and thinning
+continues — sustained evidence keeps thinning; a wrong verdict costs
+only F of the remainder, and the survivors' outcomes (issued and
+missed vs dropped resident) are the feedback that re-arms or ages out
+the abort. Only read when `drop_batch_confidence != 0`; validated
+(0,1] in the constructor. Measured 2026-08-21 (dbf_sweep): F is a pure
+interpolator between dbc-on and dbc-off — linear in useful/issued,
+monotone in cycles, never sign-changing. Optimum stays at the corners;
+motivated the spatial regrouping below.
+
+## VTyche: residency-interval registers (`residency_intervals`, 2026-08-21)
+
+`--pf-param residency_intervals=N` (default 0 = disabled, bit-neutral;
+companions `residency_conf_threshold`, default 2, and
+`residency_gap_lines`, default 2) replaces batch-granular residency
+inference with a spatial model trained by the cache's own verdicts.
+
+### Why (what the dbc/F sweep proved)
+
+drop_batch_confidence generalized one resident-drop across its BATCH —
+a temporal grouping. The sweep showed that is the wrong unit: on
+scattered index streams (poisson3Db, TSVC L1W1) batch-mates of a
+resident line are usually NOT resident, so whole-batch (or fractional)
+forfeit always trades coverage for traffic. Residency is instead
+contiguous in the TARGET ARRAY's own coordinates (the hot band of x[]
+that mesh-neighbor rows keep re-referencing; TSVC's reuse blocks; hub
+lines) — so the right generalization of a drop is spatial, not
+temporal.
+
+### What the existing method did
+
+Nothing tracked the resident portion of gather target arrays. The
+dedup window (`dedup_buffer_size`) remembers recent EMISSIONS — a
+traffic window that is structurally blind to the 4-50-chunk gap band
+(emitted too long ago for the window, touched recently enough to be
+resident), which is the ~20% pfHitInCache population on spmv
+poisson3Db.
+
+### What this fork adds (all in vector_tyche.cc/.hh)
+
+N registers, each a block-aligned VA span `[lo, hi)` + 3-bit
+confidence:
+
+- **Train on drops**: `pfHitInCache()` (the existing virtual hook) now
+  also latches the dropped packet's TARGET line (`lastIssuedTarget`,
+  set in the `getPacket()` peek from the batch tag — streams carry no
+  tag and stay invisible). A drop within `residency_gap_lines` of an
+  interval extends it and bumps confidence (overlapping registers
+  merge); an isolated drop allocates over the least-confident
+  register at confidence 1.
+- **Suppress at conversion**: `drainEmission` forfeits a target inside
+  an interval at `residency_conf_threshold` before it costs a queue
+  slot (`targetsResidencySuppressed`).
+- **Trim on misses**: `notify()` checks observed demand MISSES against
+  the intervals; a miss inside one trims it (larger half survives) and
+  decays confidence (`residencyIntervalTrims`). The trim is the ONLY
+  aging mechanism — no epoch clock, no window: the model un-learns a
+  stale span at the cost of exactly one demand miss.
+
+Safety property: suppression requires spatially CLUSTERED drops
+(confidence only grows on extension), so scattered residency leaves
+the mechanism inert — the dbc failure mode cannot engage. Storage is
+dataset-size invariant (spans are bounded by cache residency): 8
+registers ≈ 8 x (2 x 8B + 1B) ≈ 136B. ROI stats-reset clears the
+registers with the rest of the learned state (`resetLearnedState`).
+
+Stats: `residencyDropsTrained`, `residencyIntervalAllocs`,
+`residencyIntervalTrims`, `targetsResidencySuppressed`.
+
+
+## SpGEMM benchmark — workspace gather/scatter kernel (2026-08-19)
+
+New RiVec-style benchmark at
+`~/riscv-vectorized-benchmark-suite/_spgemm/`: **C = A·A** on a CSR
+matrix using the dense-row-workspace ("linear combination of rows")
+formulation of Kjolstad et al., *Tensor Algebra Compilation with
+Workspaces*, Fig 1(d) (`gem5/spmm.pdf`). Built to stress indirect
+prefetching with patterns spmv does not have.
+
+### Structure (mirrors _spmv conventions)
+
+- **Input**: the existing binary `.csr` images (`_spmv/input/*.csr`,
+  same magic/loader). NOTE DISCOVERED HERE: those images store
+  **1-based column indices** (mtx2csr copies the MatrixMarket index
+  verbatim; _spmv tolerates it because `x[ja]` is only ever an
+  off-by-one heap READ). spgemm uses `ja` as a row selector too, so
+  row lookups use `ja-1` while the workspace/marker arrays are sized
+  N+1 and indexed with the raw value — keeping the vector gather chain
+  free of index arithmetic.
+- **Phases**: binary load -> scalar symbolic phase (marker array,
+  pre-ROI, as the paper's pre-assembled output assumes) -> numeric ROI
+  (vector then serial, one stats dump each) -> verify.
+- **CLI**: `spgemm_*.exe <file.csr> [nrows] [file.verif] [dump=path]`.
+  `nrows` bounds the output rows (gem5 sim-time control; goldens are
+  per (matrix, nrows)). `dump=` writes a **binary** golden (magic +
+  count + doubles — text at nnz(C) millions would drown gem5-SE in
+  fscanf instructions).
+- **Verification**: vector vs serial in-binary AND serial vs golden,
+  relative tolerance 1e-6 (vfmacc's fused rounding vs the host
+  golden's `-ffp-contract=off` mul+add). Prints "Verification pass"
+  (sweep-marker compatible) and a checksum.
+- **Build**: `Makefile.gcc` — host golden build (native gcc) +
+  riscv serial/vector with the suite's canonical GNU flags.
+
+### The kernel's prefetch-relevant shape
+
+Per output row: (1) *scale-accumulate* — for each nonzero of A's row
+i, strip-mine row k of A: unit-stride `vle64` of ja -> `vsll 3` ->
+`vloxei64` gather of the workspace -> `vfmacc` -> `vsoxei64` scatter
+back (legal without conflict handling: column indices within one CSR
+row are unique). (2) *compress* — unit-stride `vle64` of the output's
+ocrd -> gather workspace -> unit-stride store + scatter zeros. Two
+distinct index->gather chains per row plus an indexed-store stream;
+the workspace (85,624 doubles for poisson3Db = 685KB) exceeds the
+512KB L2. vsetvl announces row-length extents (much shorter than
+TSVC's whole-array announcements).
+
+### Validation (2026-08-19)
+
+- Host self-verify: football (full) and poisson3Db (R=4096, 7.2M FMAs,
+  nnz(C)=5.9M) both pass.
+- gem5 (`validation_aug19/G1/G2`): football serial and vector builds —
+  in-binary vector-vs-serial cross-check and golden compare all pass;
+  first exercised use of `vsoxei64` scatters in this fork's pipeline.
+- gem5 poisson3Db R=4096, base + vtyche-best (G3/G4): **both verify**
+  (in-binary vector-vs-serial cross-check + binary golden; identical
+  checksums across configs). The prefetch result is the designed
+  discriminator working: at the exact config that wins **2.053x on
+  spmv with the same matrix**, vtyche gets only **1.088x** on spgemm
+  (vector ROI 190.7M -> 175.3M cycles), coverage 0.57 vs 0.94,
+  accuracy 0.22 vs 0.78, elementsConverted 4.6x the needed FMAs,
+  stalenessAborts 343K. Mechanism: the index-stream producer now walks
+  ~3.5-line row segments whose start addresses are the SECOND level of
+  indirection (ia[ja[pB]]) — after every segment the walk extrapolates
+  16 lines in MEMORY order while the traversal jumps in DATA order, so
+  the stream half restarts constantly (3.27M chunk events) and
+  converts mostly-mistimed lines. The missing capability is chasing
+  ja[pB] -> ia[k] -> ja[ia[k]..] (DROPLET-style level-2 prefetch);
+  this kernel quantifies its worth at ~1.9x of the 2.05x spmv win.
+
+
+## VTyche: VLEN-pinned stream frontier (`prefetch_distance`, 2026-08-21)
+
+### What gem5/VTyche did before
+
+VTyche's stream walker (`streamAhead`,
+`src/mem/cache/prefetch/vector_tyche.cc`) denominated its lookahead in
+chunks of the **observed access size**: the walk window was
+`[addr + size, addr + size*(streaming_distance+1))`, where `size` is
+that chunk's `vl*sew` bytes from the demand access. For full-vl
+unit-stride loads this already scales with VLEN automatically, but on
+partial-vl chunks (short spmv rows, loop tails, flat-kernel remainders)
+the byte lookahead shrinks proportionally with `vl` — the long-known
+"size-scaled lookahead → late prefetch" failure. The `Prefetcher.py`
+docstring also mis-stated the unit as "lines"; it has been corrected to
+"chunks of the observed access size".
+
+### What was added
+
+A second, mutually exclusive distance knob on `VectorTychePrefetcher`
+(`src/mem/cache/prefetch/Prefetcher.py`):
+
+- `prefetch_distance` (default 0 = off, bit-neutral): frontier distance
+  in **whole-VLEN chunks** (`vlen/8` bytes each). When set, each chunk
+  event walks `[addr + N*vlen/8, addr + size + N*vlen/8)` — the frontier
+  is pinned a fixed byte distance ahead of the demand chunk's start,
+  independent of the observed `vl`, and the window is as wide as the
+  demand advance so consecutive windows tile without gaps even when
+  `size != vlen/8` (LMUL > 1). Steady-state degree equals the demand
+  advance: `ceil(VLEN/512)` cache lines per event for full-vl chunks.
+- `vlen` (bits): wired automatically from `--vlen` by
+  `rvv/riscv-rvv-se-ara-prefetcher.py` (injected into the `--pf-param`
+  dict before the factory build; an explicit `--pf-param vlen=N`
+  overrides). `fatal_if` rejects `prefetch_distance > 0` with no VLEN.
+
+Semantics that fall out of the fixed frontier: a fresh or reset window
+starts **at** the frontier (no burst-fill of the near window), so
+`stream_start_at_distance` is implied and skipped in this mode, and
+`streaming_distance` is ignored. The high-water dedup (`limitAddr`),
+backward-jump restart, and `limit_gate` announced-extent clamp are all
+unchanged and apply to both modes.
+
+Usage: `--prefetcher vtyche --pf-param prefetch_distance=8` (no new CLI
+flag; VLEN wiring is automatic). Caveat for sweeps: the indirect half's
+timeliness rides on the stream's fills, so distances tuned for
+`streaming_distance` do not transfer 1:1 to `prefetch_distance` on
+partial-vl workloads.
+
+## VTyche renamed to VIPER (2026-08-21)
+
+The vtyche prefetcher is now officially named **VIPER** (Vector Indirect
+PrEfetcheR) for publication. Mechanical rename, no behavior change:
+
+- CLI: `--prefetcher viper` (clean break: `vtyche` is no longer
+  accepted; old sweep scripts fail loudly).
+- Files: `src/mem/cache/prefetch/vector_tyche.{cc,hh}` →
+  `viper.{cc,hh}`.
+- C++: class `VectorTyche` → `Viper`, `VTycheStats` → `ViperStats`;
+  debug flag `Viper` (new; `VTyche` kept for vtyche2).
+- Python: SimObject `VectorTychePrefetcher` → `ViperPrefetcher`
+  (`Prefetcher.py`), factory key, hierarchy/config prose updated.
+
+**Not renamed:** `vtyche2` (`VectorTyche2`) and `vhybrid` keep their
+names, as do all historical sections of this document and archived
+sweep scripts/results — pre-rename stats and configs refer to vtyche.
+Per-stat names inside the prefetcher are unchanged, so stats parsing is
+unaffected; only script-side `--prefetcher` strings needed updating.

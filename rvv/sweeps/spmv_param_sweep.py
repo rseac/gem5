@@ -42,7 +42,7 @@ from concurrent.futures import ThreadPoolExecutor
 # GEM5_SWEEP_ROOT / GEM5_SWEEP_SUITE before invoking.
 GEM5_ROOT = os.environ.get("GEM5_SWEEP_ROOT", "/home/parkw/gem5")
 SUITE = os.environ.get("GEM5_SWEEP_SUITE",
-                       "/home/parkw/riscv-vectorized-benchmark-suite")
+                       "/home/parkw/gem5/rivec")
 IMAGE = "ghcr.io/gem5/ubuntu-22.04_all-dependencies:v23-0"
 
 GEM5_CACHE = os.path.expanduser("~/.cache/gem5")

@@ -216,10 +216,43 @@ parser.add_argument(
     "Unlike the bare default hierarchy this strips the stdlib caches' "
     "built-in stride prefetchers, so a run without --prefetcher is a "
     "true no-prefetcher base, and it honors --l1d-mshrs/--l2-mshrs. "
-    "gdp/vtyche/tyche work here because the shared L1D sees every "
+    "gdp/viper/tyche work here because the shared L1D sees every "
     "access class; --prefetcher-side is ignored (there is only one "
     "chain), --prefetcher-level still picks L1D vs L2. Mutually "
     "exclusive with --vector-cache and --scalar-prefetcher.",
+)
+parser.add_argument(
+    "--ara-cache",
+    action="store_true",
+    default=False,
+    help="Ara-shaped hierarchy: the L1D is SCALAR-ONLY and the L2 is "
+    "shared - vector accesses bypass the L1 and enter the L2 crossbar "
+    "directly through the VectorSplitter (rvv/ara_cache_hierarchy.py), "
+    "modeling CVA6's private L1D + Ara's VLSU-to-L2 path. Coherent by "
+    "ordinary snooping on the L2 crossbar. Stdlib stride prefetchers "
+    "are stripped, --l1d-mshrs/--l2-mshrs are honored. Vector-side "
+    "prefetchers (gdp/viper/vtyche2/vhybrid/revela) must use "
+    "--prefetcher-level l2 (the L1D never sees vector accesses); "
+    "--prefetcher-side is ignored. --scalar-prefetcher may attach to "
+    "the scalar L1D alongside. Mutually exclusive with --vector-cache "
+    "and --unified-cache.",
+)
+parser.add_argument(
+    "--ara-vbuf-size",
+    type=str,
+    default="512B",
+    help="(--ara-cache) Size of the tiny 1-cycle vector buffer between "
+    "the splitter and the L2 crossbar. It is a protocol shim (the O3 "
+    "LSQ needs a cache as its direct memory peer) that doubles as the "
+    "VLSU request-buffer model; at the default 8 lines it is far too "
+    "small to act as a data cache.",
+)
+parser.add_argument(
+    "--ara-vbuf-mshrs",
+    type=int,
+    default=16,
+    help="(--ara-cache) Vector buffer MSHRs: bounds the vector unit's "
+    "outstanding memory transactions (the VLSU's AXI depth).",
 )
 parser.add_argument(
     "--vector-l1d",
@@ -290,25 +323,25 @@ parser.add_argument(
     "--prefetcher",
     type=str,
     default=None,
-    choices=["none", "stride", "imp", "vimp", "gdp", "vtyche",
+    choices=["none", "stride", "imp", "vimp", "gdp", "viper",
              "vtyche2", "isb", "stems", "tyche", "revela", "vhybrid"],
     help="Attach a hardware prefetcher to one cache. Implies "
     "(forces) --vector-cache. By default no cache has a prefetcher. "
     "Use --prefetcher-side and --prefetcher-level to place it. "
     "'vimp' (chunk-trained indirect), 'gdp' (Gather Dataflow "
     "Prefetcher: architectural transform-chain replay, exact "
-    "A[f(B[i])] plus vector streaming), 'vtyche' (Vector Tyche: gdp's "
+    "A[f(B[i])] plus vector streaming), 'viper' (VIPER: gdp's "
     "architectural discovery with imp's base+(index<<shift) equation, "
     "A[B[i]] only, converted a whole index line at a time), "
     "'revela' (ReVeLA ICS'24: unit-stride streams announced by the "
     "vsetvl AVL, every-cycle trigger, near-perfect accuracy), "
-    "'vhybrid' (revela's announcement-driven streams + vtyche's "
+    "'vhybrid' (revela's announcement-driven streams + viper's "
     "capture/convert indirect half; needs both sideband tables, "
     "wired automatically) "
     "and 'tyche' (scalar dependency-chain replay) are this "
     "fork's prefetchers; they train on virtual addresses, so the CPU "
     "MMU is registered automatically (override with --pf-param "
-    "use_virtual_addresses=false). gdp, vtyche and revela need "
+    "use_virtual_addresses=false). gdp, viper and revela need "
     "--prefetcher-side vector; tyche needs --prefetcher-side scalar "
     "(it decodes scalar instructions, which never reach the vector "
     "caches).",
@@ -327,7 +360,7 @@ parser.add_argument(
     "--vector-dct-entries",
     type=int,
     default=8,
-    help="gdp/vtyche/vtyche2/vhybrid: Dependency Chain Table entries on "
+    help="gdp/viper/vtyche2/vhybrid: Dependency Chain Table entries on "
     "the CPU-side VectorChainTable (default 8, minimum 3). One table is "
     "built per core and shared by whichever of those prefetchers is "
     "attached, so this sizes vhybrid's indirect half too. The whole "
@@ -342,7 +375,7 @@ parser.add_argument(
     "--vector-max-transform-stages",
     type=int,
     default=4,
-    help="gdp/vtyche/vtyche2/vhybrid: maximum transform links between a "
+    help="gdp/viper/vtyche2/vhybrid: maximum transform links between a "
     "producer index load and the gather it feeds (VectorChainTable "
     "max_transform_stages, default 4). Chains longer than this do not "
     "link at all, so raising --vector-dct-entries alone will not admit "
@@ -384,7 +417,7 @@ parser.add_argument(
     "--vector-cache. For a scalar-only prefetcher either use this with "
     "--prefetcher none, or use the existing --prefetcher-side scalar "
     "(combining --prefetcher-side scalar with this option is an error: "
-    "both would claim the scalar chain). gdp and vtyche are not "
+    "both would claim the scalar chain). gdp and viper are not "
     "accepted here (their CPU-side records only reach vector-side "
     "caches); tyche is (it is a scalar-side design).",
 )
@@ -440,7 +473,7 @@ parser.add_argument(
     "isolation, e.g. --prefetcher none/stride) and broadens "
     "classification from the prefetcher's producer index arrays to "
     "every unit-stride-touched array, including store streams. With a "
-    "gdp/vtyche prefetcher both sources feed the same registry.",
+    "gdp/viper prefetcher both sources feed the same registry.",
 )
 parser.add_argument(
     "--stream-demote-second-touch",
@@ -483,12 +516,24 @@ if args.unified_cache and args.vector_cache:
     print("Error: --unified-cache and --vector-cache are mutually "
           "exclusive (one shared chain vs the split hierarchy)")
     sys.exit(1)
+if args.ara_cache and (args.unified_cache or args.vector_cache):
+    print("Error: --ara-cache is mutually exclusive with --unified-cache "
+          "and --vector-cache (scalar-only L1D + shared L2 is its own "
+          "topology)")
+    sys.exit(1)
+if args.ara_cache and args.stream_demote != "none":
+    print("Error: --stream-demote is not supported with --ara-cache yet")
+    sys.exit(1)
 if args.unified_cache and args.scalar_prefetcher not in (None, "none"):
     print("Error: --scalar-prefetcher needs the split hierarchy's "
           "separate scalar chain; with --unified-cache use --prefetcher")
     sys.exit(1)
 
 l2_prefetcher_active = args.l2_prefetcher not in (None, "none")
+if l2_prefetcher_active and args.ara_cache:
+    print("Error: --l2-prefetcher is not supported with --ara-cache; the "
+          "main --prefetcher already attaches at the shared L2 there")
+    sys.exit(1)
 if l2_prefetcher_active and not args.unified_cache:
     print("Error: --l2-prefetcher targets the unified L2; it requires "
           "--unified-cache (the split hierarchy uses "
@@ -521,6 +566,12 @@ prefetcher_active = args.prefetcher not in (None, "none")
 if pf_params and not prefetcher_active:
     print("Error: --pf-param requires --prefetcher (and not 'none')")
     sys.exit(1)
+
+# viper's prefetch_distance is denominated in whole-VLEN chunks; wire the
+# hardware VLEN from --vlen so the two knobs cannot drift apart (an explicit
+# --pf-param vlen=N still overrides).
+if args.prefetcher == "viper" and "vlen" not in pf_params:
+    pf_params["vlen"] = str(args.vlen)
 
 scalar_pf_params = {}
 for item in args.scalar_pf_param or []:
@@ -565,7 +616,7 @@ if prefetcher_active or scalar_prefetcher_active or l2_prefetcher_active:
     # The split hierarchy hosts the prefetcher on whichever chain is
     # selected, so it is required — unless the caller asked for the
     # unified shared chain, which hosts prefetchers itself.
-    if not args.unified_cache:
+    if not args.unified_cache and not args.ara_cache:
         args.vector_cache = True
     from prefetcher_factory import build as build_prefetcher
     from prefetcher_factory import needs_chain_table
@@ -587,8 +638,9 @@ if prefetcher_active:
     prefetcher_tyche_table = needs_chain_table(args.prefetcher)
     # The side guards below only apply to the split hierarchy: the
     # unified L1D sees scalar and vector accesses alike, so both the
-    # tyche and the gdp/vtyche sideband channels reach it.
+    # tyche and the gdp/viper sideband channels reach it.
     if prefetcher_tyche_table and not args.unified_cache \
+            and not args.ara_cache \
             and args.prefetcher_side != "scalar":
         print(f"Error: --prefetcher {args.prefetcher} requires "
               "--prefetcher-side scalar (it observes scalar loads, "
@@ -598,7 +650,17 @@ if prefetcher_active:
     # GDP's CPU-side records are extracted from vector loads; those
     # only reach a vector-side cache in the split hierarchy.
     prefetcher_vector_chain_table = needs_vector_chain_table(args.prefetcher)
+    # On --ara-cache the L1D never sees a vector access, so a
+    # vector-trained prefetcher at the L1 would simply never train:
+    # only the shared L2 can host it.
+    if prefetcher_vector_chain_table and args.ara_cache \
+            and args.prefetcher_level != "l2":
+        print(f"Error: --prefetcher {args.prefetcher} requires "
+              "--prefetcher-level l2 with --ara-cache (vector accesses "
+              "bypass the scalar-only L1D)")
+        sys.exit(1)
     if prefetcher_vector_chain_table and not args.unified_cache \
+            and not args.ara_cache \
             and args.prefetcher_side != "vector":
         print(f"Error: --prefetcher {args.prefetcher} requires "
               "--prefetcher-side vector (its CPU-side records come "
@@ -609,7 +671,14 @@ if prefetcher_active:
     # split hierarchy only the vector chain observes them (the drain
     # latches its translation context off demand accesses).
     prefetcher_revela_table = needs_revela_table(args.prefetcher, pf_params)
+    if prefetcher_revela_table and args.ara_cache \
+            and args.prefetcher_level != "l2":
+        print(f"Error: --prefetcher {args.prefetcher} requires "
+              "--prefetcher-level l2 with --ara-cache (vector accesses "
+              "bypass the scalar-only L1D)")
+        sys.exit(1)
     if prefetcher_revela_table and not args.unified_cache \
+            and not args.ara_cache \
             and args.prefetcher_side != "vector":
         print(f"Error: --prefetcher {args.prefetcher} requires "
               "--prefetcher-side vector (its streams are unit-stride "
@@ -619,7 +688,8 @@ if prefetcher_active:
     # Route the single factory to one of four caches: {scalar,vector} x {l1,l2}.
     # The unified hierarchy has only one chain; its caches reuse the
     # scalar slots and only --prefetcher-level applies.
-    if args.unified_cache or args.prefetcher_side == "scalar":
+    if args.unified_cache or args.ara_cache \
+            or args.prefetcher_side == "scalar":
         if args.prefetcher_level == "l1":
             scalar_l1d_prefetcher = factory
         else:
@@ -645,7 +715,7 @@ if l2_prefetcher_active:
 if args.stream_demote != "none" and not prefetcher_vector_chain_table \
         and not args.stream_demote_demand:
     print("Error: --stream-demote needs a vector-chain-table prefetcher "
-          "(--prefetcher gdp or vtyche) or --stream-demote-demand "
+          "(--prefetcher gdp or viper) or --stream-demote-demand "
           "to feed the stream-page registry")
     sys.exit(1)
 
@@ -728,6 +798,29 @@ if args.vector_cache:
         stream_demote_second_touch=args.stream_demote_second_touch,
         stream_demote_page_promote=args.stream_demote_page_promote,
         stream_demote_monotone=args.stream_demote_monotone,
+    )
+elif args.ara_cache:
+    from ara_cache_hierarchy import AraSharedL2CacheHierarchy
+
+    cache_hierarchy = AraSharedL2CacheHierarchy(
+        l1d_size=args.l1d,
+        l1i_size="32KiB",
+        l2_size=args.l2,
+        l1d_prefetcher=scalar_l1d_prefetcher,
+        l2_prefetcher=scalar_l2_prefetcher,
+        prefetcher_needs_mmu=prefetcher_mmu,
+        prefetcher_needs_chain_table=prefetcher_tyche_table,
+        prefetcher_needs_vector_chain_table=prefetcher_vector_chain_table,
+        vector_dct_entries=args.vector_dct_entries,
+        vector_max_transform_stages=args.vector_max_transform_stages,
+        prefetcher_needs_revela_table=prefetcher_revela_table,
+        revela_stt_entries=args.revela_stt_entries,
+        l1d_mshrs=args.l1d_mshrs,
+        l2_mshrs=args.l2_mshrs,
+        l1d_tgts_per_mshr=args.l1d_tgts_per_mshr,
+        l2_tgts_per_mshr=args.l2_tgts_per_mshr,
+        vbuf_size=args.ara_vbuf_size,
+        vbuf_mshrs=args.ara_vbuf_mshrs,
     )
 elif args.unified_cache:
     from unified_cache_hierarchy import UnifiedCacheHierarchy
@@ -843,6 +936,26 @@ if args.vector_cache:
             print(f"  PF Params:        {pf_params}")
     else:
         print(f"  Prefetcher:       none on the vector side")
+    if scalar_prefetcher_active:
+        print(f"  Scalar Prefetcher: {args.scalar_prefetcher} on scalar L1D")
+        if scalar_pf_params:
+            print(f"  Scalar PF Params: {scalar_pf_params}")
+elif args.ara_cache:
+    print(f"  Vector Caches:    ARA (scalar-only L1D, vector to shared "
+          f"L2 via {args.ara_vbuf_size} vbuf, {args.ara_vbuf_mshrs} MSHRs)")
+    print(f"  L1D MSHRs:        {args.l1d_mshrs} "
+          f"(L2: {args.l2_mshrs})")
+    if prefetcher_active:
+        cache = "L1D" if args.prefetcher_level == "l1" else "L2"
+        print(f"  Prefetcher:       {args.prefetcher} on shared {cache}")
+        print(
+            f"  PF MMU:           "
+            f"{'registered (VA training, page-crossing OK)' if prefetcher_mmu else 'none (PA training, page-crossing dropped)'}"
+        )
+        if pf_params:
+            print(f"  PF Params:        {pf_params}")
+    else:
+        print(f"  Prefetcher:       none")
     if scalar_prefetcher_active:
         print(f"  Scalar Prefetcher: {args.scalar_prefetcher} on scalar L1D")
         if scalar_pf_params:

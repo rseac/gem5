@@ -1,6 +1,6 @@
 /**
  * VHybrid implementation. See vhybrid.hh for the composition; the
- * stream half follows revela.cc and the indirect half vector_tyche.cc,
+ * stream half follows revela.cc and the indirect half viper.cc,
  * each structurally unchanged so results decompose against the
  * standalone parents.
  */
@@ -265,7 +265,7 @@ VHybrid::emitStreamRound(std::vector<AddrPriority> &addresses)
 }
 
 // ---------------------------------------------------------------------
-// The collapse and the lane (VTyche's, unchanged)
+// The collapse and the lane (Viper's, unchanged)
 // ---------------------------------------------------------------------
 
 VHybrid::LinearForm
@@ -314,6 +314,30 @@ VHybrid::collapse(const VectorChainTable::ChainSnapshot &snap) const
             if (shift + k > 63) {
                 return LinearForm();
             }
+            shift += k;
+            bias *= s.scalar;
+            scaled = true;
+            break;
+          }
+
+          case VOp::WMul:
+          case VOp::WMulU: {
+            // Fused extend-and-multiply (clang's A[B[i]] shape); see
+            // the same case in viper.cc. Must lead the chain,
+            // for the same reason a bare extend must.
+            if (scaled || extended) {
+                return LinearForm();
+            }
+            if (s.scalar == 0 || !isPowerOf2(s.scalar)) {
+                return LinearForm();
+            }
+            const unsigned k = ctz64(s.scalar);
+            if (shift + k > 63) {
+                return LinearForm();
+            }
+            extended = true;
+            f.extBits = s.extFromBits;
+            f.extSigned = (s.op == VOp::WMul);
             shift += k;
             bias *= s.scalar;
             scaled = true;
@@ -384,7 +408,7 @@ VHybrid::inDedupWindow(const PipeEntry &pe, Addr line) const
 }
 
 // ---------------------------------------------------------------------
-// Capture, conversion and target emission (VTyche's runtime; the
+// Capture, conversion and target emission (Viper's runtime; the
 // staleness cursor comes from the announced stream instead of a walk)
 // ---------------------------------------------------------------------
 
@@ -760,7 +784,7 @@ VHybrid::drainTick()
     if (!drainCtxPfi || !drainCtxCache) {
         return;
     }
-    // Wait for genuine queue room (see vector_tyche.cc drainTick):
+    // Wait for genuine queue room (see viper.cc drainTick):
     // room only appears through getPacket or notify, and both re-arm.
     const int room = (int)queueSize - (int)pfq.size()
                    - (int)pfqMissingTranslation.size();
@@ -842,7 +866,7 @@ VHybrid::calculatePrefetch(const PrefetchInfo &pfi,
                 pe.lastAddr = addr;
                 pe.valid = true;
                 // Adopt/refresh this producer's linear form with the
-                // freshest snooped operands (vector_tyche.cc).
+                // freshest snooped operands (viper.cc).
                 if (info.linked) {
                     if (!pe.configured && configuredCount >= pipelines) {
                         vhybridStats.pipelinesSaturated++;
@@ -911,7 +935,7 @@ VHybrid::getPacket()
     // line; if that stream's last-updating PC is a chain-table
     // producer, it is INDEX data — publish its physical page for
     // stream-aware replacement and register it for fill capture.
-    // (Same peek-before-delegate as vector_tyche.cc: the DeferredPacket
+    // (Same peek-before-delegate as viper.cc: the DeferredPacket
     // still holds the VA, its pkt the translated PA.)
     if (!streamOnly && !pfq.empty() && pfq.front().pkt != nullptr) {
         const DeferredPacket &dp = pfq.front();

@@ -42,7 +42,7 @@ Always remember to ask clarifying questions when there is any doubt on your end.
 docker run -it --rm \
 -v /home/parkw/gem5:/gem5 \
 -v /home/parkw/.cache/gem5:/tmp/gem5-cache \
--v /home/parkw/riscv-vectorized-benchmark-suite:/riscv-vectorized-benchmark-suite \
+-v /home/parkw/gem5/rivec:/riscv-vectorized-benchmark-suite \
 -e GEM5_RESOURCE_DIR=/tmp/gem5-cache \
 -w /gem5 \
 ghcr.io/gem5/ubuntu-22.04_all-dependencies:v23-0 /bin/bash

@@ -1,9 +1,9 @@
 /**
- * VTyche (Vector Tyche) implementation. See vector_tyche.hh for the
+ * Viper (VIPER) implementation. See viper.hh for the
  * design and cpu/vector_chain_table.hh for the CPU-side half it shares with GDP.
  */
 
-#include "mem/cache/prefetch/vector_tyche.hh"
+#include "mem/cache/prefetch/viper.hh"
 
 #include <algorithm>
 #include <cstring>
@@ -13,8 +13,8 @@
 #include "base/intmath.hh"
 #include "base/logging.hh"
 #include "base/trace.hh"
-#include "debug/VTyche.hh"
-#include "params/VectorTychePrefetcher.hh"
+#include "debug/Viper.hh"
+#include "params/ViperPrefetcher.hh"
 #include "sim/byteswap.hh"
 
 namespace gem5
@@ -23,18 +23,28 @@ namespace gem5
 namespace prefetch
 {
 
-VectorTyche::VectorTyche(const VectorTychePrefetcherParams &p)
+Viper::Viper(const ViperPrefetcherParams &p)
   : Queued(p),
     tbl(p.link_table),
     announceTbl(p.stream_table),
     limitGate(p.limit_gate),
     streamingDistance(p.streaming_distance),
     streamStartAtDistance(p.stream_start_at_distance),
+    prefetchDistance(p.prefetch_distance),
+    vlenBytes(p.vlen / 8),
     streamOnly(p.stream_only),
     sliceBufferEntries(p.slice_buffer_entries),
     pipelines(p.pipelines),
     irtEntries(p.routing_entries),
     captureOnReadHit(p.capture_on_read_hit),
+    retiredTailEntries(p.retired_tail_entries),
+    captureReadHitOwnProducer(p.capture_read_hit_own_producer),
+    captureQueueGate(p.capture_queue_gate),
+    dropBatchConfidence(p.drop_batch_confidence),
+    dropBatchFraction(p.drop_batch_fraction),
+    residencyIntervalRegs(p.residency_intervals),
+    residencyConfThreshold(p.residency_conf_threshold),
+    residencyGapLines(p.residency_gap_lines),
     drainFloor(p.drain_floor),
     dedupBufferSize(p.dedup_buffer_size),
     conversionLanes(p.conversion_lanes),
@@ -49,10 +59,10 @@ VectorTyche::VectorTyche(const VectorTychePrefetcherParams &p)
     reorderWindowSize(p.reorder_window_size),
     streamTrackingTable(),
     indexRoutingTable(),
-    vtycheStats(this),
+    viperStats(this),
     drainEvent([this] { drainTick(); }, name())
 {
-    fatal_if(tbl == nullptr, "%s: no link_table set. VTyche needs the "
+    fatal_if(tbl == nullptr, "%s: no link_table set. Viper needs the "
              "VectorChainTable that is also attached to the CPU's "
              "vector_chain_table param (the config script wires both).", name());
     fatal_if(limitGate && announceTbl == nullptr,
@@ -60,6 +70,9 @@ VectorTyche::VectorTyche(const VectorTychePrefetcherParams &p)
              "sideband (stream_table; the config script wires it when "
              "the gate is enabled).", name());
     fatal_if(streamingDistance < 1, "streaming_distance must be >= 1");
+    fatal_if(prefetchDistance > 0 && vlenBytes == 0,
+             "%s: prefetch_distance needs vlen (bits; the config script "
+             "wires it from --vlen)", name());
     fatal_if(sliceBufferEntries < 1, "slice_buffer_entries must be >= 1");
     fatal_if(pipelines < 1, "pipelines must be >= 1");
     fatal_if(drainFloor < 0, "drain_floor must be >= 0");
@@ -69,19 +82,27 @@ VectorTyche::VectorTyche(const VectorTychePrefetcherParams &p)
              "vl_window_bytes must be >= the cache line size");
     fatal_if(consumersPerProducer < 1 || consumersPerProducer > 255,
              "consumers_per_producer must be in [1, 255]");
+    fatal_if(dropBatchConfidence != 0 &&
+             (dropBatchFraction <= 0.0 || dropBatchFraction > 1.0),
+             "drop_batch_fraction must be in (0, 1]");
+    fatal_if(residencyIntervalRegs != 0 && residencyConfThreshold < 1,
+             "residency_conf_threshold must be >= 1");
+    residencyIntervals.resize(residencyIntervalRegs);
 }
 
 void
-VectorTyche::resetLearnedState()
+Viper::resetLearnedState()
 {
     // The VectorChainTable registers its own reset callback; only this
     // prefetcher's runtime state is cleared here.
     streamTrackingTable.clear();
     configuredCount = 0;
     indexRoutingTable.clear();
+    residencyIntervals.assign(residencyIntervalRegs, {});
+    lastIssuedTargetValid = false;
 }
 
-VectorTyche::VTycheStats::VTycheStats(statistics::Group *parent)
+Viper::ViperStats::ViperStats(statistics::Group *parent)
   : statistics::Group(parent),
     ADD_STAT(chunksObserved, statistics::units::Count::get(),
         "chunk events at producer PCs"),
@@ -91,7 +112,9 @@ VectorTyche::VTycheStats::VTycheStats(statistics::Group *parent)
         "walk lines suppressed at the announced extent end "
         "(limit_gate)"),
     ADD_STAT(formsAdopted, statistics::units::Count::get(),
-        "linear forms adopted at trigger"),
+        "linear forms adopted at trigger (chain walk + fold ran)"),
+    ADD_STAT(formsMemoHits, statistics::units::Count::get(),
+        "triggers whose compiled form was still valid (walk skipped)"),
     ADD_STAT(chainNotReady, statistics::units::Count::get(),
         "linked triggers whose chain was not yet snoopable"),
     ADD_STAT(chainsRejected, statistics::units::Count::get(),
@@ -99,14 +122,38 @@ VectorTyche::VTycheStats::VTycheStats(statistics::Group *parent)
     ADD_STAT(pipelinesSaturated, statistics::units::Count::get(),
         "linked producers denied a pipeline (pipelines cap)"),
     ADD_STAT(capturesRegistered, statistics::units::Count::get(),
-        "index lines registered for capture (prefetch-window path)"),
-    ADD_STAT(capturesRegisteredMiss, statistics::units::Count::get(),
-        "index lines registered for capture (demand-miss path)"),
+        "index lines registered for capture (a departing stream "
+        "prefetch inside a configured producer's window)"),
     ADD_STAT(fillsCaptured, statistics::units::Count::get(),
         "captured index-line fills latched into the slice buffer"),
     ADD_STAT(hitsCaptured, statistics::units::Count::get(),
         "resident index lines latched off the read port on a demand "
         "read hit (capture_on_read_hit)"),
+    ADD_STAT(recapturesDetected, statistics::units::Count::get(),
+        "read-hit captures of a line this same producer had already "
+        "converted (retired IRT tail hit)"),
+    ADD_STAT(recapturesSuppressed, statistics::units::Count::get(),
+        "of those, the captures actually skipped "
+        "(capture_read_hit_own_producer = false)"),
+    ADD_STAT(capturesGated, statistics::units::Count::get(),
+        "capture admissions skipped at a congested prefetch queue "
+        "(capture_queue_gate)"),
+    ADD_STAT(batchDropSamples, statistics::units::Count::get(),
+        "resident-drops attributed to a batch (drop_batch_confidence)"),
+    ADD_STAT(batchesAborted, statistics::units::Count::get(),
+        "batches aborted at the drop_batch_confidence threshold"),
+    ADD_STAT(targetsFlushedOnDrop, statistics::units::Count::get(),
+        "targets flushed from the queue or suppressed at emission "
+        "because their batch aborted"),
+    ADD_STAT(residencyDropsTrained, statistics::units::Count::get(),
+        "resident-drops consumed as residency-interval training"),
+    ADD_STAT(residencyIntervalAllocs, statistics::units::Count::get(),
+        "residency intervals allocated for an uncovered drop"),
+    ADD_STAT(residencyIntervalTrims, statistics::units::Count::get(),
+        "residency intervals trimmed/split by an observed demand miss"),
+    ADD_STAT(targetsResidencySuppressed, statistics::units::Count::get(),
+        "targets suppressed at emission: inside a confident residency "
+        "interval"),
     ADD_STAT(bufferBusyDrops, statistics::units::Count::get(),
         "fills dropped with the slice buffer full"),
     ADD_STAT(staleConfigs, statistics::units::Count::get(),
@@ -156,12 +203,13 @@ VectorTyche::VTycheStats::VTycheStats(statistics::Group *parent)
 // The collapse: chain -> base + (index << shift)
 // ---------------------------------------------------------------------
 
-VectorTyche::LinearForm
-VectorTyche::collapse(const VectorChainTable::ChainSnapshot &snap) const
+Viper::LinearForm
+Viper::collapse(const VectorChainTable::ChainSnapshot &snap) const
 {
     using VOp = VectorChainTable::VOp;
     LinearForm f;
     f.gen = snap.gen;
+    f.opGen = snap.opGen;
     if (!snap.valid) {
         return f;
     }
@@ -190,6 +238,34 @@ VectorTyche::collapse(const VectorChainTable::ChainSnapshot &snap) const
             f.extBits = s.extFromBits;
             f.extSigned = (s.op == VOp::SExt);
             break;
+
+          case VOp::WMul:
+          case VOp::WMulU: {
+            // A fused extend-and-multiply (clang's A[B[i]] shape,
+            // where gcc emits vsext.vf2 + vsll). It collapses to
+            // exactly the (extension, shift) pair those two produce,
+            // provided the multiplier is a power of two — anything
+            // else needs a real multiplier, the pipeline this design
+            // drops. Like a bare extend it must still describe how the
+            // element is READ, so it cannot follow a scale or bias.
+            if (scaled || extended) {
+                return LinearForm();
+            }
+            if (s.scalar == 0 || !isPowerOf2(s.scalar)) {
+                return LinearForm();
+            }
+            const unsigned k = ctz64(s.scalar);
+            if (shift + k > 63) {
+                return LinearForm();
+            }
+            extended = true;
+            f.extBits = s.extFromBits;
+            f.extSigned = (s.op == VOp::WMul);
+            shift += k;
+            bias *= s.scalar;   // bias is 0 here (must be leading)
+            scaled = true;
+            break;
+          }
 
           case VOp::Sll: {
             const unsigned k = s.scalar & 0x3f;
@@ -243,7 +319,7 @@ VectorTyche::collapse(const VectorChainTable::ChainSnapshot &snap) const
 }
 
 uint64_t
-VectorTyche::extendRaw(const LinearForm &f, uint64_t raw) const
+Viper::extendRaw(const LinearForm &f, uint64_t raw) const
 {
     if (f.extBits > 0 && f.extBits < 64) {
         if (f.extSigned) {
@@ -257,14 +333,14 @@ VectorTyche::extendRaw(const LinearForm &f, uint64_t raw) const
 }
 
 Addr
-VectorTyche::applyForm(const LinearForm &f, uint64_t raw) const
+Viper::applyForm(const LinearForm &f, uint64_t raw) const
 {
     // The lane: one shifter, one adder.
     return f.base + (extendRaw(f, raw) << f.shift);
 }
 
 Addr
-VectorTyche::preLaneKey(const LinearForm &f, uint64_t raw) const
+Viper::preLaneKey(const LinearForm &f, uint64_t raw) const
 {
     // Same target line <=> equal key. The base's sub-line offset is
     // folded in so unaligned bases stay exact (in hardware the fold
@@ -275,7 +351,7 @@ VectorTyche::preLaneKey(const LinearForm &f, uint64_t raw) const
 }
 
 bool
-VectorTyche::inDedupWindow(const ConsumerGroup &cg, Addr line) const
+Viper::inDedupWindow(const ConsumerGroup &cg, Addr line) const
 {
     for (const auto &prev : cg.dedupWindow) {
         if (std::find(prev.begin(), prev.end(), line) != prev.end()) {
@@ -286,7 +362,7 @@ VectorTyche::inDedupWindow(const ConsumerGroup &cg, Addr line) const
 }
 
 bool
-VectorTyche::anyConfigured(const SttEntry &ps) const
+Viper::anyConfigured(const SttEntry &ps) const
 {
     for (const auto &cg : ps.groups) {
         if (cg.configured) {
@@ -297,7 +373,7 @@ VectorTyche::anyConfigured(const SttEntry &ps) const
 }
 
 bool
-VectorTyche::anyFresh(const SttEntry &ps) const
+Viper::anyFresh(const SttEntry &ps) const
 {
     for (const auto &cg : ps.groups) {
         if (cg.configured && cg.form.gen == tbl->generation()) {
@@ -312,7 +388,7 @@ VectorTyche::anyFresh(const SttEntry &ps) const
 // ---------------------------------------------------------------------
 
 Addr
-VectorTyche::announcedLimit(Addr pc, Addr line_va) const
+Viper::announcedLimit(Addr pc, Addr line_va) const
 {
     // Same aliasing rule as vhybrid.cc: one PC can have several live
     // entries; take the SMALLEST limit still above the line — the
@@ -332,7 +408,7 @@ VectorTyche::announcedLimit(Addr pc, Addr line_va) const
 }
 
 unsigned
-VectorTyche::gateBytes(Addr pc, Addr line_va) const
+Viper::gateBytes(Addr pc, Addr line_va) const
 {
     // 0 = no announcement covers the line (or gate off): convert
     // whole-line, the pre-gate behavior.
@@ -344,7 +420,7 @@ VectorTyche::gateBytes(Addr pc, Addr line_va) const
 }
 
 void
-VectorTyche::streamAhead(SttEntry &ps, Addr addr, unsigned size,
+Viper::streamAhead(SttEntry &ps, Addr addr, unsigned size,
                          Addr announced_limit,
                          std::vector<AddrPriority> &addresses)
 {
@@ -352,10 +428,24 @@ VectorTyche::streamAhead(SttEntry &ps, Addr addr, unsigned size,
     // are the engine's fuel — every capture comes from one. Gating them
     // is a positive-feedback collapse, because the queue drains via
     // cache pulls, which starve exactly when misses rise.
-    const Addr from = addr + size;
-    const Addr to = addr + size * (Addr)(streamingDistance + 1);
+    Addr from, to;
+    if (prefetchDistance > 0) {
+        // VLEN-pinned frontier: the window sits prefetchDistance whole
+        // VLEN chunks ahead of the demand chunk's start and is as wide
+        // as the demand advance, so partial-vl chunks (short rows, loop
+        // tails) keep the full byte lookahead and consecutive windows
+        // tile without gaps even when size != vlenBytes (LMUL > 1). A
+        // fresh/reset window starts at the frontier by construction, so
+        // streamStartAtDistance does not apply here.
+        from = addr + (Addr)prefetchDistance * vlenBytes;
+        to = from + size;
+    } else {
+        from = addr + size;
+        to = addr + size * (Addr)(streamingDistance + 1);
+    }
     Addr line = blockAddress(from);
-    if (streamStartAtDistance && ps.limitAddr < line) {
+    if (prefetchDistance == 0 && streamStartAtDistance &&
+        ps.limitAddr < line) {
         // Fresh or reset window: jump straight to the frontier. The
         // near-window lines are left to demand (their prefetches would
         // be late-but-coalescing at best), so the frontier gets the
@@ -373,13 +463,13 @@ VectorTyche::streamAhead(SttEntry &ps, Addr addr, unsigned size,
             // past it is adjacent non-index data. Don't raise the
             // high-water mark past it either — a later extent at the
             // same PC restarts the walk from its own accesses.
-            vtycheStats.streamLimitClamped +=
+            viperStats.streamLimitClamped +=
                 (to - line + blkSize - 1) / blkSize;
             break;
         }
         if (line >= ps.limitAddr) {
             addresses.push_back(AddrPriority(line, 0));
-            vtycheStats.streamCandidates++;
+            viperStats.streamCandidates++;
         }
     }
     if (line > ps.limitAddr) {
@@ -388,9 +478,8 @@ VectorTyche::streamAhead(SttEntry &ps, Addr addr, unsigned size,
 }
 
 void
-VectorTyche::registerCapture(Addr line_pa, Addr line_va, Addr producer_pc,
-                             bool secure, bool from_miss,
-                             unsigned valid_bytes)
+Viper::registerCapture(Addr line_pa, Addr line_va, Addr producer_pc,
+                             bool secure, unsigned valid_bytes)
 {
     for (const IrtEntry &c : indexRoutingTable) {
         if (c.linePaddr == line_pa && c.secure == secure) {
@@ -402,15 +491,11 @@ VectorTyche::registerCapture(Addr line_pa, Addr line_va, Addr producer_pc,
     }
     indexRoutingTable.push_back({line_pa, line_va, producer_pc, secure,
                                  valid_bytes});
-    if (from_miss) {
-        vtycheStats.capturesRegisteredMiss++;
-    } else {
-        vtycheStats.capturesRegistered++;
-    }
+    viperStats.capturesRegistered++;
 }
 
 void
-VectorTyche::dropRegistration(Addr line_pa, bool secure)
+Viper::dropRegistration(Addr line_pa, bool secure)
 {
     for (auto it = indexRoutingTable.begin();
          it != indexRoutingTable.end(); ++it) {
@@ -422,14 +507,156 @@ VectorTyche::dropRegistration(Addr line_pa, bool secure)
 }
 
 void
-VectorTyche::captureFromReadHit(SttEntry &ps, const PrefetchInfo &pfi,
+Viper::retireRegistration(Addr line_pa, Addr producer_pc,
+                                bool secure)
+{
+    if (retiredTailEntries == 0) {
+        return;
+    }
+    for (auto it = retiredRoutingTail.begin();
+         it != retiredRoutingTail.end(); ++it) {
+        if (it->linePaddr == line_pa && it->producerPC == producer_pc &&
+            it->secure == secure) {
+            // Already recorded: move it to the back so a line being
+            // converted repeatedly does not age out under its own
+            // traffic, and so the tail holds one record per line.
+            retiredRoutingTail.splice(retiredRoutingTail.end(),
+                                      retiredRoutingTail, it);
+            return;
+        }
+    }
+    if (retiredRoutingTail.size() >= retiredTailEntries) {
+        retiredRoutingTail.pop_front();
+    }
+    retiredRoutingTail.push_back({line_pa, producer_pc, secure});
+}
+
+bool
+Viper::wasConvertedBy(Addr line_pa, Addr producer_pc,
+                            bool secure) const
+{
+    for (const RetiredEntry &r : retiredRoutingTail) {
+        if (r.linePaddr == line_pa && r.producerPC == producer_pc &&
+            r.secure == secure) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool
+Viper::captureBacklogged() const
+{
+    // Backlog is the whole in-flight pipeline: queued targets plus
+    // targets parked awaiting an MMU translation (indirect targets are
+    // nearly all cross-page, so the translation queue is real depth,
+    // not a corner case).
+    return captureQueueGate != 0 &&
+           pfq.size() + pfqMissingTranslation.size() >= captureQueueGate;
+}
+
+void
+Viper::pfHitInCache()
+{
+    Base::pfHitInCache(); // keep the stat exactly as before
+    // Residency intervals train on every attributed resident-drop:
+    // the verdict says "this line is resident", and spatial clustering
+    // of such verdicts is what earns suppression confidence.
+    if (residencyIntervalRegs != 0 && lastIssuedTargetValid) {
+        residencyObserveDrop(lastIssuedTarget);
+    }
+    lastIssuedTargetValid = false;
+    if (dropBatchConfidence == 0 || !lastIssuedValid) {
+        return; // feedback off, or the drop was a stream candidate
+    }
+    const Addr src = lastIssuedSource;
+    lastIssuedValid = false;
+    viperStats.batchDropSamples++;
+
+    // Tally the drop against its batch (small recent-batch list).
+    auto rec = batchDropRecs.begin();
+    while (rec != batchDropRecs.end() && rec->source != src) {
+        ++rec;
+    }
+    if (rec == batchDropRecs.end()) {
+        if (batchDropRecs.size() >= 8) {
+            batchDropRecs.pop_front();
+        }
+        batchDropRecs.push_back({src, 0});
+        rec = std::prev(batchDropRecs.end());
+    }
+    if (++rec->drops < dropBatchConfidence) {
+        return; // not confident yet
+    }
+    batchDropRecs.erase(rec);
+
+    // Confidence reached: the cache has proved this batch's source
+    // line resident dropBatchConfidence times. Measured residency is
+    // all-or-nothing per index line, so forfeit the siblings.
+    viperStats.batchesAborted++;
+
+    // The aborted-batch record carries the Bresenham accumulator that
+    // spreads drop_batch_fraction evenly over the batch's remaining
+    // targets; the queue flush below and the push-site suppression
+    // share it, so the overall discard rate is exactly the fraction.
+    // Bounded FIFO: an aged-out abort lets a genuine later revisit
+    // re-emit, which is correct.
+    auto ab = abortedBatches.begin();
+    while (ab != abortedBatches.end() && ab->source != src) {
+        ++ab;
+    }
+    if (ab == abortedBatches.end()) {
+        if (abortedBatches.size() >= 8) {
+            abortedBatches.pop_front();
+        }
+        abortedBatches.push_back({src, 0.0});
+        ab = std::prev(abortedBatches.end());
+    }
+
+    // 1) Flush the batch's targets still staged in the prefetch
+    //    queue (same removal idiom as Queued's pfRemovedDemand),
+    //    thinned to the configured fraction - a kept target keeps its
+    //    batch tag so a later resident-drop still attributes.
+    //    pfqMissingTranslation cannot be edited - translationComplete
+    //    asserts its entry is still listed - so targets parked there
+    //    leak through and are dropped by the cache as before.
+    for (auto it = pfq.begin(); it != pfq.end();) {
+        const Addr t_line = blockAddress(it->pfInfo.getAddr());
+        auto tag = emittedFrom.find(t_line);
+        if (tag != emittedFrom.end() && tag->second == src) {
+            ab->acc += dropBatchFraction;
+            if (ab->acc >= 1.0) {
+                ab->acc -= 1.0;
+                emittedFrom.erase(tag);
+                delete it->pkt;
+                it = pfq.erase(it);
+                viperStats.targetsFlushedOnDrop++;
+                continue;
+            }
+        }
+        ++it;
+    }
+    // 2) The batch's not-yet-emitted remainder is thinned at the push
+    //    site (drainEmission checks abortedBatches with the same
+    //    accumulator).
+}
+
+void
+Viper::captureFromReadHit(SttEntry &ps, const PrefetchInfo &pfi,
                                 Addr pc, Addr addr, unsigned size,
                                 bool is_secure)
 {
     // Same freshness gate the fill path applies: a cleared table leaves
     // stale configured bits behind, and stale ways idle at conversion.
     if (!anyFresh(ps)) {
-        vtycheStats.staleConfigs++;
+        viperStats.staleConfigs++;
+        return;
+    }
+    // Same admission backpressure as the registration paths
+    // (capture_queue_gate): a congested queue means this batch would
+    // sit in the slice buffer until the staleness abort discards it.
+    if (captureBacklogged()) {
+        viperStats.capturesGated++;
         return;
     }
     // satisfyRequest copies exactly the requested range into the packet's
@@ -447,23 +674,44 @@ VectorTyche::captureFromReadHit(SttEntry &ps, const PrefetchInfo &pfi,
         if (line < addr || line + blkSize > addr + bytes) {
             continue;
         }
+        const unsigned offset = line - addr;
+        // IRT keys are block-aligned PAs (notifyFill matches
+        // blockAddress(pkt->getAddr())).
+        const Addr line_pa = blockAddress(pfi.getPaddr() + offset);
+
+        // The retired tail says whether THIS producer's conversion of
+        // this line has already run. If it has, the hit would push the
+        // identical elements through the lanes a second time - and that
+        // is the common case once the streaming half is working, since
+        // the walk prefetches the index line itself, the fill converts
+        // it, and the demand read that follows necessarily hits. A
+        // retired record left by a DIFFERENT producer is not a
+        // duplicate: that is the multi-chain case this path exists for,
+        // where a sibling's walk made the line resident and this
+        // producer has yet to see the data at all.
+        if (wasConvertedBy(line_pa, pc, is_secure)) {
+            viperStats.recapturesDetected++;
+            if (!captureReadHitOwnProducer) {
+                viperStats.recapturesSuppressed++;
+                continue;
+            }
+        }
         if (ps.sliceBuffer.size() >= sliceBufferEntries) {
-            vtycheStats.bufferBusyDrops++;
+            viperStats.bufferBusyDrops++;
             return;
         }
-        const unsigned offset = line - addr;
-        // A registration for this line can never latch now (the line is
-        // resident, so no fill is coming) and would double-convert if a
-        // later fill did arrive. Retire it. IRT keys are block-aligned
-        // PAs (notifyFill matches blockAddress(pkt->getAddr())).
-        dropRegistration(blockAddress(pfi.getPaddr() + offset), is_secure);
+        // A pending registration for this line can never latch now (the
+        // line is resident, so no fill is coming) and would
+        // double-convert if a later fill did arrive. Drop it.
+        dropRegistration(line_pa, is_secure);
 
         CapturedLine cap;
         cap.data.assign(payload + offset, payload + offset + blkSize);
         cap.lineVaddr = line;
         cap.validBytes = gateBytes(pc, line);
         ps.sliceBuffer.push_back(std::move(cap));
-        vtycheStats.hitsCaptured++;
+        viperStats.hitsCaptured++;
+        retireRegistration(line_pa, pc, is_secure);
     }
 }
 
@@ -472,7 +720,7 @@ VectorTyche::captureFromReadHit(SttEntry &ps, const PrefetchInfo &pfi,
 // ---------------------------------------------------------------------
 
 bool
-VectorTyche::convertChunk(SttEntry &ps, CapturedLine &cap)
+Viper::convertChunk(SttEntry &ps, CapturedLine &cap)
 {
     const unsigned width = ps.elemBytes;
     if (width == 0 || width > 8) {
@@ -495,7 +743,7 @@ VectorTyche::convertChunk(SttEntry &ps, CapturedLine &cap)
         // index lines.
         const unsigned lineElems = cap.data.size() / width;
         if (elems < lineElems) {
-            vtycheStats.elementsBeyondLimit += lineElems - elems;
+            viperStats.elementsBeyondLimit += lineElems - elems;
         }
         for (auto &cg : ps.groups) {
             if (!vlWindowDedup) {
@@ -559,25 +807,25 @@ VectorTyche::convertChunk(SttEntry &ps, CapturedLine &cap)
                 const Addr key = preLaneKey(cg.form, letoh(raw));
                 if (std::find(cg.lineSeen.begin(), cg.lineSeen.end(),
                               key) != cg.lineSeen.end()) {
-                    vtycheStats.elementsPreDeduped++;
+                    viperStats.elementsPreDeduped++;
                     any_gated = true;
                     continue; // no lane circuit, no budget share
                 }
                 any_fired = true;
-                vtycheStats.elementsConverted++;
+                viperStats.elementsConverted++;
                 const Addr target = applyForm(cg.form, letoh(raw));
                 if (target == 0 || (target & 0xffffff0000000000ULL)) {
-                    vtycheStats.targetsFiltered++;
+                    viperStats.targetsFiltered++;
                     continue; // filtered targets never enter the seen-set
                 }
                 cg.lineSeen.push_back(key);
                 batch.targets.push_back({target, (uint8_t)g});
             } else {
                 any_fired = true;
-                vtycheStats.elementsConverted++;
+                viperStats.elementsConverted++;
                 const Addr target = applyForm(cg.form, letoh(raw));
                 if (target == 0 || (target & 0xffffff0000000000ULL)) {
-                    vtycheStats.targetsFiltered++;
+                    viperStats.targetsFiltered++;
                     continue;
                 }
                 // Post-lane compare on target line addresses; the
@@ -587,7 +835,7 @@ VectorTyche::convertChunk(SttEntry &ps, CapturedLine &cap)
                 const Addr line = blockAddress(target);
                 if (std::find(cg.lineSeen.begin(), cg.lineSeen.end(),
                               line) != cg.lineSeen.end()) {
-                    vtycheStats.targetsDeduplicated++;
+                    viperStats.targetsDeduplicated++;
                     continue;
                 }
                 cg.lineSeen.push_back(line);
@@ -600,16 +848,16 @@ VectorTyche::convertChunk(SttEntry &ps, CapturedLine &cap)
         if (any_fired) {
             slots_used++;
         } else if (any_gated) {
-            vtycheStats.slotsCompacted++;
+            viperStats.slotsCompacted++;
         }
     }
     cap.nextElem = i;
     const bool done = cap.nextElem >= elems;
     if (!done) {
-        vtycheStats.conversionWidthLimited++;
+        viperStats.conversionWidthLimited++;
     }
 
-    DPRINTF(VTyche, "converted index line VA %#x elems [%u,%u) of %u "
+    DPRINTF(Viper, "converted index line VA %#x elems [%u,%u) of %u "
             "x %u ways -> %u targets%s\n",
             cap.lineVaddr, first, i, elems,
             (unsigned)ps.groups.size(),
@@ -625,7 +873,7 @@ VectorTyche::convertChunk(SttEntry &ps, CapturedLine &cap)
 }
 
 void
-VectorTyche::drainEmission(std::vector<AddrPriority> &addresses)
+Viper::drainEmission(std::vector<AddrPriority> &addresses)
 {
     // Emission budget: free queue slots, but never less than the floor.
     // The floor models the continuous queue drain real hardware has —
@@ -662,7 +910,7 @@ VectorTyche::drainEmission(std::vector<AddrPriority> &addresses)
                 // Whole-latch flush only when EVERY way went stale; a
                 // single stale way forfeits its own targets below.
                 if (!anyFresh(ps)) {
-                    vtycheStats.staleConfigs++;
+                    viperStats.staleConfigs++;
                     ps.latchValid = false;
                     // The line's dedup entries are forfeited with it.
                     for (auto &cg : ps.groups) {
@@ -677,7 +925,7 @@ VectorTyche::drainEmission(std::vector<AddrPriority> &addresses)
                 // chunk's own lines survive their capture window.
                 if (ps.valid &&
                     ps.latch.lineVaddr < blockAddress(ps.lastAddr)) {
-                    vtycheStats.stalenessAborts++;
+                    viperStats.stalenessAborts++;
                     ps.latchValid = false;
                     for (auto &cg : ps.groups) {
                         cg.lineSeen.clear();
@@ -698,7 +946,7 @@ VectorTyche::drainEmission(std::vector<AddrPriority> &addresses)
                     // targets; the other ways keep emitting.
                     if (!cg.configured ||
                         cg.form.gen != tbl->generation()) {
-                        vtycheStats.staleConfigs++;
+                        viperStats.staleConfigs++;
                         continue;
                     }
                     if (dedupBufferSize) {
@@ -706,7 +954,7 @@ VectorTyche::drainEmission(std::vector<AddrPriority> &addresses)
                         if (inDedupWindow(cg, line)) {
                             // First-emit-wins: an earlier line inside
                             // the window already pushed this line.
-                            vtycheStats.targetsCrossDeduplicated++;
+                            viperStats.targetsCrossDeduplicated++;
                             continue; // no queue slot consumed
                         }
                     }
@@ -715,17 +963,62 @@ VectorTyche::drainEmission(std::vector<AddrPriority> &addresses)
                         // entries; the overflow target is forfeited.
                         // NOT recorded emitted — no prefetch went
                         // out, so a later duplicate may re-emit.
-                        vtycheStats.targetsDroppedFull++;
+                        viperStats.targetsDroppedFull++;
                         continue;
+                    }
+                    // drop_batch_confidence: a batch the cache already
+                    // proved resident forfeits drop_batch_fraction of
+                    // its remaining targets (Bresenham accumulator
+                    // shared with the abort-time queue flush).
+                    if (dropBatchConfidence != 0) {
+                        auto ab = std::find_if(
+                            abortedBatches.begin(), abortedBatches.end(),
+                            [&](const AbortedBatch &b) {
+                                return b.source == ps.latch.lineVaddr;
+                            });
+                        if (ab != abortedBatches.end()) {
+                            ab->acc += dropBatchFraction;
+                            if (ab->acc >= 1.0) {
+                                ab->acc -= 1.0;
+                                viperStats.targetsFlushedOnDrop++;
+                                continue; // no queue slot consumed
+                            }
+                        }
+                    }
+                    // Residency intervals: a target inside a span the
+                    // cache's own drop verdicts have proved resident
+                    // is forfeited before it costs a queue slot. The
+                    // trim path (observed demand miss) un-learns a
+                    // stale span, so a wrong suppression costs one
+                    // demand miss, once.
+                    if (residencyIntervalRegs != 0 &&
+                        residencyCovered(blockAddress(te.addr))) {
+                        viperStats.targetsResidencySuppressed++;
+                        continue; // no queue slot consumed
                     }
                     if (dedupBufferSize) {
                         cg.pendingEmitted.push_back(
                             blockAddress(te.addr));
                     }
+                    if (dropBatchConfidence != 0 ||
+                        residencyIntervalRegs != 0) {
+                        // Tag the target with its source batch so a
+                        // resident-drop can be attributed. One-shot:
+                        // the getPacket() peek consumes the tag.
+                        const Addr t_line = blockAddress(te.addr);
+                        if (emittedFrom.insert(
+                                {t_line, ps.latch.lineVaddr}).second) {
+                            emittedFromFifo.push_back(t_line);
+                            if (emittedFromFifo.size() > 2 * queueSize) {
+                                emittedFrom.erase(emittedFromFifo.front());
+                                emittedFromFifo.pop_front();
+                            }
+                        }
+                    }
                     addresses.push_back(AddrPriority(te.addr, 0));
-                    vtycheStats.targetsGenerated++;
+                    viperStats.targetsGenerated++;
                     room--;
-                    DPRINTF(VTyche, "target: %#x (way %u base %#x "
+                    DPRINTF(Viper, "target: %#x (way %u base %#x "
                             "shift %u)\n", te.addr, te.group,
                             cg.form.base, cg.form.shift);
                 }
@@ -763,7 +1056,7 @@ VectorTyche::drainEmission(std::vector<AddrPriority> &addresses)
             }
             CapturedLine &cap = ps.sliceBuffer.front();
             if (!anyFresh(ps)) {
-                vtycheStats.staleConfigs++;
+                viperStats.staleConfigs++;
                 for (auto &cg : ps.groups) {
                     cg.lineSeen.clear();
                     cg.pendingEmitted.clear();
@@ -772,7 +1065,7 @@ VectorTyche::drainEmission(std::vector<AddrPriority> &addresses)
                 continue; // flushed before further compute was paid
             }
             if (ps.valid && cap.lineVaddr < blockAddress(ps.lastAddr)) {
-                vtycheStats.stalenessAborts++;
+                viperStats.stalenessAborts++;
                 for (auto &cg : ps.groups) {
                     cg.lineSeen.clear();
                     cg.pendingEmitted.clear();
@@ -806,10 +1099,10 @@ VectorTyche::drainEmission(std::vector<AddrPriority> &addresses)
         }
     }
     if (blocked) {
-        vtycheStats.emissionDeferred++;
+        viperStats.emissionDeferred++;
     }
     if (line_limited) {
-        vtycheStats.emissionLineLimited++;
+        viperStats.emissionLineLimited++;
     }
 }
 
@@ -818,7 +1111,7 @@ VectorTyche::drainEmission(std::vector<AddrPriority> &addresses)
 // ---------------------------------------------------------------------
 
 bool
-VectorTyche::drainWorkPending() const
+Viper::drainWorkPending() const
 {
     for (const auto &kv : streamTrackingTable) {
         const SttEntry &ps = kv.second;
@@ -830,7 +1123,7 @@ VectorTyche::drainWorkPending() const
 }
 
 void
-VectorTyche::scheduleDrain()
+Viper::scheduleDrain()
 {
     if (drainEvent.scheduled() || !drainWorkPending()) {
         return;
@@ -839,7 +1132,7 @@ VectorTyche::scheduleDrain()
 }
 
 void
-VectorTyche::drainTick()
+Viper::drainTick()
 {
     // No context until the first demand access has been observed; the
     // next notify() re-arms.
@@ -856,7 +1149,7 @@ VectorTyche::drainTick()
     if (room < std::max(drainFloor, 1)) {
         return;
     }
-    vtycheStats.selfDrainTicks++;
+    viperStats.selfDrainTicks++;
     std::vector<AddrPriority> addresses;
     drainEmission(addresses);
     if (!addresses.empty()) {
@@ -887,7 +1180,7 @@ VectorTyche::drainTick()
 // ---------------------------------------------------------------------
 
 void
-VectorTyche::notify(const CacheAccessProbeArg &acc, const PrefetchInfo &pfi)
+Viper::notify(const CacheAccessProbeArg &acc, const PrefetchInfo &pfi)
 {
     // Latch this access's translation context for the self-clocked
     // drain. The request must carry what insert() dereferences: a VA
@@ -911,13 +1204,117 @@ VectorTyche::notify(const CacheAccessProbeArg &acc, const PrefetchInfo &pfi)
         acc.pkt->isRead() && !acc.pkt->cmd.isHWPrefetch() && pfi.hasData()) {
         hitPkt = acc.pkt;
     }
+    // Residency intervals: an observed demand MISS inside an interval
+    // proves that span is (no longer) resident — trim it. This is the
+    // model's only aging mechanism: the cache's own behaviour retires
+    // stale intervals, no epoch clock needed. The cost of a stale
+    // entry is bounded at one demand miss before the trim.
+    if (residencyIntervalRegs != 0 && pfi.isCacheMiss()) {
+        residencyObserveMiss(blockAddress(pfi.getAddr()));
+    }
     Queued::notify(acc, pfi);
     hitPkt = nullptr;
     scheduleDrain();
 }
 
+bool
+Viper::residencyCovered(Addr line_va) const
+{
+    for (const auto &iv : residencyIntervals) {
+        if (iv.lo != iv.hi && iv.conf >= residencyConfThreshold &&
+            line_va >= iv.lo && line_va < iv.hi) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void
-VectorTyche::calculatePrefetch(const PrefetchInfo &pfi,
+Viper::residencyObserveDrop(Addr line_va)
+{
+    viperStats.residencyDropsTrained++;
+    const Addr gap = (Addr)residencyGapLines * blkSize;
+    // Extend the interval this drop lands in or next to. Residency is
+    // contiguous in the target array, so a nearby drop is the same hot
+    // span growing (the toy-example leading edge).
+    for (auto &iv : residencyIntervals) {
+        if (iv.lo == iv.hi) {
+            continue;
+        }
+        if (line_va + blkSize + gap >= iv.lo && line_va < iv.hi + gap) {
+            iv.lo = std::min(iv.lo, line_va);
+            iv.hi = std::max(iv.hi, line_va + blkSize);
+            if (iv.conf < 7) {
+                iv.conf++;
+            }
+            iv.lastUse = ++residencyUseCount;
+            // Absorb any interval the extension now overlaps.
+            for (auto &other : residencyIntervals) {
+                if (&other != &iv && other.lo != other.hi &&
+                    other.lo < iv.hi && iv.lo < other.hi) {
+                    iv.lo = std::min(iv.lo, other.lo);
+                    iv.hi = std::max(iv.hi, other.hi);
+                    other.lo = other.hi = 0;
+                    other.conf = 0;
+                }
+            }
+            return;
+        }
+    }
+    // No neighbour: allocate over a free register, else the
+    // least-confident (oldest on ties). Isolated drops churn here at
+    // conf 1 and never reach the suppression threshold — scattered
+    // residency leaves the mechanism inert by construction.
+    ResidencyInterval *victim = nullptr;
+    for (auto &iv : residencyIntervals) {
+        if (iv.lo == iv.hi) {
+            victim = &iv;
+            break;
+        }
+        if (victim == nullptr || iv.conf < victim->conf ||
+            (iv.conf == victim->conf && iv.lastUse < victim->lastUse)) {
+            victim = &iv;
+        }
+    }
+    if (victim != nullptr) {
+        victim->lo = line_va;
+        victim->hi = line_va + blkSize;
+        victim->conf = 1;
+        victim->lastUse = ++residencyUseCount;
+        viperStats.residencyIntervalAllocs++;
+    }
+}
+
+void
+Viper::residencyObserveMiss(Addr line_va)
+{
+    for (auto &iv : residencyIntervals) {
+        if (iv.lo == iv.hi || line_va < iv.lo || line_va >= iv.hi) {
+            continue;
+        }
+        // Keep the larger side of the split; a middle miss in a hot
+        // span is rare enough that one register suffices.
+        const Addr left = line_va - iv.lo;
+        const Addr right = iv.hi - (line_va + blkSize);
+        if (left >= right) {
+            iv.hi = line_va;
+        } else {
+            iv.lo = line_va + blkSize;
+        }
+        if (iv.conf > 0) {
+            iv.conf--;
+        }
+        if (iv.lo >= iv.hi || iv.conf == 0) {
+            iv.lo = iv.hi = 0;
+            iv.conf = 0;
+        }
+        viperStats.residencyIntervalTrims++;
+        return;
+    }
+}
+
+void
+Viper::calculatePrefetch(const PrefetchInfo &pfi,
     std::vector<AddrPriority> &addresses,
     const CacheAccessor &cache)
 {
@@ -941,7 +1338,7 @@ VectorTyche::calculatePrefetch(const PrefetchInfo &pfi,
 
     SttEntry &ps = streamTrackingTable[pc];
     if (addr != ps.lastAddr || !ps.valid) {
-        vtycheStats.chunksObserved++;
+        viperStats.chunksObserved++;
         // A jump backwards is a restarted walk: re-prefetch. The dedup
         // windows clear with it — their lines may have been evicted
         // since, and suppressing their re-emission would punch holes
@@ -967,7 +1364,7 @@ VectorTyche::calculatePrefetch(const PrefetchInfo &pfi,
         // (one base snoopable, another not yet is fine).
         if (!streamOnly && info.linked) {
             if (!anyConfigured(ps) && configuredCount >= pipelines) {
-                vtycheStats.pipelinesSaturated++;
+                viperStats.pipelinesSaturated++;
             } else {
                 const unsigned nways =
                     std::min(info.numConsumers, consumersPerProducer);
@@ -975,10 +1372,24 @@ VectorTyche::calculatePrefetch(const PrefetchInfo &pfi,
                     ps.groups.resize(nways);
                 }
                 for (unsigned s = 0; s < nways; s++) {
+                    // Memo: the compiled form is a pure function of
+                    // the chain's shape (generation) and its snooped
+                    // operands (operandGen). While both still match,
+                    // re-walking and re-folding would reproduce the
+                    // same (base, shift, ext) bit for bit — so the
+                    // chain is compiled ONCE per real change, not once
+                    // per observed chunk.
+                    if (ps.groups[s].configured &&
+                        ps.groups[s].form.valid &&
+                        ps.groups[s].form.gen == tbl->generation() &&
+                        ps.groups[s].form.opGen == tbl->operandGen()) {
+                        viperStats.formsMemoHits++;
+                        continue;
+                    }
                     const VectorChainTable::ChainSnapshot snap =
                         tbl->pipelineConfig(info.dctPtr, s);
                     if (!snap.valid) {
-                        vtycheStats.chainNotReady++;
+                        viperStats.chainNotReady++;
                         continue;
                     }
                     const LinearForm f = collapse(snap);
@@ -986,7 +1397,7 @@ VectorTyche::calculatePrefetch(const PrefetchInfo &pfi,
                         // Not an A[B[i]] shape. Reject rather than
                         // approximate: this is exactly the class of
                         // pattern GDP's replay pipeline exists for.
-                        vtycheStats.chainsRejected++;
+                        viperStats.chainsRejected++;
                         continue;
                     }
                     if (!anyConfigured(ps)) {
@@ -995,8 +1406,8 @@ VectorTyche::calculatePrefetch(const PrefetchInfo &pfi,
                     ps.groups[s].form = f;
                     ps.groups[s].configured = true;
                     ps.elemBytes = info.elemBytes;
-                    vtycheStats.formsAdopted++;
-                    DPRINTF(VTyche, "PC %#x way %u form adopted: "
+                    viperStats.formsAdopted++;
+                    DPRINTF(Viper, "PC %#x way %u form adopted: "
                             "base=%#x shift=%u ext=%u/%s eew=%uB "
                             "(%u lanes)\n",
                             pc, s, f.base, f.shift, f.extBits,
@@ -1005,23 +1416,6 @@ VectorTyche::calculatePrefetch(const PrefetchInfo &pfi,
                                            : 0);
                 }
             }
-        }
-    }
-
-    // Demand-miss capture path: the walk's own index-array misses carry
-    // both VA and PA — register their lines directly.
-    if (!streamOnly && anyConfigured(ps) && pfi.isCacheMiss()) {
-        for (Addr line = blockAddress(addr); line < addr + size;
-             line += blkSize) {
-            if (!samePage(line, addr)) {
-                continue;
-            }
-            const Addr line_pa = pfi.getPaddr() + (line - addr);
-            if (cache.inCache(line_pa, is_secure)) {
-                continue; // resident: no fill will come
-            }
-            registerCapture(line_pa, line, pc, is_secure, true,
-                            gateBytes(pc, line));
         }
     }
 
@@ -1042,7 +1436,7 @@ VectorTyche::calculatePrefetch(const PrefetchInfo &pfi,
 }
 
 void
-VectorTyche::rowSchedule()
+Viper::rowSchedule()
 {
     if (rowScheduleBits == 0 || !lastRowValid || pfq.size() < 2) {
         return;
@@ -1076,14 +1470,14 @@ VectorTyche::rowSchedule()
             continue;
         }
         pfq.splice(pfq.begin(), pfq, it);
-        vtycheStats.rowPromotions++;
+        viperStats.rowPromotions++;
         return;
     }
-    vtycheStats.rowScheduleMisses++;
+    viperStats.rowScheduleMisses++;
 }
 
 PacketPtr
-VectorTyche::getPacket()
+Viper::getPacket()
 {
     // Reorder before the capture peek below: that peek must see the
     // entry Queued::getPacket will actually pop.
@@ -1094,9 +1488,29 @@ VectorTyche::getPacket()
     // (createPkt, queued.cc), so peek the DeferredPacket BEFORE
     // delegating: its PrefetchInfo still holds the VA the candidate was
     // generated with, and its pkt holds the translated PA.
+    lastIssuedValid = false;
+    lastIssuedTargetValid = false;
     if (!pfq.empty() && pfq.front().pkt != nullptr) {
         const DeferredPacket &dp = pfq.front();
         const Addr line_va = blockAddress(dp.pfInfo.getAddr());
+        // drop_batch_confidence: consume this target's batch tag. The
+        // cache's residency check runs synchronously after this call
+        // returns, so if the packet is dropped, pfHitInCache() below
+        // can attribute the drop to this batch. Stream candidates
+        // carry no tag and stay invisible to the feedback.
+        if (dropBatchConfidence != 0 || residencyIntervalRegs != 0) {
+            auto tag = emittedFrom.find(line_va);
+            if (tag != emittedFrom.end()) {
+                lastIssuedValid = true;
+                lastIssuedSource = tag->second;
+                // Residency intervals need the TARGET line of the
+                // packet being handed over; the tag's presence is what
+                // marks it as an indirect target (streams carry none).
+                lastIssuedTargetValid = true;
+                lastIssuedTarget = line_va;
+                emittedFrom.erase(tag);
+            }
+        }
         const Addr line_pa = blockAddress(dp.pkt->getAddr());
         const bool secure = dp.pfInfo.isSecure();
         for (auto &kv : streamTrackingTable) {
@@ -1113,9 +1527,19 @@ VectorTyche::getPacket()
             // where a stream line's VA and PA are held together, so
             // publish its physical page for stream-aware replacement.
             tbl->registerStreamPage(line_pa);
+            // Admission backpressure (capture_queue_gate): with the
+            // queue saturated, emission is stalled and the demand
+            // cursor will pass this line before its batch can issue —
+            // the capture would only feed the staleness abort. The
+            // stream prefetch itself still departs; only the
+            // capture/convert half sheds load.
             if (anyConfigured(ps)) {
-                registerCapture(line_pa, line_va, kv.first, secure, false,
-                                gateBytes(kv.first, line_va));
+                if (captureBacklogged()) {
+                    viperStats.capturesGated++;
+                } else {
+                    registerCapture(line_pa, line_va, kv.first, secure,
+                                    gateBytes(kv.first, line_va));
+                }
             }
             break;
         }
@@ -1131,7 +1555,7 @@ VectorTyche::getPacket()
 }
 
 void
-VectorTyche::notifyFill(const CacheAccessProbeArg &acc)
+Viper::notifyFill(const CacheAccessProbeArg &acc)
 {
     if (indexRoutingTable.empty()) {
         return;
@@ -1150,6 +1574,10 @@ VectorTyche::notifyFill(const CacheAccessProbeArg &acc)
         return;
     }
     const IrtEntry rec = *it;
+    // Leaves the pending IRT either way; whether it lands in the retired
+    // tail depends on the conversion below actually running. A fill
+    // dropped on a stale form or a full slice buffer converted nothing,
+    // so a later read hit on this line is still real work.
     indexRoutingTable.erase(it);
 
     auto ps_it = streamTrackingTable.find(rec.producerPC);
@@ -1163,7 +1591,7 @@ VectorTyche::notifyFill(const CacheAccessProbeArg &acc)
     // generations at the next use instead. Any fresh way justifies
     // the capture — stale ways idle at conversion.
     if (!anyFresh(ps)) {
-        vtycheStats.staleConfigs++;
+        viperStats.staleConfigs++;
         return;
     }
     if (pkt->getSize() < blkSize) {
@@ -1174,7 +1602,7 @@ VectorTyche::notifyFill(const CacheAccessProbeArg &acc)
     // buffer full is dropped whole, because one uncovered line stalls
     // the gather anyway.
     if (ps.sliceBuffer.size() >= sliceBufferEntries) {
-        vtycheStats.bufferBusyDrops++;
+        viperStats.bufferBusyDrops++;
         return;
     }
 
@@ -1186,8 +1614,9 @@ VectorTyche::notifyFill(const CacheAccessProbeArg &acc)
     cap.lineVaddr = blockAddress(rec.lineVaddr);
     cap.validBytes = rec.validBytes;
     ps.sliceBuffer.push_back(std::move(cap));
-    vtycheStats.fillsCaptured++;
-    DPRINTF(VTyche, "fill captured: index line VA %#x (producer %#x)\n",
+    viperStats.fillsCaptured++;
+    retireRegistration(line_pa, rec.producerPC, pkt->isSecure());
+    DPRINTF(Viper, "fill captured: index line VA %#x (producer %#x)\n",
             rec.lineVaddr, rec.producerPC);
     // Fresh conversion work: arm the self-clocked drain.
     scheduleDrain();

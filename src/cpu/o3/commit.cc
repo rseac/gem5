@@ -56,6 +56,7 @@
 #include "cpu/o3/limits.hh"
 #include "cpu/o3/thread_state.hh"
 #include "cpu/timebuf.hh"
+#include "cpu/vector_chain_table.hh"
 #include "debug/Activity.hh"
 #include "debug/Commit.hh"
 #include "debug/CommitRate.hh"
@@ -989,6 +990,29 @@ Commit::commitInsts()
                     ->committedInstType[head_inst->opClass()]++;
                 stats.committedInstType[tid][head_inst->opClass()]++;
                 ppCommit->notify(head_inst);
+
+                // Vector chain-table construction (moved here from the
+                // IQ's dispatch hook, see cpu/vector_chain_table.hh).
+                // Commit is in program order AND non-speculative, so
+                // register provenance is exact and a wrong-path
+                // instruction — e.g. one decoded under a stale vtype
+                // behind a mispredicting vsetvl — can never reach the
+                // table. dispatch() first: armBase() looks up the
+                // gather entry this call inserts.
+                if (cpu->vectorChainTable && head_inst->isVector()) {
+                    const StaticInst *si = head_inst->staticInst.get();
+                    const Addr v_pc = head_inst->pcState().instAddr();
+                    cpu->vectorChainTable->dispatch(si, v_pc);
+                    if (head_inst->chainSnoopValid) {
+                        const uint64_t v = head_inst->chainSnoopValue;
+                        if (si->vecMemInfo().kind ==
+                                StaticInst::VecMemInfo::IndexedLoad) {
+                            cpu->vectorChainTable->armBase(si, v_pc, v);
+                        } else if (cpu->vectorChainTable->wantsScalar(v_pc)) {
+                            cpu->vectorChainTable->captureScalar(v_pc, v);
+                        }
+                    }
+                }
 
                 // hardware transactional memory
 

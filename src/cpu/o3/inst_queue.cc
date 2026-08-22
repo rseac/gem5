@@ -697,12 +697,11 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
         cpu->tycheTable->dispatch(new_inst->staticInst.get(),
                                   new_inst->pcState().instAddr());
     }
-    // Vector chain-table construction: vector instructions, in program order so
-    // register provenance is exact (see cpu/vector_chain_table.hh).
-    if (cpu->vectorChainTable && new_inst->isVector()) {
-        cpu->vectorChainTable->dispatch(new_inst->staticInst.get(),
-                                new_inst->pcState().instAddr());
-    }
+    // Vector chain-table construction has MOVED TO COMMIT (cpu/o3/commit.cc):
+    // dispatch is speculative, and an instruction decoded under a stale vtype
+    // behind a mispredicting vsetvl would poison the table permanently (the
+    // DCT is first-writer-wins and has no rollback). See dyn_inst.hh's
+    // chainSnoopValue comment.
 
     instList[new_inst->threadNumber].push_back(new_inst);
 
@@ -964,23 +963,21 @@ InstructionQueue::scheduleReadyInsts()
         // Vector chain table: sources are ready at issue — snoop the gather's rs1
         // (base) or a .vx transform's scalar operand off the operand
         // read it is already doing (see cpu/vector_chain_table.hh).
+        // The read stays here — sources are ready and issue is already
+        // reading them — but it only STASHES: the table is written at
+        // commit, where the instruction is known to be non-speculative.
+        // Snooped unconditionally rather than gated on wantsScalar(),
+        // because that query consults table state which, now populated
+        // at commit, may not yet know this PC is a .vx transform; the
+        // decision of whether to consume the value moves to commit too.
         if (cpu->vectorChainTable && issuing_inst->isVector()) {
             const StaticInst *si = issuing_inst->staticInst.get();
-            const Addr g_pc = issuing_inst->pcState().instAddr();
-            const bool is_gather = si->vecMemInfo().kind ==
-                StaticInst::VecMemInfo::IndexedLoad;
-            if (is_gather || cpu->vectorChainTable->wantsScalar(g_pc)) {
-                for (int i = 0; i < si->numSrcRegs(); i++) {
-                    if (si->srcRegIdx(i).is(IntRegClass)) {
-                        const uint64_t v =
-                            issuing_inst->getRegOperand(si, i);
-                        if (is_gather) {
-                            cpu->vectorChainTable->armBase(si, g_pc, v);
-                        } else {
-                            cpu->vectorChainTable->captureScalar(g_pc, v);
-                        }
-                        break;
-                    }
+            for (int i = 0; i < si->numSrcRegs(); i++) {
+                if (si->srcRegIdx(i).is(IntRegClass)) {
+                    issuing_inst->chainSnoopValue =
+                        issuing_inst->getRegOperand(si, i);
+                    issuing_inst->chainSnoopValid = true;
+                    break;
                 }
             }
         }

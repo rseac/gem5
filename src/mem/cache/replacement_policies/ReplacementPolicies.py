@@ -173,7 +173,7 @@ class TreePLRURP(BaseReplacementPolicy):
 
 class StreamDemoteLRURP(LRURP):
     """LRU that demotes lines of registered stream pages to the LRU
-    position — pages the VTyche/GDP prefetcher publishes through the
+    position — pages the Viper/GDP prefetcher publishes through the
     shared VectorChainTable as it issues index-array stream prefetches
     (unit-stride vector arrays: single-use, dead after their access).
     demote_on_insert=True is the L2 mode (a stream line's L2 copy is

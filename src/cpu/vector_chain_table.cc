@@ -330,11 +330,29 @@ VectorChainTable::decodeTransform(uint64_t emi)
     }
 
     // OPMVX (funct3=6): vmul.vx.
+    // OPMVX (funct3=6): the plain multiply, plus the WIDENING
+    // multiplies, which fuse an extend with the multiply. Both take
+    // their operand in rs1 (immType=false), so both need the .vx
+    // scalar snoop before the chain is replayable.
     if (funct3 == 0x6) {
         if (funct6 == 0x25) {
             d.op = VOp::Mul;
             d.immType = false;
+            return d;
         }
+        // Widening: vtype SEW is the SOURCE width (destination is
+        // 2*SEW), so the extension width IS sew_bits here — contrast
+        // vsext.vfN below, which executes under the destination vtype
+        // and therefore divides.
+        const unsigned sew_bits = 8u << bits(emi, 37, 35); // 8/16/32/64
+        switch (funct6) {
+          case 0x38: d.op = VOp::WMulU; break;  // vwmulu.vx  (zero-extend)
+          case 0x3a:                            // vwmulsu.vx (vs2 signed)
+          case 0x3b: d.op = VOp::WMul;  break;  // vwmul.vx   (sign-extend)
+          default: return d;                    // not a transform
+        }
+        d.extFromBits = sew_bits;
+        d.immType = false;
         return d;
     }
 
@@ -374,8 +392,8 @@ VectorChainTable::dispatch(const StaticInst *si, Addr pc)
     int ndest = 0;
     for (int i = 0; i < si->numDestRegs() && ndest < 8; i++) {
         const RegId &r = si->destRegIdx(i);
-        if (r.is(VecRegClass)) {
-            dests[ndest++] = r.index() & 31;
+        if (r.is(VecRegClass) && r.index() < pt.size()) {
+            dests[ndest++] = r.index();
         }
     }
     if (ndest == 0) {
@@ -410,7 +428,10 @@ VectorChainTable::dispatch(const StaticInst *si, Addr pc)
     // PT (compilers alias vd with vs2: "vluxei64.v v1,(a2),v1").
     if (info.kind == StaticInst::VecMemInfo::IndexedLoad &&
         info.elemBytes > 0) {
-        const PtEntry src = pt[info.srcVReg & 31];
+        if (info.srcVReg >= pt.size()) {
+            return;
+        }
+        const PtEntry src = pt[info.srcVReg];
         if (src.depend && src.ptr >= 0 && src.ptr < (int)dct.size() &&
             dct[src.ptr].valid) {
             int gidx = searchPc(pc);
@@ -496,16 +517,17 @@ VectorChainTable::dispatch(const StaticInst *si, Addr pc)
     // micros that carry the macro's raw encoding (opcode 0x07/0x27)
     // without being the access itself: VCpyVs copies the offset
     // register into the internal register the access micros actually
-    // read (vluxei's per-element micros source vtmp0, not vs2), and
+    // read (vluxei's per-element micros source vtmp0..N, not vs2), and
     // VPinVd pins vd for renaming. They are value-transparent
-    // plumbing, not transforms — VCpyVs *propagates* provenance (the
-    // copy register's slot must carry the tag the gather micros look
-    // up; note VecMemInternalReg0=32 masks to slot 0, coherently with
-    // the micros' relative srcVReg indexing), and everything else
+    // plumbing, not transforms — VCpyVs *propagates* provenance into
+    // the vtmp slots (pt[32..39]; the access micros report the same
+    // absolute index via vecMemInfo().srcVReg), and everything else
     // leaves the PT alone. Without this, the plumbing either broke the
     // chain (VCpyVs: undecodable op with a tagged source) or wiped the
     // tag (VPinVd: vd dest with no sources) before the gather ever
-    // dispatched.
+    // dispatched. The vtmp slots are distinct from v0/v1 — masking
+    // them together ("& 31") let one gather's VCpyVs wipe another
+    // chain's live v1 tag (the s353 cross-link).
     const unsigned op7 = (unsigned)si->getEMI() & 0x7f;
     if ((op7 == 0x07 || op7 == 0x27) &&
         info.kind == StaticInst::VecMemInfo::None &&
@@ -514,11 +536,11 @@ VectorChainTable::dispatch(const StaticInst *si, Addr pc)
         for (int i = 0; i < si->numSrcRegs(); i++) {
             const RegId &r = si->srcRegIdx(i);
             if (r.is(VecRegClass)) {
-                src_slot = r.index() & 31;
+                src_slot = r.index();
                 break;
             }
         }
-        if (src_slot >= 0) {
+        if (src_slot >= 0 && src_slot < (int)pt.size()) {
             // Copy the source's state — valid or not, so a stale tag
             // in the destination slot cannot survive.
             for (int i = 0; i < ndest; i++) {
@@ -550,7 +572,7 @@ VectorChainTable::dispatch(const StaticInst *si, Addr pc)
         if (!r.is(VecRegClass)) {
             continue;
         }
-        const uint8_t a = r.index() & 31;
+        const uint8_t a = r.index();
         if (a == 0) {
             continue; // v0 mask
         }
@@ -647,6 +669,12 @@ VectorChainTable::armBase(const StaticInst *si, Addr pc, Addr base)
         tableStats.basesArmed++;
         DPRINTF(VectorChain, "base armed: gather PC %#x base %#x\n", pc, base);
     }
+    // Bump the operand version only on a REAL change, so a consumer
+    // memoising a compiled form re-walks when the base moves and not
+    // otherwise (see operandGen()).
+    if (!dct[idx].immValid || dct[idx].scalar != base) {
+        opGen++;
+    }
     dct[idx].scalar = base;
     dct[idx].immValid = true;
     // No write-through: the on-demand walk at the next adoption reads
@@ -682,6 +710,10 @@ VectorChainTable::captureScalar(Addr pc, uint64_t value)
     }
     // Refreshed every issue — always the architecturally current
     // value, no stability training (contrast Tyche's conf ramp).
+    // Version it on change only (see operandGen()).
+    if (!dct[idx].immValid || dct[idx].scalar != value) {
+        opGen++;
+    }
     dct[idx].scalar = value;
     dct[idx].immValid = true;
     tableStats.scalarsCaptured++;
@@ -707,11 +739,13 @@ VectorChainTable::producerInfo(Addr pc) const
     return out;
 }
 
+
 VectorChainTable::ChainSnapshot
 VectorChainTable::chainSnapshot(int producer_ptr, unsigned slot) const
 {
     ChainSnapshot out;
     out.gen = gen;
+    out.opGen = opGen;
     if (producer_ptr < 0 || producer_ptr >= (int)dct.size() ||
         !dct[producer_ptr].valid || !dct[producer_ptr].head ||
         slot >= dct[producer_ptr].consumers.size()) {

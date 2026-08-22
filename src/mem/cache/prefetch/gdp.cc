@@ -162,6 +162,26 @@ GDP::applyChain(const VectorChainTable::ChainSnapshot &cfg,
           case VOp::Or: value |= s.scalar; break;
           case VOp::Xor: value ^= s.scalar; break;
           case VOp::Mul: value *= s.scalar; break;
+          // Widening multiplies fuse an extend with the multiply
+          // (clang's A[B[i]] shape). GDP REPLAYS values rather than
+          // folding them, so it must apply both halves explicitly —
+          // the default arm below is a no-op, which would silently
+          // drop the extend and the scale and replay wrong addresses.
+          // Unlike the collapsing prefetchers, replay needs no
+          // power-of-two restriction: a real multiply is just a
+          // multiply here.
+          case VOp::WMul: {
+            const unsigned sh = 64 - s.extFromBits;
+            value = (uint64_t)((int64_t)(value << sh) >> sh);
+            value *= s.scalar;
+            break;
+          }
+          case VOp::WMulU:
+            if (s.extFromBits < 64) {
+                value &= (1ULL << s.extFromBits) - 1;
+            }
+            value *= s.scalar;
+            break;
           default: break;
         }
     }

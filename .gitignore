@@ -11,16 +11,9 @@ cscope.out
 .*.swp
 .*.swo
 m5out
-/out/
+/runs/
 /tsvc-gem5/
 /rvv/
-/tsvc_campaign_results/
-/vector_indirect_results/
-/rivec_results/
-/tsvc_results/
-/perfect_mem_probe/
-/revela_val/
-/vie*/*
 *.pptx
 /src/doxygen/html
 /docs/_build
@@ -50,3 +43,4 @@ configs/dram/lowp_sweep.cfg
 typings
 .DS_Store
 
+/rivec/

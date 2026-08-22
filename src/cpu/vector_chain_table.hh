@@ -3,7 +3,7 @@
  * instruction dependency chains, built on Tyche's skeleton (see
  * cpu/tyche_table.hh for the scalar analog this borrows from).
  * Originally built for the Gather Dataflow Prefetcher (GDP,
- * mem/cache/prefetch/gdp.hh); today its clients are GDP, VTyche and
+ * mem/cache/prefetch/gdp.hh); today its clients are GDP, Viper and
  * VTyche2 (chain discovery + base/scalar snoops via link_table),
  * StreamDemoteLRURP (the stream-page registry below), and the O3 LSQ's
  * demand-side stream registration (demand_stream_pages).
@@ -82,6 +82,16 @@ class VectorChainTable : public SimObject
         Add, Sub, Rsub,
         And, Or, Xor,
         Mul,
+        // Widening multiplies: a FUSED extend-and-multiply. clang emits
+        // these for A[B[i]] where gcc emits vsext.vf2 + vsll, so the
+        // chain must recognise them or the whole clang-built world
+        // looks unprefetchable. Semantics (decoder.isa:5945):
+        //   Vd_vwi[i] = vwi(Vs2_vi[i]) * vwi(Rs1_vi)
+        // i.e. extend the SEW-wide source to 2*SEW, then multiply — so
+        // extFromBits is the vtype SEW itself, NOT sew/2 as for
+        // vsext.vfN (which runs under the DESTINATION vtype).
+        WMul,   // vwmul.vx / vwmulsu.vx: source sign-extended
+        WMulU,  // vwmulu.vx: source zero-extended
     };
 
     /** One latched pipeline stage: op + its scalar operand */
@@ -135,6 +145,7 @@ class VectorChainTable : public SimObject
     };
     ProducerInfo producerInfo(Addr pc) const;
 
+
     /**
      * "Chain dispatch": the replay pipeline configuration of one
      * linked producer — the transform ops in head-to-gather order plus
@@ -156,6 +167,9 @@ class VectorChainTable : public SimObject
         Addr base = 0;
         /** Table generation this snapshot belongs to */
         uint64_t gen = 0;
+        /** Operand version this snapshot's base/scalars were read at
+         *  (see operandGen()) — the other half of a consumer's memo key */
+        uint64_t opGen = 0;
     };
 
     /**
@@ -170,6 +184,21 @@ class VectorChainTable : public SimObject
 
     /** Bumped on every wholesale clear (capacity or ROI reset) */
     uint64_t generation() const { return gen; }
+
+    /**
+     * Bumped whenever a snooped OPERAND actually changes value (a
+     * gather base re-armed to a different address, or a .vx scalar
+     * re-captured differently). The chain's SHAPE is covered by
+     * generation(); this covers the values folded into it.
+     *
+     * Consumers that memoise a compiled form (viper's LinearForm)
+     * gate re-compilation on (generation, operandGen) so the on-demand
+     * chain walk runs only when something it depends on moved, instead
+     * of on every observed chunk. Deliberately COARSE — one counter
+     * for all chains — because operand changes are rare (loop-invariant
+     * bases dominate) and a false re-walk is merely the old behavior.
+     */
+    uint64_t operandGen() const { return opGen; }
 
     /**
      * Stream-page registry for stream-aware cache replacement. The
@@ -304,8 +333,16 @@ class VectorChainTable : public SimObject
     const bool demandStreamPages;
 
     std::vector<DctEntry> dct;
-    std::array<PtEntry, 32> pt;
+    /** PT slots: the 32 architectural vregs PLUS the 8 vtmp internal
+     *  registers vector-memory micros stage through (VecMemInternalReg0
+     *  = 32, arch/riscv/regs/vector.hh). They need their own slots:
+     *  masking them onto v0/v1 (the pre-fix "& 31") let a gather's
+     *  VCpyVs clobber v1's provenance — on s353, chain 2's index tag —
+     *  cross-linking two chains and churning linksFormed. */
+    std::array<PtEntry, 40> pt;
     uint64_t gen = 0;
+    /** See operandGen(): bumped on a CHANGED snooped operand value. */
+    uint64_t opGen = 0;
 
     /** Stream-page registry: FIFO of the last streamPageEntries
      *  physical pages seen leaving as stream prefetches, with a set
@@ -319,6 +356,7 @@ class VectorChainTable : public SimObject
     struct StreamPageRec { Addr page; Addr pcTag; };
     std::deque<StreamPageRec> streamPageFifo;
     std::unordered_set<Addr> streamPageSet;
+
 
     /** Monotone-arm gate (see notifyDemandAccess) */
     const bool monotoneArm;

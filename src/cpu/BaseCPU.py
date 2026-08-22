@@ -179,7 +179,7 @@ class BaseCPU(ClockedObject):
     )
     vector_chain_table = Param.VectorChainTable(
         NULL, "Optional vector chain/link table (shared CPU-to-"
-        "prefetcher channel: gdp/vtyche link_table, stream-page "
+        "prefetcher channel: gdp/viper link_table, stream-page "
         "registry, demand-side stream registration)"
     )
     revela_table = Param.RevelaStreamTable(

@@ -1,5 +1,5 @@
 /**
- * VTyche — Vector Tyche, an A[B[i]] gather prefetcher (cache side).
+ * Viper — VIPER, an A[B[i]] gather prefetcher (cache side).
  *
  * A hybrid of GDP (mem/cache/prefetch/gdp.hh) and IMP
  * (mem/cache/prefetch/indirect_memory.hh): it keeps GDP's
@@ -26,7 +26,7 @@
  * rather than approximated, so the difference against GDP on the same
  * kernel is exactly the transform pipeline's contribution.
  *
- * The accepted algebra (collapse(), vector_tyche.cc): at most one
+ * The accepted algebra (collapse(), viper.cc): at most one
  * leading vsext/vzext (kept as the slice's extension width and sign);
  * then any number of vsll and power-of-2 vmul, which accumulate into
  * `shift`; and any number of scalar vadd/vsub, which accumulate into a
@@ -108,8 +108,8 @@
  * itself.
  */
 
-#ifndef __MEM_CACHE_PREFETCH_VECTOR_TYCHE_HH__
-#define __MEM_CACHE_PREFETCH_VECTOR_TYCHE_HH__
+#ifndef __MEM_CACHE_PREFETCH_VIPER_HH__
+#define __MEM_CACHE_PREFETCH_VIPER_HH__
 
 #include <deque>
 #include <list>
@@ -125,12 +125,12 @@
 namespace gem5
 {
 
-struct VectorTychePrefetcherParams;
+struct ViperPrefetcherParams;
 
 namespace prefetch
 {
 
-class VectorTyche : public Queued
+class Viper : public Queued
 {
     /** The CPU-side chain/link table (shared SimObject, same one GDP
      *  uses — the discovery half is identical) */
@@ -147,6 +147,12 @@ class VectorTyche : public Queued
     /** On a fresh/reset window, jump the walk to the frontier instead
      *  of burst-filling the near window (see Prefetcher.py) */
     const bool streamStartAtDistance;
+    /** Frontier distance in whole-VLEN chunks, independent of the
+     *  observed access size; 0 = legacy streaming_distance walk
+     *  (see Prefetcher.py) */
+    const unsigned prefetchDistance;
+    /** VLEN in bytes: the chunk size prefetchDistance counts in */
+    const Addr vlenBytes;
     /** Ablation: stream the index arrays but never capture/convert */
     const bool streamOnly;
     /** Captured raw index lines each pipeline's slice buffer holds
@@ -159,6 +165,31 @@ class VectorTyche : public Queued
     /** Also latch index lines off the read port on a demand read HIT,
      *  not just from fills (see Prefetcher.py) */
     const bool captureOnReadHit;
+    /** Retired-IRT tail depth: converted index lines remembered after
+     *  they leave the pending IRT (0 disables the tail) */
+    const unsigned retiredTailEntries;
+    /** Read-hit capture of a line this producer already converted:
+     *  true = capture anyway (pre-tail behaviour), false = suppress */
+    const bool captureReadHitOwnProducer;
+    /** Capture admission backpressure: skip new captures while the
+     *  prefetch queue backlog is at or above this (0 disables) */
+    const unsigned captureQueueGate;
+    /** Batch-granular residency feedback: resident-drops from one
+     *  batch before its remaining targets are flushed (0 disables) */
+    const unsigned dropBatchConfidence;
+    /** Fraction of a confident batch's remaining targets discarded
+     *  (1.0 = the whole remainder, the original abort) */
+    const double dropBatchFraction;
+    /** Residency-interval registers per prefetcher (0 disables):
+     *  compact feedback-trained model of the resident spans of gather
+     *  target arrays */
+    const unsigned residencyIntervalRegs;
+    /** Interval confidence needed before a covered target is
+     *  suppressed */
+    const unsigned residencyConfThreshold;
+    /** A drop within this many lines of an interval extends it instead
+     *  of allocating a new one */
+    const unsigned residencyGapLines;
     /** Minimum emissions per access event when the queue is full */
     const int drainFloor;
     /** Cross-line dedup window in index lines; 0 disables */
@@ -249,6 +280,11 @@ class VectorTyche : public Queued
         bool extSigned = false;
         /** Chain-table generation this form was collapsed from */
         uint64_t gen = 0;
+        /** Chain-table operand version this form was collapsed from.
+         *  With gen, this is the memo key: while both still match the
+         *  table, the compiled form cannot have changed, so adoption
+         *  skips the walk and the fold entirely (formsMemoHits). */
+        uint64_t opGen = 0;
     };
 
     /**
@@ -371,9 +407,87 @@ class VectorTyche : public Queued
     };
     std::list<IrtEntry> indexRoutingTable;
 
-    struct VTycheStats : public statistics::Group
+    /**
+     * Retired IRT record: an index line whose conversion has already
+     * run, kept after the pending entry is retired so a later read hit
+     * on the same line can tell "this producer already converted these
+     * elements" from "a sibling producer did". Only the key is kept -
+     * no payload, no extent - so the tail is a small CAM, not a copy of
+     * the IRT. FIFO to retired_tail_entries; a re-retirement refreshes
+     * an existing record's position rather than duplicating it.
+     */
+    struct RetiredEntry
     {
-        VTycheStats(statistics::Group *parent);
+        Addr linePaddr;
+        Addr producerPC;
+        bool secure;
+    };
+    std::list<RetiredEntry> retiredRoutingTail;
+
+    /**
+     * drop_batch_confidence bookkeeping. A "batch" is the set of
+     * targets converted from ONE captured index line, keyed by that
+     * line's VA (the latch already carries it for the staleness
+     * abort). emittedFrom tags each queued target line with its
+     * source batch; the getPacket() peek latches the tag of the
+     * packet being handed to the cache, and the pfHitInCache()
+     * override (called synchronously if the cache drops it as
+     * resident) attributes the drop. All structures are small bounded
+     * FIFOs - stale tags age out; an aged-out abort simply lets a
+     * genuine revisit re-emit, which is correct.
+     */
+    /** target line VA -> source index line VA (one-shot: erased at
+     *  issue), bounded by emittedFromFifo */
+    std::unordered_map<Addr, Addr> emittedFrom;
+    std::deque<Addr> emittedFromFifo;
+    /** Per-batch resident-drop tally (recent batches only) */
+    struct BatchDropRec { Addr source; unsigned drops; };
+    std::list<BatchDropRec> batchDropRecs;
+    /** Batches past the confidence threshold: their still-unemitted
+     *  targets are thinned at the push site. acc is the Bresenham
+     *  accumulator that spreads drop_batch_fraction evenly over the
+     *  batch's remaining targets (flush + suppression share it). */
+    struct AbortedBatch { Addr source; double acc; };
+    std::list<AbortedBatch> abortedBatches;
+    /** Source batch of the packet getPacket() just handed over
+     *  (invalid when it was a stream candidate) */
+    bool lastIssuedValid = false;
+    Addr lastIssuedSource = 0;
+
+    /**
+     * Residency-interval registers (residency_intervals != 0). Each
+     * holds a block-aligned VA span [lo, hi) believed resident in the
+     * attach cache, learned entirely from the cache's own verdicts:
+     * a resident-drop (pfHitInCache) at a line extends the nearby
+     * interval (or allocates one), an observed demand MISS inside an
+     * interval trims it — the trim is the aging mechanism, so the
+     * model tracks the cache's actual behaviour with no epoch clock.
+     * Conversion suppresses targets covered by a confident interval.
+     * Spans are bounded by cache residency, so the register count is
+     * dataset-size invariant. Stream candidates are never trained on
+     * or suppressed.
+     */
+    struct ResidencyInterval
+    {
+        Addr lo = 0;          // block-aligned, inclusive
+        Addr hi = 0;          // block-aligned, exclusive; lo==hi: free
+        uint8_t conf = 0;
+        uint64_t lastUse = 0; // victim tiebreak
+    };
+    std::vector<ResidencyInterval> residencyIntervals;
+    uint64_t residencyUseCount = 0;
+    /** Target line VA of the indirect packet getPacket() just handed
+     *  over (one-shot, consumed by pfHitInCache) */
+    bool lastIssuedTargetValid = false;
+    Addr lastIssuedTarget = 0;
+
+    void residencyObserveDrop(Addr line_va);
+    void residencyObserveMiss(Addr line_va);
+    bool residencyCovered(Addr line_va) const;
+
+    struct ViperStats : public statistics::Group
+    {
+        ViperStats(statistics::Group *parent);
         /** Chunk events at producer PCs */
         statistics::Scalar chunksObserved;
         /** Index-array stream candidates emitted */
@@ -381,23 +495,52 @@ class VectorTyche : public Queued
         /** Walk lines suppressed at the announced extent end
          *  (limit_gate) */
         statistics::Scalar streamLimitClamped;
-        /** Linear forms adopted at trigger */
+        /** Linear forms adopted at trigger (a chain walk + fold ran) */
         statistics::Scalar formsAdopted;
+        /** Triggers whose compiled form was still valid, so the walk
+         *  and fold were skipped entirely */
+        statistics::Scalar formsMemoHits;
         /** Linked triggers whose chain was not yet snoopable */
         statistics::Scalar chainNotReady;
         /** Chains rejected: not collapsible to base + (idx << shift) */
         statistics::Scalar chainsRejected;
         /** Linked producers denied a pipeline (pipelines cap) */
         statistics::Scalar pipelinesSaturated;
-        /** Lines registered for capture (prefetch-window path) */
+        /** Lines registered for capture (a departing stream prefetch
+         *  inside a configured producer's window) */
         statistics::Scalar capturesRegistered;
-        /** Lines registered for capture (demand-miss path) */
-        statistics::Scalar capturesRegisteredMiss;
         /** Captured index-line fills converted */
         statistics::Scalar fillsCaptured;
         /** Resident index lines latched off the read port on a demand
          *  read hit (capture_on_read_hit) */
         statistics::Scalar hitsCaptured;
+        /** Read-hit captures of a line the retired tail says this same
+         *  producer already converted (counted whether or not
+         *  capture_read_hit_own_producer suppressed them) */
+        statistics::Scalar recapturesDetected;
+        /** ...of those, the ones actually skipped
+         *  (capture_read_hit_own_producer = false) */
+        statistics::Scalar recapturesSuppressed;
+        /** Capture admissions skipped at a congested prefetch queue
+         *  (capture_queue_gate) */
+        statistics::Scalar capturesGated;
+        /** Resident-drops attributed to a batch
+         *  (drop_batch_confidence) */
+        statistics::Scalar batchDropSamples;
+        /** Batches aborted at the confidence threshold */
+        statistics::Scalar batchesAborted;
+        /** Targets removed from the queue or suppressed at emission
+         *  because their batch aborted */
+        statistics::Scalar targetsFlushedOnDrop;
+        /** Resident-drops consumed as interval training samples */
+        statistics::Scalar residencyDropsTrained;
+        /** Interval registers allocated for an uncovered drop */
+        statistics::Scalar residencyIntervalAllocs;
+        /** Intervals trimmed/split by an observed demand miss */
+        statistics::Scalar residencyIntervalTrims;
+        /** Targets suppressed at emission: covered by a confident
+         *  residency interval */
+        statistics::Scalar targetsResidencySuppressed;
         /** Fills dropped: slice buffer full */
         statistics::Scalar bufferBusyDrops;
         /** Fills dropped: form stale (table cleared) */
@@ -444,7 +587,7 @@ class VectorTyche : public Queued
         statistics::Scalar rowPromotions;
         /** Issues where the queue held no due row-mate to promote */
         statistics::Scalar rowScheduleMisses;
-    } vtycheStats;
+    } viperStats;
 
     /**
      * Self-clocked drain (every cycle): the conversion/emission
@@ -526,12 +669,32 @@ class VectorTyche : public Queued
     /** Register one index line for capture at fill (bounded FIFO);
      *  valid_bytes != 0 clamps its conversion (limit_gate) */
     void registerCapture(Addr line_pa, Addr line_va, Addr producer_pc,
-                         bool secure, bool from_miss,
-                         unsigned valid_bytes);
+                         bool secure, unsigned valid_bytes);
 
     /** Drop a registered line, so a capture taken elsewhere (the read
      *  port) is not latched a second time by a later fill */
     void dropRegistration(Addr line_pa, bool secure);
+
+    /** Record that producer_pc's conversion of this line has run.
+     *  Refreshes an existing record instead of duplicating it; FIFO to
+     *  retired_tail_entries. No-op when the tail is disabled. */
+    void retireRegistration(Addr line_pa, Addr producer_pc, bool secure);
+
+    /** Does the retired tail say producer_pc already converted this
+     *  line? */
+    bool wasConvertedBy(Addr line_pa, Addr producer_pc,
+                        bool secure) const;
+
+    /** capture_queue_gate: is the prefetch queue backlog (queued
+     *  targets + targets awaiting translation) at or above the
+     *  admission threshold? Always false when the gate is disabled. */
+    bool captureBacklogged() const;
+
+    /** drop_batch_confidence: the cache just dropped the packet
+     *  getPacket() handed it, because the line is already resident.
+     *  Attribute the drop to its batch; at the threshold, flush the
+     *  batch's queued targets and suppress its unemitted ones. */
+    void pfHitInCache() override;
 
     /** capture_on_read_hit: latch the resident index lines this demand
      *  read hit on straight into the producer's slice buffer, reading
@@ -567,8 +730,8 @@ class VectorTyche : public Queued
     void drainEmission(std::vector<AddrPriority> &addresses);
 
   public:
-    VectorTyche(const VectorTychePrefetcherParams &p);
-    ~VectorTyche() = default;
+    Viper(const ViperPrefetcherParams &p);
+    ~Viper() = default;
 
     /** Latch the drain's translation context, then delegate; arms the
      *  self-clocked drain afterwards */
@@ -591,4 +754,4 @@ class VectorTyche : public Queued
 } // namespace prefetch
 } // namespace gem5
 
-#endif //__MEM_CACHE_PREFETCH_VECTOR_TYCHE_HH__
+#endif //__MEM_CACHE_PREFETCH_VIPER_HH__

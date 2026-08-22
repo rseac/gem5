@@ -239,6 +239,26 @@ class DynInst : public ExecContext, public RefCounted
     uint8_t *_readySrcIdx;
 
   public:
+    /**
+     * VectorChainTable operand snoop (see cpu/vector_chain_table.hh).
+     *
+     * The gather's rs1 (base) and a .vx transform's scalar are only
+     * readable once sources are ready, i.e. at issue — but the table
+     * itself must not be written from a speculative stage: vsetvl is
+     * modelled as a control instruction whose vtype/vl participate in
+     * PCState equality (arch/riscv/pcstate.hh), so a vtype change
+     * mispredicts and squashes everything behind it. An instruction
+     * decoded under the OLD vtype can still reach issue/dispatch and
+     * poison the table with a wrong-path vtype-derived field, and the
+     * table has no rollback.
+     *
+     * So the value is COLLECTED at issue and APPLIED at commit: a
+     * squashed instruction never retires, so its snoop dies with the
+     * DynInst and no undo log is needed.
+     */
+    uint64_t chainSnoopValue = 0;
+    bool chainSnoopValid = false;
+
     size_t numSrcs() const { return _numSrcs; }
     size_t numDests() const { return _numDests; }
 

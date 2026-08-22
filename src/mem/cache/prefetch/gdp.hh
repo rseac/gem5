@@ -58,8 +58,8 @@
  *    targets consume queue slots. 0 = unbounded, the legacy model in
  *    which replay width never binds. Setting it to blkSize/EEW is the
  *    whole-line-per-event limit — the point at which GDP's serial
- *    chain matches VTyche's collapsed one-shot conversion
- *    (mem/cache/prefetch/vector_tyche.hh), making the two directly
+ *    chain matches Viper's collapsed one-shot conversion
+ *    (mem/cache/prefetch/viper.hh), making the two directly
  *    comparable on conversion throughput as well as on algebra.
  *
  * Load shedding under sustained overload happens at fill admission,

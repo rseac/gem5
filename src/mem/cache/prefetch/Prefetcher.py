@@ -510,8 +510,8 @@ class GDPPrefetcher(QueuedPrefetcher):
     )
 
 
-class VectorTychePrefetcher(QueuedPrefetcher):
-    """VTyche (Vector Tyche): an A[B[i]] gather prefetcher — GDP's
+class ViperPrefetcher(QueuedPrefetcher):
+    """Viper (VIPER): an A[B[i]] gather prefetcher — GDP's
     architectural discovery with IMP's linear equation for generation.
 
     Shares GDP's CPU-side VectorChainTable (producer identification,
@@ -537,11 +537,11 @@ class VectorTychePrefetcher(QueuedPrefetcher):
 
     Vector-side design (requires --prefetcher-side vector). Wire ONE
     VectorChainTable per core to both this prefetcher's link_table and the
-    CPU's vector_chain_table. See mem/cache/prefetch/vector_tyche.hh."""
+    CPU's vector_chain_table. See mem/cache/prefetch/viper.hh."""
 
-    type = "VectorTychePrefetcher"
-    cxx_class = "gem5::prefetch::VectorTyche"
-    cxx_header = "mem/cache/prefetch/vector_tyche.hh"
+    type = "ViperPrefetcher"
+    cxx_class = "gem5::prefetch::Viper"
+    cxx_header = "mem/cache/prefetch/viper.hh"
 
     # Index loads are data reads; ignore instruction accesses.
     on_inst = False
@@ -560,10 +560,31 @@ class VectorTychePrefetcher(QueuedPrefetcher):
     )
     streaming_distance = Param.Unsigned(
         8,
-        "Index-array stream lookahead in lines. Also sets the indirect "
-        "lookahead (captures come from the stream's fills): full "
-        "indirect timeliness needs distance*chunk-cadence to cover TWO "
-        "memory round-trips (index line + target line).",
+        "Index-array stream lookahead in chunks of the OBSERVED access "
+        "size (vl*sew bytes), so the byte lookahead shrinks under "
+        "partial-vl chunks. Also sets the indirect lookahead (captures "
+        "come from the stream's fills): full indirect timeliness needs "
+        "distance*chunk-cadence to cover TWO memory round-trips (index "
+        "line + target line). Ignored when prefetch_distance is set.",
+    )
+    prefetch_distance = Param.Unsigned(
+        0,
+        "Stream frontier distance in whole-VLEN chunks (vlen/8 bytes "
+        "each), independent of the observed access size: partial-vl "
+        "chunks (short spmv rows, loop tails) keep the full byte "
+        "lookahead, and the knob means the same thing across VLEN "
+        "configs. Each chunk event walks the window [addr + N*vlen/8, "
+        "addr + size + N*vlen/8) -- steady-state degree = the demand "
+        "advance, ceil(vlen/512) lines for full-vl chunks -- and a "
+        "fresh/reset window starts at the frontier "
+        "(stream_start_at_distance is implied). 0 (default) keeps the "
+        "legacy streaming_distance walk.",
+    )
+    vlen = Param.Unsigned(
+        0,
+        "Hardware VLEN in bits, the chunk size prefetch_distance is "
+        "denominated in. The config script wires this from --vlen; "
+        "must be nonzero when prefetch_distance is set.",
     )
     stream_only = Param.Bool(
         False,
@@ -602,6 +623,117 @@ class VectorTychePrefetcher(QueuedPrefetcher):
         "This buys no lookahead over a fill capture - the hit is at the "
         "owning producer's own cursor - the gain is that the sibling "
         "chains get index data at all.",
+    )
+    retired_tail_entries = Param.Unsigned(
+        32,
+        "Retired-IRT tail depth: index lines whose conversion already "
+        "ran are remembered here (line PA + owning producer PC) after "
+        "leaving the pending IRT, instead of being erased outright. "
+        "The tail is what capture_read_hit_own_producer consults; 0 "
+        "disables it (recaptures are then never detected). FIFO, so a "
+        "line converted long enough ago ages out and a later read hit "
+        "converts it again - the correct answer for a genuine revisit.",
+    )
+    capture_read_hit_own_producer = Param.Bool(
+        True,
+        "capture_on_read_hit disposition when the retired tail says "
+        "THIS producer already converted the line: true = capture "
+        "anyway (the behaviour before the tail existed), false = skip "
+        "it (recapturesSuppressed). The double conversion it removes "
+        "is self-inflicted: the prefetcher's own stream walk fetches "
+        "the index line, the fill converts it, and the demand read "
+        "that follows then hits and converts the identical elements a "
+        "second time - so the better the streaming half works, the "
+        "more of it there is. A retired entry from a DIFFERENT "
+        "producer never suppresses, which is what keeps the "
+        "multi-chain case (s353) that capture_on_read_hit exists for.",
+    )
+    capture_queue_gate = Param.Unsigned(
+        0,
+        "Capture admission backpressure: skip new captures (IRT "
+        "registration on the prefetch-window path, and read-hit "
+        "capture) while the prefetch queue "
+        "backlog - queued targets plus targets awaiting translation - "
+        "is at or above this many entries. 0 disables (default, "
+        "bit-neutral). A capture admitted while the queue is "
+        "saturated is work the staleness abort later flushes: "
+        "emission stalls, the demand cursor passes the captured "
+        "line, and its batch is discarded (stalenessAborts - up to "
+        "half of all captures at L1W1 in the TSVC LARGE campaign). "
+        "The stream walk itself is never gated, only the "
+        "capture/convert half. Guidance: queue_size minus one line's "
+        "worth of targets (64 - 16 = 48 for int32 indices) admits a "
+        "capture only when its conversion could actually queue.",
+    )
+    drop_batch_confidence = Param.Unsigned(
+        0,
+        "Batch-granular residency feedback: when the cache drops one "
+        "of this prefetcher's targets as already resident "
+        "(pfHitInCache), count it against the BATCH that generated it "
+        "- the up-to-blkSize/EEW targets converted from one captured "
+        "index line. After this many resident-drops from the same "
+        "batch, the batch's remaining targets are flushed from the "
+        "prefetch queue and its still-unemitted targets are "
+        "suppressed (targetsFlushedOnDrop). Rationale: measured "
+        "residency is all-or-nothing per index line (one drop "
+        "predicts the sibling targets are resident too), so one probe "
+        "pays for the rest of the batch. 0 disables (default); 1 = "
+        "abort on the first drop; higher values demand more evidence "
+        "before sacrificing a batch (partial-residency workloads). "
+        "Stream candidates are never touched - only converted "
+        "indirect targets carry a batch tag. Targets already parked "
+        "awaiting translation leak through (their queue cannot be "
+        "edited mid-translation) and are dropped by the cache as "
+        "before, bounded by the translation queue depth.",
+    )
+    drop_batch_fraction = Param.Float(
+        1.0,
+        "Fraction of a batch's remaining targets discarded once "
+        "drop_batch_confidence is reached, in (0, 1]. 1.0 (default) "
+        "forfeits the whole remainder - the original all-or-nothing "
+        "abort. Smaller values thin the remainder evenly (a Bresenham "
+        "accumulator per aborted batch drops exactly this fraction, "
+        "spread across both the queue flush and the still-unemitted "
+        "suppression), for workloads where residency is only partial "
+        "per index line and a whole-batch abort sacrifices needed "
+        "siblings (the poisson3Db failure mode: 28.6/32 unique lines "
+        "per chunk, dbc1 cost 0.94 -> 0.71 coverage). Only read when "
+        "drop_batch_confidence != 0.",
+    )
+    residency_intervals = Param.Unsigned(
+        0,
+        "Residency-interval registers (0 disables): a compact "
+        "feedback-trained model of which spans of the gather target "
+        "array are cache-resident. Each register holds a block-aligned "
+        "VA range [lo, hi) plus a 3-bit confidence. Training is the "
+        "cache's own verdicts: a resident-drop (pfHitInCache) of an "
+        "indirect target extends the interval it lands in or near "
+        "(residency_gap_lines) and bumps confidence, or allocates a "
+        "register; an observed demand MISS inside an interval trims it "
+        "and decays confidence - the trim is the only aging mechanism, "
+        "so the model tracks actual cache behaviour with no epoch "
+        "clock, and a stale span costs exactly one demand miss before "
+        "it un-learns. Conversion suppresses (never emits) targets "
+        "covered by an interval at residency_conf_threshold, targeting "
+        "the resident re-emission population (spmv poisson3Db: ~20% of "
+        "issued) that recency windows structurally miss (the 4-50 "
+        "chunk gap band). Spatially scattered drops churn at "
+        "confidence 1 and never suppress, so the batch-abort failure "
+        "mode cannot engage. Spans are bounded by cache residency, so "
+        "the register count is dataset-size invariant (8 is plenty). "
+        "Stream candidates are never trained on or suppressed.",
+    )
+    residency_conf_threshold = Param.Unsigned(
+        2,
+        "Interval confidence required before a covered target is "
+        "suppressed (see residency_intervals). 2 = a span must absorb "
+        "two clustered resident-drops before it starts suppressing.",
+    )
+    residency_gap_lines = Param.Unsigned(
+        2,
+        "A resident-drop within this many cache lines of an existing "
+        "interval extends it rather than allocating a new register "
+        "(see residency_intervals).",
     )
     drain_floor = Param.Int(
         8,
@@ -644,7 +776,7 @@ class VectorTychePrefetcher(QueuedPrefetcher):
         "(conversionWidthLimited counts the cut-shorts). Within-line "
         "dedup and the dedup window keep whole-line semantics across "
         "the split. 0 = unbounded (whole line per event, the classic "
-        "VTyche array; 8 = one full e64 line per event). GDP's "
+        "Viper array; 8 = one full e64 line per event). GDP's "
         "pipelines_per_gather analog for the collapsed-chain array; "
         "same semantics as VHybrid's conversion_lanes.",
     )
@@ -762,7 +894,7 @@ class VectorTychePrefetcher(QueuedPrefetcher):
 
 
 class VectorTyche2Prefetcher(QueuedPrefetcher):
-    """VTyche2: VTyche with DECOUPLED metadata/data lead.\n\n    Deep index staging (index_distance) + cursor-scheduled\n    near release (release_distance): index lines are fetched\n    and captured far ahead (cheap SRAM staging, L2 residency),\n    while converted targets and just-in-time L1 promotions are\n    released only when the walk cursor closes to within\n    release_distance chunks. Separates the two failure modes a\n    single distance couples: late targets (fix with deep\n    index_distance) vs evicted-before-use targets (fix with\n    shallow release_distance).\n\n    Base design: VTyche, an A[B[i]] gather prefetcher — GDP's
+    """VTyche2: Viper with DECOUPLED metadata/data lead.\n\n    Deep index staging (index_distance) + cursor-scheduled\n    near release (release_distance): index lines are fetched\n    and captured far ahead (cheap SRAM staging, L2 residency),\n    while converted targets and just-in-time L1 promotions are\n    released only when the walk cursor closes to within\n    release_distance chunks. Separates the two failure modes a\n    single distance couples: late targets (fix with deep\n    index_distance) vs evicted-before-use targets (fix with\n    shallow release_distance).\n\n    Base design: Viper, an A[B[i]] gather prefetcher — GDP's
     architectural discovery with IMP's linear equation for generation.
 
     Shares GDP's CPU-side VectorChainTable (producer identification,
@@ -788,7 +920,7 @@ class VectorTyche2Prefetcher(QueuedPrefetcher):
 
     Vector-side design (requires --prefetcher-side vector). Wire ONE
     VectorChainTable per core to both this prefetcher's link_table and the
-    CPU's vector_chain_table. See mem/cache/prefetch/vector_tyche.hh."""
+    CPU's vector_chain_table. See mem/cache/prefetch/viper.hh."""
 
     type = "VectorTyche2Prefetcher"
     cxx_class = "gem5::prefetch::VectorTyche2"
@@ -961,7 +1093,7 @@ class RevelaPrefetcher(QueuedPrefetcher):
         "cursor: at stream entry and after every demand catch-up the "
         "frontier jumps to current@ + this many lines instead of "
         "ramping from current@, skipping the doomed-late emissions a "
-        "distance-zero ramp spends its bandwidth on (VTyche's "
+        "distance-zero ramp spends its bandwidth on (Viper's "
         "streaming_distance analogue). Skipped lines are never "
         "prefetched — demand pays their full miss. If it exceeds the "
         "aggressivity limit, the ceiling is raised to it (the stream "
@@ -971,11 +1103,11 @@ class RevelaPrefetcher(QueuedPrefetcher):
 
 class VHybridPrefetcher(QueuedPrefetcher):
     """VHybrid: ReVeLA's announcement-driven stream engine driving
-    VTyche's capture/convert half.
+    Viper's capture/convert half.
 
     Streams come from the vsetvl-AVL announcements in the CPU-side
     RevelaStreamTable (aggressivity table, min-distance fairness,
-    every-cycle trigger) instead of VTyche's demand-anchored walk, so
+    every-cycle trigger) instead of Viper's demand-anchored walk, so
     index lookahead is licensed by the announced extent. A stream
     whose last-updating PC the VectorChainTable knows as a linked
     producer is index data: its emitted lines register for fill
@@ -1004,7 +1136,7 @@ class VHybridPrefetcher(QueuedPrefetcher):
     # Streams and index values are virtual; train on VAs and translate
     # through the registered MMU.
     use_virtual_addresses = True
-    # VTyche's queue depth (not ReVeLA's 16): one queue carries index
+    # Viper's queue depth (not ReVeLA's 16): one queue carries index
     # stream lines AND converted target bursts.
     queue_size = 64
 
@@ -1046,7 +1178,7 @@ class VHybridPrefetcher(QueuedPrefetcher):
     slice_buffer_entries = Param.Unsigned(
         2,
         "Captured raw index lines each producer's slice buffer holds "
-        "(VTyche's param, same semantics: a fill arriving with the "
+        "(Viper's param, same semantics: a fill arriving with the "
         "buffer full is dropped whole).",
     )
     pipelines = Param.Unsigned(
@@ -1061,7 +1193,7 @@ class VHybridPrefetcher(QueuedPrefetcher):
     drain_floor = Param.Int(
         8,
         "Minimum targets emitted per demand event when the prefetch "
-        "queue is full (VTyche's bounded displacement; 0 = pure "
+        "queue is full (Viper's bounded displacement; 0 = pure "
         "stall-on-full).",
     )
     limit_aware_slicing = Param.Bool(

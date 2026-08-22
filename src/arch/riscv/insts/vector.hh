@@ -850,15 +850,20 @@ class VlIndexMicroInst : public VectorMemMicroInst
   public:
     // Chain table: an indexed vector load is the gather whose base (rs1) is
     // snooped at issue; expose its data element width (vtype SEW -> the
-    // index-to-byte-offset shift) and the architectural register this
-    // element micro reads its offsets from (see cpu/vector_chain_table.hh).
+    // index-to-byte-offset shift) and the vector register this element
+    // micro reads its offsets from (see cpu/vector_chain_table.hh).
+    // vs2RegIdx is RELATIVE (which vtmp copy of the index group); the
+    // register actually read is vecRegClass[VecMemInternalReg0 +
+    // vs2RegIdx] (VlIndexMicroConstructor, templates/vector_mem.isa),
+    // so report that absolute index — the chain table's provenance
+    // slots are keyed the same way as every other micro's RegId.
     VecMemInfo
     vecMemInfo() const override
     {
         VecMemInfo info;
         info.kind = VecMemInfo::IndexedLoad;
         info.elemBytes = vtype_SEW(machInst.vtype8) / 8;
-        info.srcVReg = vs2RegIdx;
+        info.srcVReg = VecMemInternalReg0 + vs2RegIdx;
         return info;
     }
 };

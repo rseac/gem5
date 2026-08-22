@@ -181,6 +181,31 @@ VectorTyche2::collapse(const VectorChainTable::ChainSnapshot &snap) const
             break;
           }
 
+          case VOp::WMul:
+          case VOp::WMulU: {
+            // Fused extend-and-multiply (clang's A[B[i]] shape, where
+            // gcc emits vsext.vf2 + vsll). Collapses to exactly the
+            // (extension, shift) pair those two give. Must lead the
+            // chain, for the same reason a bare extend must.
+            if (scaled || extended) {
+                return LinearForm();
+            }
+            if (s.scalar == 0 || !isPowerOf2(s.scalar)) {
+                return LinearForm();
+            }
+            const unsigned k = ctz64(s.scalar);
+            if (shift + k > 63) {
+                return LinearForm();
+            }
+            extended = true;
+            f.extBits = s.extFromBits;
+            f.extSigned = (s.op == VOp::WMul);
+            shift += k;
+            bias *= s.scalar;
+            scaled = true;
+            break;
+          }
+
           case VOp::Add:
             bias += s.scalar;
             scaled = true;

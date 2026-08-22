@@ -80,7 +80,7 @@ class ReVeLA : public Queued
      *  initialDistance lines instead of ramping from current@ — the
      *  distance-zero region is doomed-late (demand reaches it well
      *  inside one memory round trip). Skipped lines are never
-     *  prefetched; demand pays their full miss. VTyche's
+     *  prefetched; demand pays their full miss. Viper's
      *  streaming_distance analogue; 0 = paper behavior. */
     const unsigned initialDistance;
 
