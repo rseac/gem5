@@ -37,19 +37,23 @@ requires(isa_required=ISA.RISCV)
 
 class RVVCore(BaseCPUCore):
     def __init__(self, elen, vlen, cpu_id, cpu_type, enable_chaining, vector_throughput, simd_units):
+        # 1. Instantiate the CPU Core with lane scaling and throughput parameters
         if cpu_type == "AraO3":
             from cpu.o3.AraConfig import AraO3CPU as SelectedCPU
             core = SelectedCPU(cpu_id=cpu_id,
-                            fetchWidth=1, decodeWidth=1, renameWidth=1,
-                            dispatchWidth=1, issueWidth=1, wbWidth=1,
-                            commitWidth=1, squashWidth=1)
+                               simd_units=simd_units,
+                               vector_timing_throughput=vector_throughput,
+                               enable_vector_chaining=enable_chaining)
         else:
             from cpu.minor.AraMinorConfig import AraMinorCPU as SelectedCPU
-            core = SelectedCPU(cpu_id=cpu_id)
+            core = SelectedCPU(cpu_id=cpu_id,
+                               simd_units=simd_units,
+                               vector_timing_throughput=vector_throughput,
+                               enable_vector_chaining=enable_chaining)
             
         super().__init__(core=core, isa=ISA.RISCV)
         
-        # --- ISA INJECTION ---
+        # 2. Preserve full ISA parameter injection mapping
         param_map = {
             'vlen': vlen, 'elen': elen,
             'enable_chaining': enable_chaining,
@@ -92,7 +96,7 @@ board.set_se_binary_workload(binary, arguments=args.parms.split())
 
 print("\n" + "="*60)
 print(f"   ARA CALIBRATED SIMULATION ACTIVE")
-print(f"   VLEN={args.vlen}, Lanes={args.simd_units}, IssueFloor=6")
+print(f"   VLEN={args.vlen}, Lanes={args.simd_units}, Throughput={args.vector_timing_throughput}, IssueFloor=6")
 print("="*60 + "\n")
 
 simulator = Simulator(board=board, full_system=False)
