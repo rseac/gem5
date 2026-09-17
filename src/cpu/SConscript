@@ -42,7 +42,6 @@ Import('*')
 
 DebugFlag('Activity')
 DebugFlag('Commit')
-DebugFlag('GDP')
 DebugFlag('VectorChain', 'Vector chain table (CPU-to-prefetcher channel)')
 DebugFlag('Tyche')
 DebugFlag('Context')

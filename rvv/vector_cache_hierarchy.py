@@ -93,14 +93,16 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         # (tyche_table) — the CPU-to-prefetcher sideband channel. See
         # src/cpu/tyche_table.hh and needs_chain_table().
         prefetcher_needs_chain_table: bool = False,
-        # GDP/Viper: same wiring pattern for the VectorChainTable
+        # viper_final: same wiring pattern for the VectorChainTable
         # (prefetcher.link_table + core.vector_chain_table). See
         # src/cpu/vector_chain_table.hh and needs_vector_chain_table().
         prefetcher_needs_vector_chain_table: bool = False,
         # VectorChainTable sizing, shared by every prefetcher fed from
-        # that channel (gdp/viper/vtyche2/vhybrid) since one table is
+        # that channel (viper_final/viper_rtl) since one table is
         # built per core. Defaults match VectorChainTable.py.
         vector_dct_entries: int = 8,
+        vector_backprop_memo: bool = False,
+        vector_folded_forms: bool = False,
         vector_max_transform_stages: int = 4,
         # ReVeLA: same wiring pattern for the RevelaStreamTable
         # (prefetcher.stream_table + core.revela_table). See
@@ -173,6 +175,8 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
         self._prefetcher_needs_chain_table = prefetcher_needs_chain_table
         self._prefetcher_needs_vector_chain_table = prefetcher_needs_vector_chain_table
         self._vector_dct_entries = vector_dct_entries
+        self._vector_backprop_memo = vector_backprop_memo
+        self._vector_folded_forms = vector_folded_forms
         self._vector_max_transform_stages = vector_max_transform_stages
         self._prefetcher_needs_revela_table = prefetcher_needs_revela_table
         self._revela_stt_entries = revela_stt_entries
@@ -206,8 +210,8 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
             self._prefetcher_needs_vector_chain_table
             and "link_table" in prefetcher._params
         ):
-            # Same _params guard: only the gdp class has a link_table
-            # param, so dual configs wire the right prefetcher.
+            # Same _params guard: only the viper_final classes have a
+            # link_table param, so dual configs wire the right prefetcher.
             from m5.objects import VectorChainTable
 
             tbl = VectorChainTable(
@@ -220,11 +224,13 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
             # consumers_per_producer pf-param is the single source of
             # truth; copy it onto the table so the head rows carry
             # matching consumer slots. Guarded so prefetchers without
-            # the param (gdp, vtyche2) keep the table default of 1.
+            # the param keep the table default of 1.
             if "consumers_per_producer" in prefetcher._params:
                 tbl.consumers_per_producer = (
                     prefetcher.consumers_per_producer
                 )
+            tbl.backprop_memo = self._vector_backprop_memo
+            tbl.folded_forms = self._vector_folded_forms
             cpu.core.vector_chain_table = tbl
             prefetcher.link_table = tbl
             self._core_vector_chain_table = tbl
@@ -346,7 +352,7 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
                     # from the demand side (policy-in-isolation runs).
                     assert self._stream_demote_demand, (
                         "stream_demote needs a vector-chain-table prefetcher "
-                        "(gdp/viper) or stream_demote_demand to feed "
+                        "(viper_final) or stream_demote_demand to feed "
                         "the stream-page registry"
                     )
                     from m5.objects import VectorChainTable
@@ -358,6 +364,8 @@ class VectorSplitCacheHierarchy(PrivateL1PrivateL2CacheHierarchy):
                         demand_stream_pages=True,
                         monotone_arm=self._stream_demote_monotone,
                     )
+                    tbl.backprop_memo = self._vector_backprop_memo
+                    tbl.folded_forms = self._vector_folded_forms
                     cpu.core.vector_chain_table = tbl
                     self._core_vector_chain_table = tbl
                 from m5.objects import StreamDemoteLRURP

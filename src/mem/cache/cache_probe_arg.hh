@@ -70,6 +70,20 @@ struct CacheAccessor
 
     /** Determine if cache is coalescing writes */
     virtual bool coalesce() const = 0;
+
+    /**
+     * Copy a resident block's data (up to size bytes from its start)
+     * into dst; false when the block is not resident. Default: no
+     * data path. Models one extra read-port access; used by
+     * prefetchers that must read chain values out of lines the cache
+     * already holds (a prefetch dropped as pfHitInCache produces no
+     * fill to capture). See mem/cache/prefetch/viper_final.hh.
+     */
+    virtual bool
+    readLine(Addr addr, bool is_secure, uint8_t *dst, unsigned size) const
+    {
+        return false;
+    }
 };
 
 /**

@@ -1291,9 +1291,26 @@ def format VectorReduceIntFormat(code, category, *flags) {{
         flags
     )
     inst_name, inst_suffix = name.split("_", maxsplit=1)
-    dest_reg_id = "vecRegClass[_machInst.vd]"
-    src1_reg_id = "vecRegClass[_machInst.vs1 == _machInst.vd\
-                               ? VecMemInternalReg0 : _machInst.vs1]"
+    dest_reg_id = "(_microIdx == _numMicros - 1 ? " \
+                  "vecRegClass[_machInst.vd] : " \
+                  "vecRegClass[VecMemInternalReg0 + " \
+                  "((_machInst.vd == _machInst.vs2 + 1) ? 2 : 1)])"
+    # Reduction accumulator chain: partials flow through a NORMALLY
+    # RENAMED internal register (a fresh version per write), so micro
+    # i+1 carries a real IQ dependency on micro i. Chaining through
+    # the pinned in-place vd (the old scheme: micro reads Vd[0]) had
+    # NO inter-micro dependency, so reduce micros could issue out of
+    # order and read the VPinVd fill or a stale partial (observed as
+    # the vle32/vsext/vluxei64 "widening-chain" data corruption).
+    # Only the LAST micro writes vd (pinned, one write). The acc reg
+    # index avoids VecMemInternalReg0+0 (vs1/v0 copies) and the
+    # vs2-overlap copy at vd-vs2.
+    acc_reg_id = "vecRegClass[VecMemInternalReg0 + " \
+                 "((_machInst.vd == _machInst.vs2 + 1) ? 2 : 1)]"
+    src1_reg_id = "(_microIdx == 0 ? " \
+                  "vecRegClass[_machInst.vs1 == _machInst.vd " \
+                  "? VecMemInternalReg0 : _machInst.vs1] : " \
+                  + acc_reg_id + ")"
     src2_reg_id = "vecRegClass[(_machInst.vs2 + _microIdx == _machInst.vd\
                                ? VecMemInternalReg0 : _machInst.vs2)\
                                + _microIdx]"
@@ -1340,9 +1357,26 @@ def format VectorReduceFloatFormat(code, category, *flags) {{
         flags
     )
     inst_name, inst_suffix = name.split("_", maxsplit=1)
-    dest_reg_id = "vecRegClass[_machInst.vd]"
-    src1_reg_id = "vecRegClass[_machInst.vs1 == _machInst.vd\
-                               ? VecMemInternalReg0 : _machInst.vs1]"
+    dest_reg_id = "(_microIdx == _numMicros - 1 ? " \
+                  "vecRegClass[_machInst.vd] : " \
+                  "vecRegClass[VecMemInternalReg0 + " \
+                  "((_machInst.vd == _machInst.vs2 + 1) ? 2 : 1)])"
+    # Reduction accumulator chain: partials flow through a NORMALLY
+    # RENAMED internal register (a fresh version per write), so micro
+    # i+1 carries a real IQ dependency on micro i. Chaining through
+    # the pinned in-place vd (the old scheme: micro reads Vd[0]) had
+    # NO inter-micro dependency, so reduce micros could issue out of
+    # order and read the VPinVd fill or a stale partial (observed as
+    # the vle32/vsext/vluxei64 "widening-chain" data corruption).
+    # Only the LAST micro writes vd (pinned, one write). The acc reg
+    # index avoids VecMemInternalReg0+0 (vs1/v0 copies) and the
+    # vs2-overlap copy at vd-vs2.
+    acc_reg_id = "vecRegClass[VecMemInternalReg0 + " \
+                 "((_machInst.vd == _machInst.vs2 + 1) ? 2 : 1)]"
+    src1_reg_id = "(_microIdx == 0 ? " \
+                  "vecRegClass[_machInst.vs1 == _machInst.vd " \
+                  "? VecMemInternalReg0 : _machInst.vs1] : " \
+                  + acc_reg_id + ")"
     src2_reg_id = "vecRegClass[(_machInst.vs2 + _microIdx == _machInst.vd\
                                ? VecMemInternalReg0 : _machInst.vs2)\
                                + _microIdx]"
@@ -1394,9 +1428,26 @@ def format VectorReduceFloatWideningFormat(code, category, *flags) {{
         flags
     )
     inst_name, inst_suffix = name.split("_", maxsplit=1)
-    dest_reg_id = "vecRegClass[_machInst.vd]"
-    src1_reg_id = "vecRegClass[_machInst.vs1 == _machInst.vd\
-                               ? VecMemInternalReg0 : _machInst.vs1]"
+    dest_reg_id = "(_microIdx == _numMicros - 1 ? " \
+                  "vecRegClass[_machInst.vd] : " \
+                  "vecRegClass[VecMemInternalReg0 + " \
+                  "((_machInst.vd == _machInst.vs2 + 1) ? 2 : 1)])"
+    # Reduction accumulator chain: partials flow through a NORMALLY
+    # RENAMED internal register (a fresh version per write), so micro
+    # i+1 carries a real IQ dependency on micro i. Chaining through
+    # the pinned in-place vd (the old scheme: micro reads Vd[0]) had
+    # NO inter-micro dependency, so reduce micros could issue out of
+    # order and read the VPinVd fill or a stale partial (observed as
+    # the vle32/vsext/vluxei64 "widening-chain" data corruption).
+    # Only the LAST micro writes vd (pinned, one write). The acc reg
+    # index avoids VecMemInternalReg0+0 (vs1/v0 copies) and the
+    # vs2-overlap copy at vd-vs2.
+    acc_reg_id = "vecRegClass[VecMemInternalReg0 + " \
+                 "((_machInst.vd == _machInst.vs2 + 1) ? 2 : 1)]"
+    src1_reg_id = "(_microIdx == 0 ? " \
+                  "vecRegClass[_machInst.vs1 == _machInst.vd " \
+                  "? VecMemInternalReg0 : _machInst.vs1] : " \
+                  + acc_reg_id + ")"
     src2_reg_id = "vecRegClass[(_machInst.vs2 + _microIdx == _machInst.vd\
                                ? VecMemInternalReg0 : _machInst.vs2)\
                                + _microIdx]"
@@ -1507,9 +1558,26 @@ def format VectorReduceIntWideningFormat(code, category, *flags) {{
         flags
     )
     inst_name, inst_suffix = name.split("_", maxsplit=1)
-    dest_reg_id = "vecRegClass[_machInst.vd]"
-    src1_reg_id = "vecRegClass[_machInst.vs1 == _machInst.vd\
-                               ? VecMemInternalReg0 : _machInst.vs1]"
+    dest_reg_id = "(_microIdx == _numMicros - 1 ? " \
+                  "vecRegClass[_machInst.vd] : " \
+                  "vecRegClass[VecMemInternalReg0 + " \
+                  "((_machInst.vd == _machInst.vs2 + 1) ? 2 : 1)])"
+    # Reduction accumulator chain: partials flow through a NORMALLY
+    # RENAMED internal register (a fresh version per write), so micro
+    # i+1 carries a real IQ dependency on micro i. Chaining through
+    # the pinned in-place vd (the old scheme: micro reads Vd[0]) had
+    # NO inter-micro dependency, so reduce micros could issue out of
+    # order and read the VPinVd fill or a stale partial (observed as
+    # the vle32/vsext/vluxei64 "widening-chain" data corruption).
+    # Only the LAST micro writes vd (pinned, one write). The acc reg
+    # index avoids VecMemInternalReg0+0 (vs1/v0 copies) and the
+    # vs2-overlap copy at vd-vs2.
+    acc_reg_id = "vecRegClass[VecMemInternalReg0 + " \
+                 "((_machInst.vd == _machInst.vs2 + 1) ? 2 : 1)]"
+    src1_reg_id = "(_microIdx == 0 ? " \
+                  "vecRegClass[_machInst.vs1 == _machInst.vd " \
+                  "? VecMemInternalReg0 : _machInst.vs1] : " \
+                  + acc_reg_id + ")"
     src2_reg_id = "vecRegClass[(_machInst.vs2 + _microIdx == _machInst.vd\
                                ? VecMemInternalReg0 : _machInst.vs2)\
                                + _microIdx]"

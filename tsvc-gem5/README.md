@@ -70,6 +70,26 @@ make
 To run only a specific kernel, compile with `KERNELS="s000"` (see above) and
 use the resulting binary directly — no extra arguments are needed at run time.
 
+### Gather index array `ip[]` (`-L`, `-W`, `-S`, `-synth`)
+
+The indirect kernels (s4112–s4116, s353, s491, vag, vas) read their indices
+from `ip[]`, built in `src/common.c` `init()`. Runtime flags (parsed in
+`src/tsvc.c` `main`):
+
+- `-L <n> -W <n> -S <seed>` — locality-parameterized permutation of
+  `0..LEN_1D-1` (run length, reuse spacing, seed; defaults `1 1 12345`).
+- `-synth` — block-structured permutation: with `n = LEN_1D/16` cache lines,
+  `ip[]` is 16 blocks of `n` entries, each block visiting every line exactly
+  once in random order (sampling without replacement) and taking a random
+  still-unused element of that line. `-L`/`-W` are ignored, `-S` still seeds.
+  `-synth` also builds a separate `LEN_2D`-sized array (`ip2d`, same
+  construction over `0..LEN_2D-1`) that s4116 uses instead of `ip[]`, because
+  its gather indexes a `LEN_2D`-wide `aa[][]` row.
+
+The first stdout line (`ip_locality: ...`) records which generator ran.
+Goldens depend on these flags: regenerate them for every flag combination you
+validate against.
+
 ### ROI-gated vector tracing (`--roi-trace`)
 
 By default, gem5's `ExecVector` debug flag traces every vector instruction for

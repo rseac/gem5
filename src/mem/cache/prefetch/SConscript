@@ -38,8 +38,10 @@ SimObject('Prefetcher.py', sim_objects=[
     'IrregularStreamBufferPrefetcher', 'SlimAMPMPrefetcher',
     'BOPPrefetcher', 'SBOOEPrefetcher', 'STeMSPrefetcher', 'PIFPrefetcher',
     'FetchDirectedPrefetcher', 'VectorIndirectMemoryPrefetcher',
-    'TychePrefetcher', 'GDPPrefetcher', 'ViperPrefetcher',
-    'VectorTyche2Prefetcher', 'RevelaPrefetcher', 'VHybridPrefetcher'
+    'TychePrefetcher',
+    'ViperFinalPrefetcher',
+    'ViperRtlPrefetcher',  # viper_rtl-hook
+    'RevelaPrefetcher'
     ])
 
 Source('access_map_pattern_matching.cc')
@@ -62,8 +64,6 @@ Source('tagged.cc')
 Source('fdp.cc')
 Source('vector_indirect_memory.cc')
 Source('tyche.cc')
-Source('gdp.cc')
-Source('viper.cc')
-Source('vector_tyche2.cc')
+Source('viper_final.cc')
+Source('viper_rtl.cc')  # viper_rtl-hook
 Source('revela.cc')
-Source('vhybrid.cc')

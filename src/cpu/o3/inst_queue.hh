@@ -45,6 +45,7 @@
 #include <list>
 #include <map>
 #include <queue>
+#include <unordered_map>
 #include <vector>
 
 #include "base/statistics.hh"
@@ -220,10 +221,23 @@ class InstructionQueue
          */
         bool freeFU;
 
+        /** True when a WakeDependents event was scheduled for this same
+         * issue (vector chaining), meaning the instruction is ALREADY
+         * queued for functional execution. Recorded here at issue rather
+         * than recomputed in process(): the issue-time predicate uses the
+         * FU-pool latency when dynamicOpLatency() is 0, and vtype (which
+         * dynamicOpLatency reads) can change between issue and completion,
+         * so recomputing could disagree and push the instruction to
+         * instsToExecute a second time — executing it twice. For a vector
+         * micro-op that writes its pinned destination in place (e.g. the
+         * VPinVd tail fill of an indexed load) the second execution
+         * clobbers elements already written by later micro-ops. */
+        bool chained;
+
       public:
         /** Construct a FU completion event. */
         FUCompletion(const DynInstPtr &_inst, FUPool *fu_pool, int fu_idx,
-                     InstructionQueue *iq_ptr);
+                     InstructionQueue *iq_ptr, bool _chained = false);
 
         virtual void process();
         virtual const char *description() const;
@@ -343,7 +357,7 @@ class InstructionQueue
 
     /** Process FU completion event. */
     void processFUCompletion(const DynInstPtr &inst, FUPool *fu_pool,
-                             int fu_idx);
+                             int fu_idx, bool chained = false);
 
     /**
      * Schedules ready instructions, adding the ready ones (oldest first) to
@@ -563,6 +577,30 @@ class InstructionQueue
      *  the scoreboard that exists in the rename map.
      */
     std::vector<bool> regScoreboard;
+
+    /**
+     * Pinned-destination write ordering (2026-08-28). A pinned
+     * destination register is deliberately not renamed, so a vector
+     * macro's pin micro (VPinVd, the whole-register tail fill) and
+     * its per-element memory micros all write ONE physical register
+     * — and nothing in the dependency graph orders those writes (the
+     * element micros do not source vd). Under the ARA latency model
+     * and chaining's FU occupancy, a starved pin could execute after
+     * cache-hit element writes and wipe them (the sls NaN; the
+     * cc/cc_sv/sssp_vector amazon0302 guest SEGVs).
+     *
+     * Map: flat phys reg index -> seqNum of the pin whose fill has
+     * not yet executed. Populated at dispatch (addToProducers: a
+     * NON-memory writer of a pinned reg is the pin), erased when the
+     * pin executes (wakeDependents) or is squashed (doSquash).
+     * scheduleReadyInsts refuses to issue a MEMORY micro with a
+     * pinned destination while an older pin's entry is present —
+     * deferred exactly like a busy FU, re-checked every cycle.
+     * Arith writers of pinned regs (the narrowing-op shape) are
+     * deliberately not gated: same-class age-ordered issue already
+     * orders them, and that shape has its own open issues.
+     */
+    std::unordered_map<RegIndex, InstSeqNum> pendingPinFill;
 
     /** Adds an instruction to the dependency graph, as a consumer. */
     bool addToDependents(const DynInstPtr &new_inst);

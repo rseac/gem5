@@ -14,6 +14,9 @@ m5out
 /runs/
 /tsvc-gem5/
 /rvv/
+/ext/viper_rtl/
+/viper_inputs/*
+*.xlsx
 *.pptx
 /src/doxygen/html
 /docs/_build

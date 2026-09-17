@@ -1003,11 +1003,29 @@ Commit::commitInsts()
                     const StaticInst *si = head_inst->staticInst.get();
                     const Addr v_pc = head_inst->pcState().instAddr();
                     cpu->vectorChainTable->dispatch(si, v_pc);
+                    // Segment (vlseg) producers: the effective address
+                    // of the macro's chunk-0 access is its base — the
+                    // phase reference of the prefetcher's field slot
+                    // masks (VectorChainTable::captureSegBase). Loads
+                    // carry their VA in effAddr at commit; no issue-time
+                    // snoop is needed.
+                    {
+                        const StaticInst::VecMemInfo vmi = si->vecMemInfo();
+                        if (vmi.kind == StaticInst::VecMemInfo::SegmentLoad &&
+                            vmi.microIdx == 0) {
+                            cpu->vectorChainTable->captureSegBase(
+                                v_pc, head_inst->effAddr);
+                        }
+                    }
                     if (head_inst->chainSnoopValid) {
                         const uint64_t v = head_inst->chainSnoopValue;
-                        if (si->vecMemInfo().kind ==
-                                StaticInst::VecMemInfo::IndexedLoad) {
+                        const auto v_kind = si->vecMemInfo().kind;
+                        if (v_kind == StaticInst::VecMemInfo::IndexedLoad) {
                             cpu->vectorChainTable->armBase(si, v_pc, v);
+                        } else if (v_kind ==
+                                   StaticInst::VecMemInfo::StridedLoad) {
+                            // The snooped value is rs2, the byte stride.
+                            cpu->vectorChainTable->captureStride(v_pc, v);
                         } else if (cpu->vectorChainTable->wantsScalar(v_pc)) {
                             cpu->vectorChainTable->captureScalar(v_pc, v);
                         }

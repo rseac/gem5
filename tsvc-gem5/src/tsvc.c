@@ -3465,6 +3465,152 @@ real_t s4112(struct args_t * func_args)
 
 // %4.11
 
+//int s4112_strided(int* __restrict__ ip, real_t s, int inc)
+real_t s4112_strided(struct args_t * func_args)
+{
+
+//    indirect addressing
+//    sparse saxpy with a STRIDED index stream (2026-09-12)
+//    s4112's gather, but the index vector is every inc-th entry of
+//    ip[]: a vlse32 producer at stride inc*4 bytes feeding the same
+//    vsext.vf2 / vsll.vi / vluxei64 chain, instead of a unit-stride
+//    vle32. inc is a run-time value (argv -inc, default 2) so GCC
+//    emits vlse rather than a segment load. Only LEN_1D/inc elements
+//    are updated: compare with s4112 per gather, not per kernel. Under
+//    -synth ip[] is a permutation, so the sampled indices still spread
+//    over all of b[] while the index lines carry 1/inc live slots.
+//    gather is required
+
+    struct{int * __restrict__ a;real_t b;int c;} * x = func_args->arg_info;
+    int * __restrict__ ip = x->a;
+    real_t s = x->b;
+    int inc = x->c;
+
+    initialise_arrays(__func__);
+    ROI_BEGIN(func_args);
+
+    for (int nl = 0; nl < iterations; nl++) {
+        
+        for (int i = 0; i < LEN_1D / inc; i++) {
+            a[i] += b[ip[i * inc]] * s;
+        }
+        
+        dummy(a, b, c, d, e, aa, bb, cc, 0.);
+    }
+
+    ROI_END(func_args);
+    return calc_checksum(__func__);
+}
+
+// %4.11
+
+//int multi_way(int* __restrict__ ip, real_t s)
+real_t multi_way(struct args_t * func_args)
+{
+
+//    indirect addressing
+//    multi-way sparse saxpy: one index load feeds two gathers
+//    (b[ip[i]] and c[ip[i]]) sharing the same index vector.
+//    Same argument struct as s4112 (ip, s1).
+//    gather is required
+
+    struct{int * __restrict__ a;real_t b;} * x = func_args->arg_info;
+    int * __restrict__ ip = x->a;
+    real_t s = x->b;
+
+    initialise_arrays(__func__);
+    ROI_BEGIN(func_args);
+
+    for (int nl = 0; nl < iterations; nl++) {
+        
+        for (int i = 0; i < LEN_1D; i++) {
+            a[i] += (b[ip[i]]+c[ip[i]]) * s;
+        }
+        
+        dummy(a, b, c, d, e, aa, bb, cc, 0.);
+    }
+
+    ROI_END(func_args);
+    return calc_checksum(__func__);
+}
+
+// %4.11
+
+//int seg1(int* __restrict__ ip, real_t s)
+real_t seg1(struct args_t * func_args)
+{
+
+//    indirect addressing
+//    segmented-index sparse saxpy, ONE consumer gather (2026-09-16)
+//    ip[] is read as interleaved (index, weight) pairs at a constant
+//    stride of 2, so GCC emits a single vlseg2e32 producer. Field 0
+//    feeds the vsext.vf2 / vsll.vi / vluxei64 chain into b[]; field 1
+//    is converted (vfcvt.f.x) and used as an arithmetic weight, so it
+//    is live but never forms an address (SLS-with-per-sample-weight
+//    idiom). Only LEN_1D/2 elements are updated: compare with s4112
+//    per gather. Under -synth ip[] is a permutation, so both fields
+//    are valid indices into b[].
+//    gather is required
+
+    struct{int * __restrict__ a;real_t b;} * x = func_args->arg_info;
+    int * __restrict__ ip = x->a;
+    real_t s = x->b;
+
+    initialise_arrays(__func__);
+    ROI_BEGIN(func_args);
+
+    for (int nl = 0; nl < iterations; nl++) {
+        
+        for (int i = 0; i < LEN_1D / 2; i++) {
+            a[i] += b[ip[2*i]] * (real_t)ip[2*i+1] * s;
+        }
+        
+        dummy(a, b, c, d, e, aa, bb, cc, 0.);
+    }
+
+    ROI_END(func_args);
+    return calc_checksum(__func__);
+}
+
+// %4.11
+
+//int seg2(int* __restrict__ ip, real_t s)
+real_t seg2(struct args_t * func_args)
+{
+
+//    indirect addressing
+//    segmented-index sparse saxpy, TWO consumer gathers (2026-09-16)
+//    ip[] is read as interleaved (src, dst) pairs at a constant stride
+//    of 2, so GCC emits a single vlseg2e32 producer. Each field gets
+//    its own vsext.vf2 / vsll.vi chain and its own vluxei64: field 0
+//    gathers b[], field 1 gathers c[] (edge-list idiom). Unlike
+//    multi_way, the two gathers use DIFFERENT index vectors from
+//    different segment fields. Only LEN_1D/2 elements are updated:
+//    compare with s4112 per index load.
+//    gather is required
+
+    struct{int * __restrict__ a;real_t b;} * x = func_args->arg_info;
+    int * __restrict__ ip = x->a;
+    real_t s = x->b;
+
+    initialise_arrays(__func__);
+    ROI_BEGIN(func_args);
+
+    for (int nl = 0; nl < iterations; nl++) {
+        
+        for (int i = 0; i < LEN_1D / 2; i++) {
+            a[i] += b[ip[2*i]] * c[ip[2*i+1]] * s;
+        }
+        
+        dummy(a, b, c, d, e, aa, bb, cc, 0.);
+    }
+
+    ROI_END(func_args);
+    return calc_checksum(__func__);
+}
+
+// %4.11
+
 //int s4113(int* __restrict__ ip)
 real_t s4113(struct args_t * func_args)
 {
@@ -3517,6 +3663,58 @@ real_t s4114(struct args_t * func_args)
             k += 5;
         }
         
+        dummy(a, b, c, d, e, aa, bb, cc, 0.);
+    }
+
+    ROI_END(func_args);
+    return calc_checksum(__func__);
+}
+
+// %4.11
+
+//int s4114_modified(int* ip, int n1)
+real_t s4114_modified(struct args_t * func_args)
+{
+
+//    indirect addressing
+//    mix indirect addressing with variable lower and upper bounds
+//    gather is required
+//    Same computation as s4114, but the gather index (LEN_1D-1) - k is
+//    formed with vrsub.vx (scalar reverse-subtract) instead of the
+//    vmv.v.x splat + vsub.vv that GCC emits for the C loop: the
+//    autovectorizer places the splat in the loop preheader, so the
+//    .vx combine pattern never sees it. Index chain stays 64-bit
+//    (vsext.vf2 + vsll.vi + vluxei64) to match s4114's gather shape.
+//    Intrinsics because no C rewrite or flag changes the codegen;
+//    note -fno-tree-vectorize does NOT scalarize intrinsics, so the
+//    novec build of this kernel is still vector code.
+
+    struct{int * __restrict__ a;int b;} * x = func_args->arg_info;
+    int * __restrict__ ip = x->a;
+    int n1 = x->b;
+
+    initialise_arrays(__func__);
+    ROI_BEGIN(func_args);
+
+    for (int nl = 0; nl < iterations; nl++) {
+
+        size_t i = n1-1;
+        while (i < LEN_1D) {
+            size_t vl = __riscv_vsetvl_e32m1(LEN_1D - i);
+            vint32m1_t vk   = __riscv_vle32_v_i32m1(&ip[i], vl);
+            // (LEN_1D-1) - k  ->  vrsub.vx
+            vint32m1_t vidx = __riscv_vrsub_vx_i32m1(vk, LEN_1D+1-2, vl);
+            vint64m2_t vidx64 = __riscv_vsext_vf2_i64m2(vidx, vl);
+            vuint64m2_t voff = __riscv_vsll_vx_u64m2(
+                __riscv_vreinterpret_v_i64m2_u64m2(vidx64), 2, vl);
+            vfloat32m1_t vc = __riscv_vluxei64_v_f32m1(c, voff, vl);
+            vfloat32m1_t vb = __riscv_vle32_v_f32m1(&b[i], vl);
+            vfloat32m1_t vd = __riscv_vle32_v_f32m1(&d[i], vl);
+            __riscv_vse32_v_f32m1(&a[i],
+                __riscv_vfmacc_vv_f32m1(vb, vc, vd, vl), vl);
+            i += vl;
+        }
+
         dummy(a, b, c, d, e, aa, bb, cc, 0.);
     }
 
@@ -4056,6 +4254,7 @@ int main(int argc, char ** argv){
     /* Robust non-destructive argument parsing */
     static char *filter_list[256];
     int filter_count = 0;
+    int ip_inc = 2; /* s4112_strided: index stride in ip[] elements (-inc) */
 
     for (int i = 1; i < argc; i++) {
         if ((strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--iterations") == 0) && i + 1 < argc) {
@@ -4066,6 +4265,11 @@ int main(int argc, char ** argv){
             ip_locality_W = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-S") == 0 && i + 1 < argc) {
             ip_locality_seed = (unsigned) strtoul(argv[++i], NULL, 0);
+        } else if (strcmp(argv[i], "-synth") == 0 || strcmp(argv[i], "--synth") == 0) {
+            ip_synth = 1;
+        } else if (strcmp(argv[i], "-inc") == 0 && i + 1 < argc) {
+            ip_inc = atoi(argv[++i]);
+            if (ip_inc < 1) { fprintf(stderr, "-inc must be >= 1\n"); return 1; }
         } else if (argv[i][0] != '-') {
             // Treat anything not starting with a dash as a kernel filter
             if (filter_count < 256) {
@@ -4079,8 +4283,13 @@ int main(int argc, char ** argv){
         g_filters = filter_list;
     }
 
-    printf("ip_locality: L=%d W=%d seed=%u\n",
-           ip_locality_L, ip_locality_W, ip_locality_seed);
+    if (ip_synth) {
+        printf("ip_locality: synth (16 blocks x N/16 lines, each block "
+               "samples lines w/o replacement) seed=%u\n", ip_locality_seed);
+    } else {
+        printf("ip_locality: L=%d W=%d seed=%u\n",
+               ip_locality_L, ip_locality_W, ip_locality_seed);
+    }
 
 #ifdef TSVC_KERNELS
     /* Kernel whitelist baked in at compile time.
@@ -4103,8 +4312,9 @@ int main(int argc, char ** argv){
     int n1 = 1;
     int n3 = 1;
     int* ip;
+    int* ip2d; /* LEN_2D-sized ip for s4116; only built under -synth */
     real_t s1,s2;
-    init(&ip, &s1, &s2);
+    init(&ip, &ip2d, &s1, &s2);
     printf("%-12s\t%12s\t%s\n", "Loop", "Cycles", "Checksum");
 
     RUN_KERNEL(s000, NULL);
@@ -4239,10 +4449,15 @@ int main(int argc, char ** argv){
     RUN_KERNEL(s482, NULL);
     RUN_KERNEL(s491, ip);
     RUN_KERNEL(s4112, &(struct{int*a;real_t b;}){ip, s1});
+    RUN_KERNEL(s4112_strided, &(struct{int*a;real_t b;int c;}){ip, s1, ip_inc});
+    RUN_KERNEL(multi_way, &(struct{int*a;real_t b;}){ip, s1});
+    RUN_KERNEL(seg1, &(struct{int*a;real_t b;}){ip, s1});
+    RUN_KERNEL(seg2, &(struct{int*a;real_t b;}){ip, s1});
     RUN_KERNEL(s4113, ip);
     RUN_KERNEL(s4114, &(struct{int*a;int b;}){ip, n1});
+    RUN_KERNEL(s4114_modified, &(struct{int*a;int b;}){ip, n1});
     RUN_KERNEL(s4115, ip);
-    RUN_KERNEL(s4116, &(struct{int * a; int b; int c;}){ip, LEN_2D/2, n1});
+    RUN_KERNEL(s4116, &(struct{int * a; int b; int c;}){ip_synth ? ip2d : ip, LEN_2D/2, n1});
     RUN_KERNEL(s4117, NULL);
     RUN_KERNEL(s4117_modified, NULL);
     RUN_KERNEL(s4117_vrgather, NULL);

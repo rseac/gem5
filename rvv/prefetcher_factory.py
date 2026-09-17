@@ -10,7 +10,7 @@ between caches.
 
 The prefetcher classes themselves live in
 ``src/mem/cache/prefetch/Prefetcher.py`` (all stock gem5 except this fork's
-``vimp``, ``gdp``, ``viper`` and ``tyche``); this module only *selects* and
+``vimp``, ``viper_final``, ``viper_rtl``, ``revela`` and ``tyche``); this module only *selects* and
 *parameterizes* one from the command line. Every tunable knob is just a
 ``Param.*`` declared on the chosen class (or inherited from
 ``QueuedPrefetcher``/``BasePrefetcher``), so any such name is a valid
@@ -18,7 +18,6 @@ The prefetcher classes themselves live in
 """
 
 from m5.objects import (
-    GDPPrefetcher,
     IndirectMemoryPrefetcher,
     IrregularStreamBufferPrefetcher,
     RevelaPrefetcher,
@@ -26,9 +25,8 @@ from m5.objects import (
     StridePrefetcher,
     TychePrefetcher,
     VectorIndirectMemoryPrefetcher,
-    ViperPrefetcher,
-    VectorTyche2Prefetcher,
-    VHybridPrefetcher,
+    ViperFinalPrefetcher,
+    ViperRtlPrefetcher,  # viper_rtl-hook
 )
 from m5.params import NULL
 
@@ -38,14 +36,12 @@ PREFETCHERS = {
     "stride": StridePrefetcher,
     "imp": IndirectMemoryPrefetcher,
     "vimp": VectorIndirectMemoryPrefetcher,
-    "gdp": GDPPrefetcher,
-    "viper": ViperPrefetcher,
-    "vtyche2": VectorTyche2Prefetcher,
+    "viper_final": ViperFinalPrefetcher,
+    "viper_rtl": ViperRtlPrefetcher,  # viper_rtl-hook
     "isb": IrregularStreamBufferPrefetcher,
     "stems": STeMSPrefetcher,
     "tyche": TychePrefetcher,
     "revela": RevelaPrefetcher,
-    "vhybrid": VHybridPrefetcher,
 }
 
 
@@ -56,8 +52,11 @@ def _coerce(value):
     tunable prefetcher params use: ``Param.Unsigned``/``Param.Int`` -> int,
     ``Param.Bool`` -> bool, ``Param.MemorySize`` -> str (e.g. ``"2KiB"``).
     ``Param.MemorySize`` also accepts a plain int, so an int-looking size
-    still works.
+    still works. A comma-separated value becomes a list of coerced
+    items, for ``VectorParam.*`` params (e.g. ``random_drop_rates=0,0.5,1``).
     """
+    if isinstance(value, str) and "," in value:
+        return [_coerce(v) for v in value.split(",")]
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -73,8 +72,8 @@ def _coerce(value):
 # on virtual addresses, so the CPU MMU must be registered on the prefetcher
 # (BasePrefetcher.registerMMU) or every page-crossing prefetch target is
 # silently dropped (Queued::insert requires an MMU to cross a page).
-VA_PREFETCHERS = {"vimp", "gdp", "viper", "vtyche2", "tyche", "revela",
-                  "vhybrid"}
+VA_PREFETCHERS = {"viper_rtl",  # viper_rtl-hook
+                  "vimp", "viper_final", "tyche", "revela"}
 
 # Prefetchers needing a per-core TycheChainTable wired to both the
 # prefetcher (chain_table) and the CPU (tyche_table); see
@@ -84,12 +83,14 @@ CHAIN_TABLE_PREFETCHERS = {"tyche"}
 # Prefetchers needing a per-core VectorChainTable wired to both the
 # prefetcher (link_table) and the CPU (vector_chain_table); see
 # src/cpu/vector_chain_table.hh.
-VECTOR_CHAIN_TABLE_PREFETCHERS = {"gdp", "viper", "vtyche2", "vhybrid"}
+VECTOR_CHAIN_TABLE_PREFETCHERS = {"viper_rtl",  # viper_rtl-hook
+                                 "viper_final"}
 
 
-def needs_chain_table(name):
+def needs_chain_table(name, params=None):
     """True when the selected prefetcher is fed by the CPU-side
-    TycheChainTable channel."""
+    TycheChainTable channel. viper_final has no scalar chain, so only
+    the standalone tyche prefetcher joins."""
     return name in CHAIN_TABLE_PREFETCHERS
 
 
@@ -102,17 +103,18 @@ def needs_vector_chain_table(name):
 # Prefetchers needing a per-core RevelaStreamTable wired to both the
 # prefetcher (stream_table) and the CPU (revela_table); see
 # src/cpu/revela_table.hh.
-REVELA_TABLE_PREFETCHERS = {"revela", "vhybrid"}
+REVELA_TABLE_PREFETCHERS = {"revela"}
 
 
 def needs_revela_table(name, params=None):
     """True when the selected prefetcher is fed by the CPU-side
-    RevelaStreamTable channel. viper joins only when its opt-in
-    announced-limit gate is on (``--pf-param limit_gate=true``), so
-    plain viper runs keep their table-free wiring (and their
-    split-hierarchy side freedom) bit-exactly."""
+    RevelaStreamTable channel. viper_final/viper_rtl join only when
+    their opt-in announced-limit gate is on (``--pf-param
+    limit_gate=true``), so plain runs keep their table-free wiring
+    (and their split-hierarchy side freedom) bit-exactly."""
     params = params or {}
-    if name == "viper" and bool(_coerce(params.get("limit_gate", 0))):
+    if name in ("viper_final", "viper_rtl") and bool(  # viper_rtl-hook
+            _coerce(params.get("limit_gate", 0))):
         return True
     return name in REVELA_TABLE_PREFETCHERS
 

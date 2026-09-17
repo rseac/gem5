@@ -759,6 +759,27 @@ class VlElementMicroInst : public VectorMemMicroInst
             StaticInst::annotateMemRequest(xc, req);
         }
     }
+
+    // Chain table: a strided vector load (vlse*) is an index-stream
+    // producer whose elements sit rs2 bytes apart. One micro-op per
+    // ELEMENT (VlElementMicroInitiateAcc: ei = regIdx * vlenb / eew +
+    // microIdx), so microIdx here is that element index — 0 is the
+    // macro-op's first element, the one the CPU-side hooks act on. The
+    // stride itself is a register value: snooped at issue from source
+    // slot 1 and captured at commit (VectorChainTable::captureStride).
+    VecMemInfo
+    vecMemInfo() const override
+    {
+        VecMemInfo info;
+        if (!has_rs2) {
+            return info;
+        }
+        info.kind = VecMemInfo::StridedLoad;
+        info.elemBytes = width_EEW(machInst.width) / 8;
+        info.microIdx = regIdx * (vlen / 8) / info.elemBytes + microIdx;
+        info.vl = machInst.vl;
+        return info;
+    }
 };
 
 class VsElementMacroInst : public VectorMemMacroInst
@@ -1042,6 +1063,23 @@ class VlSegDeIntrlvMicroInst : public VectorArithMicroInst
                            uint32_t _sizeOfElement);
 
     Fault execute(ExecContext *, trace::InstRecord *) const override;
+
+    // Chain table: this micro is where a vlseg's data fields are born.
+    // It reads the vtmp registers the SegmentLoad micros filled (all
+    // of them, srcRegIdxArr) and writes the architectural vd of ONE
+    // field, so provenance flows vtmp -> vd here with the field id
+    // attached (VectorChainTable::dispatch, kind SegmentField).
+    VecMemInfo
+    vecMemInfo() const override
+    {
+        VecMemInfo info;
+        info.kind = VecMemInfo::SegmentField;
+        info.elemBytes = sizeOfElement;
+        info.nfields = numSrcs;
+        info.field = field;
+        info.srcVReg = VecMemInternalReg0 + microIdx * numSrcs;
+        return info;
+    }
 
     std::string
     generateDisassembly(Addr, const loader::SymbolTable *) const override;

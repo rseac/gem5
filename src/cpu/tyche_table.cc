@@ -22,6 +22,7 @@ TycheChainTable::TycheChainTable(const TycheChainTableParams &p)
     dctEntries(p.dct_entries),
     iptEntries(p.ipt_entries),
     denseThreshold(p.dense_threshold),
+    liveWindow(p.live_window),
     dct(p.dct_entries),
     pt(),
     ipt(p.ipt_entries),
@@ -53,10 +54,34 @@ TycheChainTable::TycheStats::TycheStats(statistics::Group *parent)
         "chain-breaking dispatches (unknown op with a dependency)"),
     ADD_STAT(dctClears, statistics::units::Count::get(),
         "wholesale DCT clears on capacity"),
+    ADD_STAT(shapeBumps, statistics::units::Count::get(),
+        "shape-version bumps (an exported chain link changed)"),
+    ADD_STAT(shapeBumpsConst, statistics::units::Count::get(),
+        "shape bumps: register constant re-sampled to a new value"),
+    ADD_STAT(shapeBumpsOp, statistics::units::Count::get(),
+        "shape bumps: operand side / imm-vs-register constant flip"),
+    ADD_STAT(routeBumps, statistics::units::Count::get(),
+        "route-version bumps (data flow moved around a compiled chain)"),
+    ADD_STAT(routeBumpsPred, statistics::units::Count::get(),
+        "route bumps: exported link fed by a different predecessor"),
+    ADD_STAT(routeBumpsJoin, statistics::units::Count::get(),
+        "route bumps: producer join record moved to a different tail"),
     ADD_STAT(denseSweeps, statistics::units::Count::get(),
         "dense-window sweeps completed"),
     ADD_STAT(strideTriggers, statistics::units::Count::get(),
-        "IPT conf_trigger decisions returned to the prefetcher")
+        "IPT conf_trigger decisions returned to the prefetcher"),
+    ADD_STAT(vectorBasesNoted, statistics::units::Count::get(),
+        "vector-load base registers found chain-dependent (joins)"),
+    ADD_STAT(vectorBasesUntracked, statistics::units::Count::get(),
+        "vector-load base registers with no tracked provenance"),
+    ADD_STAT(scalarChainsBuilt, statistics::units::Count::get(),
+        "scalar chains compiled for a producer (promotion walks)"),
+    ADD_STAT(scalarWalksFailed, statistics::units::Count::get(),
+        "promotion walks rejected (no join / stale / not replayable)"),
+    ADD_STAT(scalarWalksDead, statistics::units::Count::get(),
+        "promotion walks rejected: a link on the path was not live"),
+    ADD_STAT(taintsDead, statistics::units::Count::get(),
+        "source taints ignored: their link was not live")
 {
 }
 
@@ -75,7 +100,36 @@ TycheChainTable::clearDct()
 {
     std::fill(dct.begin(), dct.end(), DctItem());
     pt.fill(PtEntry());
+    joins.clear();
     gen++;
+}
+
+void
+TycheChainTable::noteShapeChange(const DctItem &it, ShapeChange what)
+{
+    // Only links a prefetcher copied out matter: a change on an
+    // unexported link is absorbed by the table's own tracking and
+    // shows up in the next promotion walk.
+    if (!it.exported) {
+        return;
+    }
+    shapeVer++;
+    tycheStats.shapeBumps++;
+    switch (what) {
+      case ShapeChange::Const: tycheStats.shapeBumpsConst++; break;
+      case ShapeChange::Op:    tycheStats.shapeBumpsOp++;    break;
+    }
+}
+
+void
+TycheChainTable::noteRouteChange(RouteChange what)
+{
+    routeVer++;
+    tycheStats.routeBumps++;
+    switch (what) {
+      case RouteChange::Pred: tycheStats.routeBumpsPred++; break;
+      case RouteChange::Join: tycheStats.routeBumpsJoin++; break;
+    }
 }
 
 int
@@ -95,6 +149,7 @@ TycheChainTable::dctInsert(const DctItem &item)
     for (int i = 0; i < (int)dct.size(); i++) {
         if (!dct[i].valid) {
             dct[i] = item;
+            dct[i].lastSeen = seq;
             return i;
         }
     }
@@ -412,6 +467,9 @@ TycheChainTable::dispatch(const StaticInst *si, Addr pc)
     const int pre_idx = searchPc(pc);
     if (pre_idx >= 0) {
         denseCount(pre_idx);
+        // Liveness clock: one tick per DCT-matching dispatch, the
+        // link stamped with it (see linkLive()).
+        dct[pre_idx].lastSeen = ++seq;
     }
 
     const uint64_t emi = si->getEMI();
@@ -432,8 +490,20 @@ TycheChainTable::dispatch(const StaticInst *si, Addr pc)
         return; // stores, branches: nothing written, PT untouched
     }
 
-    const bool dep1 = d.rs1 != 0 && pt[d.rs1].depend;
-    const bool dep2 = d.hasRs2 && d.rs2 != 0 && pt[d.rs2].depend;
+    // Taint from a link that stopped running (a register last written
+    // by a dead phase's chain and never rewritten) would make this
+    // instruction both-dependent or hang it on a dead predecessor;
+    // with a liveness window it reads as untracked instead.
+    bool dep1 = d.rs1 != 0 && pt[d.rs1].depend;
+    bool dep2 = d.hasRs2 && d.rs2 != 0 && pt[d.rs2].depend;
+    if (dep1 && !taintLive(d.rs1)) {
+        dep1 = false;
+        tycheStats.taintsDead++;
+    }
+    if (dep2 && !taintLive(d.rs2)) {
+        dep2 = false;
+        tycheStats.taintsDead++;
+    }
     const bool has_dep = dep1 || dep2;
     const bool both_dep = dep1 && dep2;
     const bool ipt_hit = d.isLoad && iptConfident(pc);
@@ -467,6 +537,10 @@ TycheChainTable::dispatch(const StaticInst *si, Addr pc)
                         d.loadSize);
             }
         } else {
+            // Relabel only: a copied-out chain through this link
+            // replays the same ops whether or not the table currently
+            // calls it a head (exportedPrev keeps the compiled
+            // predecessor for the refresh-path comparison).
             dct[idx].head = true;
             dct[idx].formed = true;
             dct[idx].conf = 3;
@@ -535,6 +609,24 @@ TycheChainTable::dispatch(const StaticInst *si, Addr pc)
             } else if (idx >= 0) {
                 DctItem &it = dct[idx];
                 tycheStats.linksRefreshed++;
+                // For a link exported as a dependent (exportedPrev
+                // >= 0; a link exported as the HEAD contributes
+                // neither predecessor nor op to the replay, its
+                // demotion here is a relabel): an op change (operand
+                // side, imm-vs-register constant, imm value) makes the
+                // copy wrong - shape; a different predecessor than it
+                // was exported with moves the data flow - route (the
+                // copy may still be right for its own path).
+                if (it.exportedPrev >= 0) {
+                    if (it.dynamicIsOp0 != dep1 ||
+                        (const_is_imm ? (!it.constIsImm ||
+                                         it.src != imm_val)
+                                      : it.constIsImm)) {
+                        noteShapeChange(it, ShapeChange::Op);
+                    } else if (prev_ok && last_ptr != it.exportedPrev) {
+                        noteRouteChange(RouteChange::Pred);
+                    }
+                }
                 it.head = false;
                 it.dynamicIsOp0 = dep1;
                 if (prev_ok) {
@@ -646,7 +738,9 @@ TycheChainTable::captureConstant(Addr pc, uint64_t value)
     } else {
         // The stored constant always tracks the latest observation
         // (artifact ooo_cpu.cc:653), so retraining converges on the new
-        // value while confidence drains and refills.
+        // value while confidence drains and refills. A copied-out
+        // chain holds the OLD value: stale it.
+        noteShapeChange(it, ShapeChange::Const);
         if (it.conf > 0) {
             it.conf--;
         }
@@ -816,12 +910,19 @@ uint64_t
 TycheChainTable::executeAlu(int dct_ptr, uint64_t dynamic_src) const
 {
     const DctItem &it = dct[dct_ptr];
+    return execOp(it.op, it.dynamicIsOp0, it.src, dynamic_src);
+}
+
+uint64_t
+TycheChainTable::execOp(TyOp op, bool dynamic_is_op0, uint64_t src,
+                        uint64_t dynamic_src)
+{
     // Operand placement follows the recorded position of the dynamic
     // (chain-propagated) value; the constant fills the other slot
     // (artifact execute_alu alu_src[] setup).
-    const uint64_t a = it.dynamicIsOp0 ? dynamic_src : it.src;
-    const uint64_t b = it.dynamicIsOp0 ? it.src : dynamic_src;
-    switch (it.op) {
+    const uint64_t a = dynamic_is_op0 ? dynamic_src : src;
+    const uint64_t b = dynamic_is_op0 ? src : dynamic_src;
+    switch (op) {
       case TyOp::AddW: return sext32(a + b);
       case TyOp::AddD: return a + b;
       case TyOp::SubW: return sext32(a - b);
@@ -850,6 +951,183 @@ TycheChainTable::executeAlu(int dct_ptr, uint64_t dynamic_src) const
       case TyOp::SlliUw: return (uint64_t)(uint32_t)a << (b & 0x3f);
       default: return dynamic_src; // Load/Invalid: never executed
     }
+}
+
+// ---------------------------------------------------------------------
+// Scalar-to-vector chain join (viper's scalar level chain)
+// ---------------------------------------------------------------------
+
+void
+TycheChainTable::markFormed(int from_ptr)
+{
+    int j = from_ptr;
+    // Bounded by table size: back-pointers can only cycle through
+    // refreshed links, and the formed test breaks any revisit.
+    unsigned guard = 0;
+    while (j >= 0 && j < (int)dct.size() && dct[j].valid &&
+           !dct[j].formed && guard++ < dct.size()) {
+        dct[j].formed = true;
+        j = dct[j].lastDctPtr;
+    }
+}
+
+void
+TycheChainTable::noteVectorWriter(const StaticInst *si)
+{
+    // The vsetvl taint-kill: any integer register a vector
+    // instruction writes gets untracked provenance.
+    for (int i = 0; i < si->numDestRegs(); i++) {
+        const RegId &r = si->destRegIdx(i);
+        if (r.is(IntRegClass) && r.index() > 0 && r.index() < 32) {
+            pt[r.index()] = PtEntry();
+        }
+    }
+}
+
+void
+TycheChainTable::noteVectorBase(const StaticInst *si, Addr producer_pc)
+{
+    // The base is the first (and only) integer source of a
+    // unit-stride vector load micro-op.
+    int base_reg = -1;
+    for (int i = 0; i < si->numSrcRegs(); i++) {
+        const RegId &r = si->srcRegIdx(i);
+        if (r.is(IntRegClass) && r.index() < 32) {
+            base_reg = r.index();
+            break;
+        }
+    }
+    if (base_reg <= 0 || !pt[base_reg].depend) {
+        tycheStats.vectorBasesUntracked++;
+        return;
+    }
+    const int tail = pt[base_reg].dctPtr;
+    if (tail < 0 || tail >= (int)dct.size() || !dct[tail].valid ||
+        !linkLive(tail)) {
+        tycheStats.vectorBasesUntracked++;
+        return;
+    }
+    // The vle joins the chain the way a dependent scalar load does:
+    // its arithmetic ancestors become worth replaying.
+    markFormed(tail);
+    tycheStats.vectorBasesNoted++;
+    for (auto &jr : joins) {
+        if (jr.producerPc == producer_pc) {
+            if (jr.tailPtr != tail) {
+                // The base now arrives through a different link: a
+                // walk from it may find a different chain.
+                noteRouteChange(RouteChange::Join);
+            }
+            jr.tailPtr = tail;
+            jr.gen = gen;
+            return;
+        }
+    }
+    if (joins.size() >= joinEntries) {
+        joins.erase(joins.begin());
+    }
+    joins.push_back({producer_pc, tail, gen});
+    // A new join lets a producer whose earlier walk was memoized as
+    // rejected try again.
+    noteRouteChange(RouteChange::Join);
+}
+
+TycheChainTable::ScalarChain
+TycheChainTable::scalarChainFor(Addr producer_pc, unsigned max_levels)
+{
+    ScalarChain out;
+    const JoinRec *jr = nullptr;
+    for (const auto &j : joins) {
+        if (j.producerPc == producer_pc) {
+            jr = &j;
+            break;
+        }
+    }
+    if (jr == nullptr || jr->gen != gen || jr->tailPtr < 0 ||
+        jr->tailPtr >= (int)dct.size() || !dct[jr->tailPtr].valid) {
+        tycheStats.scalarWalksFailed++;
+        return out;
+    }
+    // Walk tail -> head, collecting the path (the promotion walk).
+    std::vector<int> path;
+    std::vector<bool> visited(dct.size(), false);
+    int j = jr->tailPtr;
+    while (j >= 0 && j < (int)dct.size() && dct[j].valid &&
+           !visited[j]) {
+        visited[j] = true;
+        path.push_back(j);
+        if (dct[j].head) {
+            break;
+        }
+        j = dct[j].lastDctPtr;
+    }
+    if (path.empty() || !dct[path.back()].head) {
+        tycheStats.scalarWalksFailed++;
+        return out; // never reached an IP-stride head
+    }
+    // Every link on the path must be replayable: formed (on a path to
+    // a load or the vle), constant stable, dense. Heads carry conf 3
+    // and formed by construction.
+    for (const int p : path) {
+        if (!linkLive(p)) {
+            // A head that stopped running, or a live link whose
+            // predecessor pointer still names one: the chain would
+            // compile but never trigger (or replay a dead phase).
+            tycheStats.scalarWalksDead++;
+            tycheStats.scalarWalksFailed++;
+            return out;
+        }
+        if (!dct[p].needHandle() ||
+            (!dct[p].head && dct[p].op == TyOp::Invalid)) {
+            tycheStats.scalarWalksFailed++;
+            return out;
+        }
+    }
+    // Segment head -> tail at load links into level descriptors. The
+    // ops between load k and load k+1 map k's VALUE to k+1's address
+    // (minus the load immediate, recorded separately); the ops after
+    // the last load map its value to the vector producer's base.
+    std::reverse(path.begin(), path.end()); // now head-first
+    for (const int p : path) {
+        const DctItem &it = dct[p];
+        if (it.op == TyOp::Load) {
+            if (out.levels.size() >= max_levels) {
+                tycheStats.scalarWalksFailed++;
+                return ScalarChain();
+            }
+            if (!out.levels.empty()) {
+                // This load's address = previous level's replayed
+                // value + this immediate.
+                out.levels.back().nextImm = (int64_t)it.src;
+            }
+            ScalarLevelDesc lvl;
+            lvl.loadPc = it.pc;
+            lvl.loadSize = it.loadSize;
+            lvl.loadUnsigned = it.loadUnsigned;
+            out.levels.push_back(std::move(lvl));
+        } else {
+            if (out.levels.empty()) {
+                // Arithmetic before the head cannot happen (the head
+                // is the walk terminal); defensive.
+                tycheStats.scalarWalksFailed++;
+                return ScalarChain();
+            }
+            out.levels.back().ops.push_back(
+                {it.op, it.dynamicIsOp0, it.src});
+        }
+    }
+    // The terminal segment's result IS the producer base: nextImm 0.
+    out.levels.back().nextImm = 0;
+    // The caller copies these links out; from here on their changes
+    // must reach it (shapeVersion).
+    for (const int p : path) {
+        dct[p].exported = true;
+        dct[p].exportedPrev = dct[p].head ? -1 : dct[p].lastDctPtr;
+    }
+    out.valid = true;
+    out.gen = gen;
+    tycheStats.scalarChainsBuilt++;
+    return out;
 }
 
 } // namespace gem5

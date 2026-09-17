@@ -629,8 +629,9 @@ training anywhere; arming still takes one iteration.
   heads (unit-stride loads, EEW), transform links (op + scalar
   operand), gather links (base). Transform ops are decoded from the
   raw OP-V encoding via `StaticInst::getEMI()` (the tyche-port
-  technique — no ISA edits): vadd/vsub/vrsub, vand/vor/vxor,
-  vsll/vsrl/vsra, vmul.vx, vsext/vzext (source width from the vtype
+  technique — no ISA edits): vadd/vsub, vsll/vsrl/vsra, vmul.vx,
+  vsext/vzext (vrsub and vand/vor/vxor were dropped 2026-09-02, see
+  "VectorChainTable: affine-only transform decode") (source width from the vtype
   vsew gem5 bakes into ExtMachInst). `.vi` immediates are valid from
   the encoding; `.vx` scalars and gather bases are snooped at *issue*
   off the operand read the instruction is already doing (armGather
@@ -652,10 +653,15 @@ training anywhere; arming still takes one iteration.
   transiently. CPU side = PT + DCT, two structures.
 - *Field naming/width pass (2026-07-22)*: DCT flavor flags are `head`
   / `tail` (tail = the gather terminating the chain); the operand
-  trio is `scalar` / `immType` (true = encoding immediate, false =
-  .vx rs1 snooped at issue) / `immValid` (operand has arrived — set
-  at insert for immediates, captureScalar for .vx, armBase for
-  bases). `lastDctPtr` is 3 bits in hardware: heads have no
+  trio is `scalar` / `scalarType` (true = encoding immediate, false =
+  a register value snooped at issue) / `scalarReady` (the operand has
+  arrived — set at insert for immediates, captureScalar for .vx,
+  armBase for bases). *Renamed 2026-08-31 from `immType` / `immValid`:
+  the slot also holds gather BASE addresses and `vlse` strides, which
+  are never immediates, so the old names described only one of its
+  three producers. `DecodedVArith::immType` keeps its name — at decode
+  time it genuinely does mean "this operand is an encoding
+  immediate".* `lastDctPtr` is 3 bits in hardware: heads have no
   predecessor, but every walker terminates on the `head` flag before
   following the pointer, so a head's pointer bits are don't-care.
   The dead per-DCT-entry EEW copy was deleted (the GLT holds the only
@@ -860,7 +866,7 @@ equation cannot express.
 
 `GDP::calculatePrefetch` (`gdp.cc:300-318`) adopts a
 `VectorChainTable::ChainSnapshot` — a *list* of `StageOp{op, scalar,
-extFromBits}` in head-to-gather order — into the producer's STT entry.
+extWidth}` in head-to-gather order — into the producer's STT entry.
 At drain time `GDP::applyChain` (`gdp.cc:131-165`) walks that list per
 element, and `drainReplay` (`gdp.cc:167-254`) walks the elements
 serially across access events, bounded by `drainFloor = 8` emissions
@@ -3686,3 +3692,2566 @@ names, as do all historical sections of this document and archived
 sweep scripts/results — pre-rename stats and configs refer to vtyche.
 Per-stat names inside the prefetcher are unchanged, so stats parsing is
 unaffected; only script-side `--prefetcher` strings needed updating.
+
+## VIPER: random tail-drop throttle (`random_drop_interval`, 2026-08-23)
+
+A randomized prefetch-throttling experiment: instead of thinning
+converted targets at a fixed fraction (`drop_batch_fraction`, which the
+2026-08-21 dbf sweep showed to be a pure interpolator between the 0%
+and 100% corners), this mechanism drops a **random proportion of each
+captured index line's tail**, with the drop intensity redrawn at random
+**epochs**. Tail policy = the dropped elements are the line's *last* N,
+so each draw is a randomized per-gather prefetch-degree clamp (changes
+lookahead structure, not just rate — the axis the 2026-08-13 stride
+sweeps showed to be the sensitive one).
+
+### What the existing method did
+
+VIPER's conversion (`convertChunk`, `src/mem/cache/prefetch/viper.cc`)
+pushes every element of a captured index line through the shift-and-add
+lanes; the only element-level suppressions were deterministic:
+`limit_gate`'s announced-extent byte clamp (`cap.validBytes`), the
+dedup seen-sets, and the canonical-address filter. gem5's stock
+throttling knobs (`Queued`'s `queue_size`, `drop_on_full`) act on the
+queue, not on what gets generated.
+
+### What this fork adds (all in `viper.cc/.hh`, default bit-neutral)
+
+Three params on `ViperPrefetcher` (`src/mem/cache/prefetch/Prefetcher.py`):
+
+- `random_drop_interval` (default 0 = off): epoch length in observed
+  demand accesses. The counter ticks in `Viper::notify()`; every
+  interval it redraws `currentDropScale` uniformly from the rate set.
+  Demand-paced on purpose — a cycle clock would stretch epochs under
+  exactly the congestion being probed. The first epoch is always
+  drop-free (`currentDropScale` starts at 0).
+- `random_drop_rates` (default `[0.0, 1.0]`): candidate scales, each
+  in [0, 1]. `{0, 1}` = on/off duty cycling; a singleton holds one
+  scale forever. Passed through `--pf-param` as a comma list
+  (`random_drop_rates=0,0.5,1`); `rvv/prefetcher_factory.py`'s
+  `_coerce` learned to split comma values into lists for
+  `VectorParam.*` params.
+- `random_drop_geometric` (default false, added same day): randomize
+  the epoch length itself — each observed access redraws with
+  probability `1/interval` instead of counting to a fixed N, giving
+  memoryless (geometric) epoch lengths with the same mean. Breaks
+  phase-locking between the epoch clock and strip-mined loop
+  periodicity (a fixed-N clock can land the same scale on the same
+  program phase every strip). False = the fixed counter, bit-neutral.
+- `random_drop_min_interval` (default 0, added same day): epoch-length
+  floor for geometric mode — after a redraw, Bernoulli rolls resume
+  only once the epoch is this many accesses old, so epoch lengths are
+  min + Geometric(1/interval), mean min + interval (shifted
+  geometric). Excises the geometric's short-epoch mass (drop epochs
+  too brief to affect more than a couple of captured lines — pure
+  coverage loss) while keeping the memoryless anti-phase-lock tail.
+  Ignored in fixed mode; 0 = the pure geometric, bit-neutral. The
+  `epochRedraws` stat (added with it) counts scale redraws, so the
+  realized mean epoch length is observable (notifies/epochRedraws).
+- `random_drop_seed` (default 1): seeds a private `std::mt19937`
+  (`randomDropRng`), so the draw sequence is independent of everything
+  else in the simulation and two configs differ only in this
+  mechanism. Never wall-clock.
+
+Per-line draw (tail policy), in `convertChunk` at the line's first
+chunk (`cap.nextElem == 0`): while the epoch scale `s > 0`, draw
+`tailDropElems = 1 + rng() % floor(elems * s)` (uniform in
+`1..floor(elems*s)`) and store it on the `CapturedLine`. The effective
+element count becomes `eff_elems = elems - tailDropElems`, composing
+with the `limit_gate` clamp; the conversion loop, the done check, and
+`conversion_lanes` resumption all run against `eff_elems`, so dropped
+elements never consume a lane, a budget slot, or a queue entry.
+Dropped elements are never recorded emitted (no seen-set or
+dedup-window entry), so a later recapture of the line may still
+convert them — same disposition as `drop_on_full`'s forfeits.
+
+Stats: `linesRandomTruncated` (lines that drew a nonzero drop),
+`elementsRandomDropped` (elements forfeited). Epoch state
+(`notifiesSinceDraw`, `currentDropScale`) resets drop-free in
+`resetLearnedState()` at each ROI stats reset; the RNG stream itself
+continues (its position is not learned state).
+
+### Semantics notes
+
+- One draw per captured line, made *before* any element of that line
+  converts — a line is never half-throttled mid-conversion, and a
+  `conversion_lanes` split cannot change what gets dropped.
+- Interpolator caveat: over many lines the *mean* dropped fraction
+  under scale `s` is ~`s/2`; if swept results land on the dbf curve at
+  the matching mean, that kills the throttling hypothesis (a useful
+  outcome). The structural content vs dbf is (a) the drop is a
+  contiguous tail (per-line degree clamp), (b) intensity varies at
+  epoch granularity instead of holding a constant fraction.
+
+### Validation (2026-08-23, `rvv/rand_drop_val/`)
+
+Synthetic gather (`vector_indirect_eval.bin line_locality 65536 4`,
+unified hierarchy, viper l1, sd16/sb8, m32):
+
+- **Bit-neutral off**: pre-change build vs new build at default params —
+  stats byte-identical except the two new counters (both 0).
+- **Active smoke** (`random_drop_interval=64`,
+  `random_drop_rates=0.25,1` — exercises the comma-list `--pf-param`
+  path): benchmark still passes; `linesRandomTruncated` 8057 of 8076
+  captured lines, `elementsRandomDropped` 24151, and
+  `elementsConverted` fell 64584 → 40441 (Δ ≈ the dropped count, i.e.
+  dropped elements really never reached a lane). `targetsGenerated`
+  16130 → 13153, uncovered `demandMshrMisses` 1150 → 3762, cycles
+  283k → 377k — the expected direction on a prefetch-bound kernel
+  when ~all lines lose a tail (with the {0.25, 1} rate set nearly
+  every post-first epoch is active).
+
+Shifted geometric (same day): the min=0 repro matched the earlier
+geometric run except the added `epochRedraws` stat lines, and
+min_interval=256 cut redraws 1190 -> 239 (ratio 4.98 vs the predicted
+(256+64)/64 = 5.0) with implied notify counts agreeing across both
+runs — the epoch-length mean shifts exactly as designed.
+
+Geometric mode (same day): re-running the fixed-mode active config on
+the geometric-capable build reproduced the earlier active run
+byte-identically (the mode branch does not perturb fixed mode's RNG
+consumption), and the geometric run (`random_drop_geometric=true`,
+same seed) passes with a distinct schedule of similar aggregate
+intensity (8056 lines / 24117 elements dropped vs 8057 / 24151
+fixed). Note the {0.25, 1} rate set keeps every epoch active in both
+modes, so aggregates converge by design there; the modes separate
+observably on rate sets containing 0 (duty cycling), where epoch
+LENGTH decides how long drops stay off.
+
+## Fix: vector-reduction micro-op dependency race (2026-08-24)
+
+Root-caused and fixed the "vle32/e64m2 widening-chain corruption"
+(found 2026-07-22, memory `gem5-vle32-e64m2-corruption`). The
+corruption was never in the widening chain at all — isolation testing
+(rvv/widen_chain_iso.c, 9 modes) showed the vle32/vsext front half and
+the m2 indexed gather both clean, with corruption appearing only when
+a REDUCTION consumed the gather.
+
+### The bug (upstream-latent, O3-specific)
+
+Vector reductions decompose into one micro per source register
+(vfredusum m2 -> 2 micros). Each micro chained its running
+accumulator through the PINNED, written-in-place destination
+register: `tmp_val = (microIdx == 0) ? Vs1[0] : Vd[0]`
+(templates/vector_arith.isa). A pinned in-place destination is
+deliberately not a declared source, so the IQ had NO dependency
+ordering the reduce micros: under the right wakeup timing (observed:
+the v9-half's gather elements completing before the v8-half's), micro
+i issued before micro i-1 and read the VPinVd tail fill (all-ones =
+NaN) or a stale partial as its accumulator, and the last-writer-wins
+in-place update hid the NaN. ExecAll/IQ traces show it exactly:
+rvv/rand_drop_val/wdbg2 (redsum micro producing NaN from the pin
+fill), wdbg4 (the v9-half waking and issuing one cycle before the
+v8-half was ready). Timing/VLEN-dependent because it needs that
+wakeup inversion; vfredosum (ordered) was protected only by a
+per-micro IsSerializeAfter hack; vfredusum had nothing.
+
+### The fix (isa/formats + isa/templates vector_arith.isa)
+
+Reduction partials now chain through a NORMALLY RENAMED internal
+register (`VecMemInternalReg0 + 1`, or `+2` when the vs2-overlap copy
+occupies +1): every micro's partial creates a fresh rename version,
+so micro i+1 carries a real IQ dependency on micro i. Only the LAST
+micro writes vd (VPinVd count 2 -> 1 write). The micro constructors
+take the actual micro count (`_numMicros`) for last-micro detection;
+the acc read becomes unconditionally `Vs1[0]` (the declared source);
+the IsSerializeAfter hack on ordered-reduction micros is removed (the
+dataflow chain now enforces exact element order for both ordered and
+unordered forms, cheaper than rename serialization). Applies to all
+four reduce formats: int, float, and both widening variants.
+
+### Validation (2026-08-24)
+
+- rvv/widen_chain_test.c + widen_chain_iso.c (9 modes) + widen_dbg.c:
+  all 12 previously-mixed runs now PASS at VLEN 512 (the
+  deterministic failing config) and 2048.
+- Full rvv-index-bench suite (11 benchmarks incl. heavy vfredosum
+  use): all PASS with checksums bit-identical to the host goldens.
+- Implication: TSVC-shaped autovec chains (vle32+vsext+vluxei64+
+  redsum) are now trustworthy; the standing "re-verify TSVC checksums
+  per config" caveat is lifted for this failure mode. vfredosum-heavy
+  workloads get a timing improvement (serialization removed), so
+  treat reduction-bound kernels as a minor new timing era.
+
+## Chaining: pinned-destination write-ordering hazard (2026-08-24, PARTIAL)
+
+While re-validating the rvv-index-bench suite at upstream element
+widths, a SECOND corruption (distinct from the reduction race fixed
+earlier the same day) was localized but NOT fully fixed.
+
+Symptom: `sls` with int64 indices (`vluxei64` gathering f32) returns
+NaN at large configs; `--disable-chaining` makes it PASS, so the fault
+is in this fork's chaining machinery, not base gem5.
+
+Evidence (ExecAll, rvv/rand_drop_val/sls_filtered.txt): mid-gather the
+destination register's already-written elements 0-2 revert to the
+`VPinVd` tail fill (0xff...), while element 3 writes normally — i.e. a
+pin fill lands AFTER earlier element writes. Pinned registers are
+deliberately NOT renamed (rename_map.cc:82-95), so every writer shares
+one physical register and partial in-place element writes accumulate
+in it; any out-of-order in-place write destroys them.
+
+Shape sensitivity: `paged_attn` uses the identical `vluxei64`-of-f32
+instruction and passes. The differentiator is that gcc allocated
+sls's gather with DEST == INDEX register (`vluxei64 v2,(a2),v2`), the
+overlap form whose macro-op emits the VCpyVs + VPinVd preamble. The
+same overlap shape was flagged by isolation modes 3/5 of
+rvv/widen_chain_iso.c.
+
+Two robustness fixes were made (both validated, neither sufficient):
+- `FUCompletion` now uses the chaining decision RECORDED AT ISSUE
+  (threaded through `processFUCompletion`) instead of recomputing it.
+  The recompute lacked the issue path's FU-pool-latency fallback and
+  re-read vtype (which can change between issue and completion), so
+  the two predicates could disagree and queue an instruction for
+  functional execution twice.
+- Instructions with a PINNED destination are excluded from chaining's
+  early functional execution (`WakeDependents`), since early execution
+  reorders in-place writes to a non-renamed register.
+
+Regression status: the full 11-benchmark suite was re-run after both
+changes — 10/11 PASS with checksums bit-identical to the host goldens
+(all but `sls`). The residual sls failure is open; treat
+dest-overlaps-index indexed loads under chaining as suspect until it
+is root-caused.
+
+## VIPER: eviction-clocked dedup (`evict_dedup_entries`, 2026-08-27)
+
+### What the existing method did
+
+VIPER's duplicate suppression is windowed in *emission order*: the
+per-way cross-line window (`dedup_buffer_size`,
+`src/mem/cache/prefetch/viper.cc` `drainEmission()`) compares each
+target line against the lines emitted from the last N processed index
+lines, and the within-line/vl-window seen-sets (`convertChunk()`)
+cover one line or one gather chunk. Nothing tells any of them whether
+a previously emitted line is *still in the cache*: a target recurring
+beyond the window re-emits, the cache finds the line resident, and
+gem5's queued prefetcher squashes it (`pfHitInCache`,
+`src/mem/cache/prefetch/queued.cc`). The squash protects DRAM but the
+conversion-lane slot, queue slot and translation slot are already
+spent — measured as the pfHitInCache accuracy plateau: dedup windows
+reach ~4 chunks while measured residency horizons run 50–800 chunks.
+
+gem5 itself already delivers the two missing truth signals to every
+prefetcher: `BaseCache::invalidateBlock` fires the "Data Update"
+probe with an empty `newData` on every block departure
+(`src/mem/cache/base.cc`), and `BasePrefetcher::regProbeListeners`
+auto-connects a `PrefetchEvictListener` that forwards those to the
+`notifyEvict()` virtual (`src/mem/cache/prefetch/base.cc`; no-op by
+default, previously overridden in-tree only by SMS).
+
+### What this fork adds (all in `viper.cc/.hh`, default bit-neutral)
+
+`evict_dedup_entries` (default 0 = off) enables a **global LRU table
+of emitted indirect target lines whose entries live until the cache
+says the line is gone** — suppression clocked by residency instead of
+by a fixed-depth window, so it holds at any reuse distance:
+
+- **Insert** when a target is actually pushed to the queue
+  (`drainEmission()`; drop_on_full overflow targets are not tracked —
+  no prefetch went out).
+- **Suppress** a recurring target whose line is tracked
+  (`targetsEvictDeduplicated`), refreshing its LRU position
+  (recurrence evidence).
+- **Clear** on `notifyEvict()` — the proactive re-arm — and on an
+  observed demand MISS to the line (`notify()`), the corrective
+  re-arm that heals entries whose eviction was never matched (e.g. a
+  prefetch dropped at translation). A demand HIT refreshes instead:
+  LRU-by-access keeps entries for lines that are provably resident
+  and recurring.
+- **Replace** LRU-by-access at capacity (`evictDedupReplaced`).
+
+VA/PA split: conversion, emission and the demand stream operate on
+VAs (`use_virtual_addresses`), but the eviction probe reports PAs. The
+`getPacket()` peek — already the one point holding a target's VA and
+translated PA together (it does the same for stream-page
+registration) — binds the PA into a side index that `notifyEvict()`
+clears through.
+
+Every approximation degrades toward emitting: a replaced or
+never-bound entry costs one redundant emission that the cache
+squashes exactly as before. The only fail-unsafe window is an
+eviction landing between suppression and the demand re-touch, and the
+miss-clear bounds that at one demand miss. The table can never
+usefully exceed the attach cache's line count (512 at a 32 KiB L1);
+`resetLearnedState()` wipes it at ROI stats resets like the rest of
+the learned state. Orthogonal to and composable with
+`dedup_buffer_size` (per-way, order-windowed) and the
+residency-interval registers (span-granular, verdict-trained).
+
+New stats: `targetsEvictDeduplicated`, `evictDedupEvictCleared`,
+`evictDedupMissCleared`, `evictDedupReplaced`.
+
+## VIPER: set-pressure gate (`set_pressure_threshold`, 2026-08-27)
+
+### What the existing method did
+
+Nothing in VIPER (or gem5's queued prefetcher) bounds how much of one
+cache SET speculation may occupy. With 64 sets covering a 4 KiB
+alias window, an indirect target stream spanning hundreds of KB maps
+~hundreds of lines into every set per pass; prefetches landing in an
+already-speculation-full set evict earlier not-yet-used prefetches
+(self-thrash — measured elsewhere as sub-1% prefetch survival at L1
+under deep distances). The cache's replacement policy sees no
+difference between demand and speculative occupancy.
+
+### What this fork adds (viper.cc/.hh, default bit-neutral)
+
+`set_pressure_threshold` (default 0 = off) + `set_pressure_sets`
+(default 64) add one saturating 3-bit counter per cache set holding
+that set's **prefetch-origin occupancy**: +1 when a prefetch fill
+lands in the set (`notifyFill`, `isHWPrefetch()`), −1 when a
+prefetch-origin line leaves it (`notifyEvict`) — used or unused. At
+emission (`drainEmission`), an indirect target whose destination
+set's counter is at the threshold is dropped
+(`targetsSetPressureDropped`), not recorded emitted, so a later
+recapture re-emits once the set drains.
+
+Membership ("was this line prefetch-filled?") is kept
+prefetcher-side in a PA-line set rather than read from the cache's
+pf-bit, because `BaseCache` clears that bit at the first demand use
+(that is how pfUseful is counted) — an eviction of a *used*
+prefetch-origin line reports `hwPrefetched = false` and would leak
+every useful fill into a permanent +1. The hardware analogue of the
+membership set is one extra tag bit per line (512 bits = 64 B) read
+by the victim path; the counters are 64 × 3 bits = 24 B.
+
+Set indexing is translation-invariant by construction:
+`set_pressure_sets × blkSize` must not exceed the page size
+(constructor `fatal_if`), so the index bits sit inside the page
+offset and the VA-side emission check selects the same set as the
+PA-side fill/evict accounting (64 × 64 B = exactly one 4 KiB page
+for the 32 KiB / 8-way L1D).
+
+Fail-safe direction throughout: counter saturation (clipped +1s,
+`setPressureSaturated`) and the reset-time undercount (resident
+prefetch-origin lines survive `resetLearnedState`, counters do not)
+both under-throttle — extra emissions the cache squashes as before.
+Composes with `evict_dedup_entries` (exact-line residency) — the two
+suppress disjoint populations.
+
+New stats: `targetsSetPressureDropped`, `setPressureSaturated`.
+
+## Discovery fixes for natural-vectorization kernels (2026-08-27)
+
+Two root causes made VIPER's indirect half completely silent on the
+`rvv-index-bench` natural GAP variants (formsAdopted=0 on
+bfs/cc_sv/sssp natural while the forced rewrites adopt and convert;
+the naturals' entire viper win was the stream half):
+
+### 1. Right shifts in the affine collapse (`viper.cc collapse()`)
+
+Existing: the collapse accepted extend / vsll / pow2-vmul / vadd/vsub
+only; `Srl`/`Sra` fell to the reject default, although the
+VectorChainTable already records them as replayable transforms. The
+natural direction-optimizing BFS gathers bitmap WORDS —
+`vle32 -> vsrl.vi 5 -> vsll.vi 2 -> vluxei32` — so every chunk's chain
+walked and was rejected (`chainsRejected` = 987K = every chunk).
+
+Added: `LinearForm` gains `rshift`/`rshiftSigned`, applied between the
+extension and the left shift (`applyForm`, `preLaneKey`) — the lane's
+shifter becomes a funnel shifter, still one circuit. Accepted only
+while nothing has scaled or biased the value (it commutes with
+neither), and the shift kind must match the value's 64-bit image
+(`Sra` iff sign-extended, `Srl` iff raw/zero-extended) so the 64-bit
+replay stays exact; `SExt`/`WMul` order guards learned `rshift`.
+
+### 2. vm-aware v0 source classification (`vector_chain_table.cc`)
+
+Existing: the arithmetic source classifier skipped ANY vector source
+with architectural index 0 as "the v0 mask". But v0 is only a mask as
+the IMPLICIT vm=0 operand; as an explicit operand it is ordinary
+data. GCC's register allocator cycles v0 through index chains in
+mask-heavy loops — `gap_cc_sv_natural`'s whole chain is
+`vle32.v v0 / vsll.vi v0,v0,2 / vluxei32.v v0,(a1),v0` — so the vsll's
+only source was skipped, no transform link ever inserted
+(`transformsInserted=0`), and the gather had nothing to walk
+(`linksFormed=0`). Same shape explains sssp_natural's silence; the
+head path (`pt[dests]` unconditional) and the gather path
+(`vecMemInfo().srcVReg`) were already v0-clean.
+
+Added: read the vm bit (encoding bit 25, the same raw-encoding
+technique as the vtype extraction) — unmasked ops treat a v0 source
+as data; masked ops keep the skip (the implicit mask; a masked op
+whose data source is also v0 stays conservatively untracked).
+
+### Use-decrement mode (`set_pressure_use_decrement`, 2026-08-27)
+
+Validation of the pure-occupancy gate on spmv/poisson3Db (threshold
+4, unified/L1/m16 viper center) showed the predicted failure: the
+counters track the whole prefetch-origin working set, and on a
+workload where prefetched lines ARE the working set every set
+legitimately reads >= 4/8 in steady state — the gate dropped 1.65M
+mostly-good targets, halved pfUseful, and cost +47% cycles.
+
+`set_pressure_use_decrement=true` changes what the counters hold to
+NOT-YET-USED speculation only: the first demand touch of a
+prefetch-origin line (observed in `notify()`, PA side) retires it
+from its counter and from the membership set — so its later eviction
+is a no-op, and each line decrements exactly once, by whichever exit
+comes first (use, or eviction-unused via `notifyEvict`). Healthy
+prefetch pipelines then hover near zero pressure while genuine
+dead-speculation pileups still accumulate. New stat:
+`setPressureUseDecrements`.
+
+## Chaining: pinned-destination write-ordering — ROOT CAUSE + FIX (2026-08-28)
+
+Closes the residual from the 2026-08-24 PARTIAL entry above.
+
+### Root cause
+
+An indexed vector load macro emitted micros in the order
+VCpyVs -> VPinVd -> element loads (`templates/vector_mem.isa`,
+VlIndexMacroConstructor). The element micros source only rs1 + vtmp
+(+ v0 when masked) — the pinned vd is NOT among their sources — so no
+dependency orders the pin's whole-register fill before the element
+writes; correctness rested on issue timing. Upstream's fixed 1-cycle
+vector latencies always happened to satisfy it. This fork's ARA
+latency model (SimdMiscOp -> dispatch floor + model latency) and
+chaining's two-slot FU occupancy broke it: VCpyVs (older) issues,
+the elements chase memory, and VPinVd — younger, starved behind the
+busy AraSIMD pool — executes hundreds of cycles late, wiping the
+elements already accumulated in the shared unrenamed physical
+register (the sls ExecAll trace: elements 0-2 written, all-ones fill
+lands between elements 2 and 3).
+
+Corollary: the hazard never required dest==index aliasing — VPinVd is
+emitted for EVERY indexed load. That is why `sssp_vector` (gather not
+aliased) crashed alongside cc/cc_sv on amazon0302; aliasing only made
+the losing timing more likely (sls vs paged_attn).
+
+### Fix
+
+Emit the VPinVd micros BEFORE the VCpyVs micros. The elements' only
+gating producer (VCpyVs) is then YOUNGER than every pin and lives in
+the SAME op class (SimdMiscOp), so the age-ordered ready queue cannot
+issue it before the pins; a pin therefore completes no later than
+VCpyVs and strictly before the first element write, which sits at
+least a wakeup + issue + cache access behind VCpyVs. No dependency
+edges, register counts, or latencies change — only intra-macro micro
+order — so this is a (small) timing-era change for all vector-load
+code, not a semantics change.
+
+Residual, documented not fixed: a tail/mask-UNDISTURBED pin sources
+the old vd and can still wait out VCpyVs (compilers and this suite
+emit ta,ma); the segment-load template pins before its elements
+already but its elements are cross-op-class and dependency-free, so
+its ordering still rests on timing (segment ops are banned in the
+suite for unrelated known bugs).
+
+### Fix v2 (same day): issue-side gate instead of micro reorder
+
+The micro reorder above was reverted: renaming the pin before the
+index copies perturbed rename order into a SECOND latent pinning bug
+— a squash leaves the pinned register's dependency-graph list and
+pin counters unrestored, and the next producer's dispatch panics
+("Dependency graph not empty", `addToProducers`) — the same
+accounting family as the known narrowing-op panic. Rather than
+repair upstream's pinned-squash bookkeeping, the ordering invariant
+is enforced in the fork's own issue stage (`cpu/o3/inst_queue`):
+
+- `pendingPinFill`: flat phys reg -> seqNum of the pin (a NON-memory
+  writer of a pinned register at `addToProducers` — VPinVd) whose
+  fill has not executed.
+- `scheduleReadyInsts` refuses to issue a MEMORY micro with a pinned
+  destination while an older pin's entry is present — deferred
+  exactly like a busy FU, re-checked every cycle.
+- The entry clears when the pin executes (`wakeDependents`) or is
+  squashed (`doSquash`); `resetState` clears the map. Deadlock-free:
+  the pin itself is never gated, and a squashed pin's elements are
+  younger and squashed with it.
+
+Arith writers of pinned registers (the narrowing shape) are
+deliberately NOT gated — same-op-class age-ordered issue already
+orders them, and that shape's separate accounting bug remains open
+upstream. Micro order and rename behavior are untouched, so the
+timing perturbation is confined to indexed/segment loads whose
+elements would previously have raced their pin.
+
+## VIPER: scalar level chain (`scalar_chain_enable`, 2026-08-28)
+
+**What gem5/this fork had.** Viper's discovery is vector-only: the
+VectorChainTable links a unit-stride producer vle to its dependent
+gathers, and everything upstream of the vle's BASE register is
+invisible. On row-hopping kernels (bfs/bc/sssp: `u = queue[i]` ->
+`off[u]` -> `vle nbr+(off[u]<<2)` -> gather), the producer's base
+jumps per row, rows are usually a single partial strip, and the stream
+walk never locks on — the exact gap behind the 8/27 "stride >= viper
+on GAP kernels" result. Separately, the TycheChainTable port
+(`cpu/tyche_table.hh`, `--scalar-prefetcher tyche`) already learns
+scalar dependency chains (IPT stride heads, per-register PT taint, DCT
+links with constant-stability confidence) but replays them
+per-instruction through an AGQ+ALU model, disconnected from viper.
+
+**What was added.** The two are joined into a *level table* design:
+
+- **Join + promotion (`cpu/tyche_table.{hh,cc}`).** At the O3 IQ's
+  vector dispatch site (`cpu/o3/inst_queue.cc`, both insert paths),
+  when a TycheChainTable is wired: every vector instruction taint-kills
+  its integer destinations (`noteVectorWriter` — the vsetvl rule,
+  also a latent-staleness fix for plain `--scalar-prefetcher tyche`),
+  and a unit-stride vector load micro-op 0 records its base register's
+  scalar provenance as a *join record* (`noteVectorBase`, which also
+  runs the `formed` backward walk — the vle plays the dependent-load
+  role of stock Tyche's formed marking). `scalarChainFor()` is the
+  promotion walk: tail -> head via `lastDctPtr`, every link
+  `needHandle()` (formed AND conf==3 AND dense), terminating at an
+  IP-stride head, segmented at Load links into level descriptors
+  {load PC, size/sign, recorded ALU ops to the next level's address,
+  next load's imm}. Ops are COPIED out (a DCT clear cannot dangle
+  them); `execOp()` is the stateless replay ALU. The both-tainted
+  `row_end - e` sub feeds only vsetvl/branches, never the base chain,
+  so chains compile around it by construction; sibling fan-out
+  (`off[u+1]`) is invisible to the backward walk and never compiled.
+
+- **Level Stream Table (`mem/cache/prefetch/viper.{hh,cc}`).** The
+  per-producer stream tracking table is RENAMED `levelStreamTable`
+  (LST, entries `LstEntry`) and generalized: scalar chain levels are
+  entries in the same table, keyed by their load PC, holding the
+  level's ops/element geometry and successor key instead of consumer
+  ways. The IRT gains `{elemMask, ttl}` and routes captured lines to
+  scalar levels exactly as it routes them to producers. Replay:
+  a confident IPT trigger at a compiled head PC (scalar demand access
+  — the IPT trains in `calculatePrefetch` on every observed read)
+  issues the head line at `scalar_head_distance` strides ahead; each
+  captured level line converts at the drain (one line/event, same
+  lane budget) by reading its registered elements, replaying the ops,
+  and issuing the next level's lines with their registrations riding
+  along (getPacket is the VA/PA point, as for stream captures). The
+  TERMINAL hop emits one line per value — the future producer-row
+  BASE (Form B; the row tail is demand/announcement work) —
+  registered under the producer PC so the unmodified vector pipeline
+  converts its gather targets. TTL bounds each lineage's hops.
+
+- **Resident capture (`mem/cache/{cache_probe_arg.hh,base.hh}`).**
+  `CacheAccessor::readLine` (default false; BaseCache implements via
+  `tags->findBlock`) lets pfHitInCache-dropped chain prefetches be
+  read straight off the cache — one extra read-port access, stock
+  Tyche's `mem_data.read`. Without it the chain starves on hot
+  frontiers (the kernel just WROTE the queue lines, so head prefetches
+  drop resident and produce no fill to capture).
+
+- **Wiring.** `--pf-param scalar_chain_enable=true` (default off,
+  bit-neutral: no calls, no table). Requires `--unified-cache` (the
+  trigger is a scalar demand access) — enforced in
+  `rvv/riscv-rvv-se-ara-prefetcher.py`; the factory
+  (`needs_chain_table`) and `rvv/unified_cache_hierarchy.py` wire one
+  TycheChainTable per core to both `cpu.tyche_table` and viper's
+  `scalar_chain_table`. Knobs: `scalar_head_distance` (32),
+  `scalar_conversion_cap` (16, the stale-frontier exposure cap on
+  head lines), `scalar_max_levels` (4). Non-head levels with loads
+  narrower than 4 bytes are rejected (the 16-bit element mask cannot
+  express them).
+
+**Verification signal.** Terminal outputs enter a 128-entry predicted-
+base CAM checked against observed producer chunk starts:
+`scalarBaseHits` / `scalarBaseMisses` is the chain's end-to-end
+accuracy independent of timing. Discovery is fully counted
+(`vectorBasesNoted`, `scalarChainsBuilt/scalarWalksFailed` table-side;
+`scalarChainsAdopted`, `scalarHeadTriggers`, `scalarLinesConverted`,
+`scalarLevelIssued`, `scalarResidentCaptures`, `scalarDroppedFull`,
+`scalarStaleFlushes` prefetcher-side) so a silent non-discovery shows
+in stats, not in a flat cycle count.
+
+**Known limits (v1).** Strided producers (sssp's vlse pair) never
+join — `vecMemInfo` classifies them None, so the kernel keeps failing
+discovery at the same gate as before. Scalar head triggers exist only
+where scalar demands reach the prefetcher (unified hierarchy, L1
+attach). The announcement-tail half of Form B (extending the
+demanded row to its vsetvl-announced extent) is NOT part of this
+change.
+
+## VIPER: shape-version chain invalidation (`scalar_shape_invalidate`, 2026-08-29)
+
+**What this fork had.** The scalar level chain (`scalar_chain_enable`,
+above) copies the TycheChainTable's chain OUT at adoption:
+`Viper::adoptScalarChain` (`src/mem/cache/prefetch/viper.cc`) walks
+the DCT once via `scalarChainFor()`, stores each level's recorded ALU
+ops — register constants baked in as `ScalarOpRec::src` — plus the
+next load's immediate and the head/successor PCs in `levelStreamTable`,
+and memoizes the adoption on `TycheChainTable::generation()`
+(`scalarAdoptGen`). The head trigger, the drain-side conversion and the
+pending-capture path all gate on that same generation. The table
+itself never stops tracking: a link's register constant is re-sampled
+at every issue of its PC (`src/cpu/o3/inst_queue.cc`, the
+`captureConstant` hook) and always stores the latest value
+(`src/cpu/tyche_table.cc`, `captureConstant`); a re-observed link
+refreshes its predecessor pointer (`lastDctPtr`, the link-refresh
+branch of `dispatch()`); an IP-stride load re-asserts itself as head.
+But `generation()` moves only in `clearDct()` — ROI reset or DCT
+capacity overflow (`dctInsert`). So viper's copy was refreshed exactly
+as often as the table filled up.
+
+The 8/27 sweep's `--tyche-dct-entries` OFAT exposed this as a
+correctness dependency on table capacity (bc_vector, sc center):
+
+| DCT entries | clears | chains adopted | head triggers | elements converted | speedup |
+|---|---|---|---|---|---|
+| 24 | 9,973 | 8,417 | 445,991 | 10.8M | 1.066x |
+| 48 (= 96, bit-identical) | 1 | 2 | 24,448 | 190K | 0.960x |
+
+At 24 entries bc overflowed ~10K times in the ROI; every clear
+invalidated the memo, the next producer chunk re-walked the by-then
+current DCT (new phase's head load, new base constants) and viper
+re-adopted. At 48 the table never filled, the two first-phase
+adoptions ran the whole ROI with a head PC that was no longer the hot
+loop's head, and `scalarBaseMisses` went 44K -> 397K. bfs (2 chains,
+no phase change) was flat, confirming this is staleness, not size.
+
+**What was added.**
+
+- **`DctItem::exported` / `exportedPrev`** (`src/cpu/tyche_table.hh`):
+  set on every link of a path by a successful `scalarChainFor()` walk
+  — "a prefetcher holds a copy of this link" — together with the
+  predecessor pointer the copy was compiled with (-1 for the head).
+  Cleared with the link (clear / reset).
+- **Two versions, two meanings** (`tyche_table.hh/.cc`). The table
+  distinguishes a change that makes the copy *wrong* from one that
+  makes a *different* chain live:
+  - **`shapeVersion()`** — bumped by `noteShapeChange()` when an
+    exported link changes what its replay would COMPUTE: a register
+    constant re-sampled to a different value (`captureConstant`,
+    `shapeBumpsConst` — the moment the copied-out `src` is wrong) or,
+    for a link exported as a dependent, an operand-side /
+    imm-vs-register / imm-value change in the link-refresh branch of
+    `dispatch()` (`shapeBumpsOp`). **`chainVersion()`** is
+    `generation() + shapeVersion()` — both monotone, each event moves
+    exactly one — and it is what compiled levels are stamped with:
+    a bump stops the head, flushes buffered lines, and forces
+    re-adoption. Head<->dependent *relabels* (an inner load whose
+    stride is intermittently confident is re-asserted as head by the
+    IPT path and demoted again by the dependent path) change neither
+    ops nor constants and do not count; unexported links never count.
+  - **`routeVersion()`** — bumped by `noteRouteChange()` when the data
+    flow AROUND a compiled chain moves: an exported dependent link is
+    fed by a predecessor different from `exportedPrev`
+    (`routeBumpsPred`), or a producer's join record moves to a
+    different tail link / a new join appears (`routeBumpsJoin`,
+    `noteVectorBase`). This only re-opens the promotion walk: viper's
+    adoption memo is keyed on `scalarAdoptKey()` = chain key + route
+    version, while the levels keep their chain-key stamp and stay
+    live. The walk then decides — a different valid chain is compiled
+    alongside the old one, an identical chain rewrites identical
+    entries, a failed walk changes nothing.
+
+  Why the split is necessary (measured, not theorised): the first two
+  cuts treated a predecessor change as an invalidation. Per-site
+  counters showed **every** bump on both kernels was `Pred` (bfs
+  518K, bc 249K/307K; Const = Op = 0). On bfs the vle base is
+  `nbr + e` (`rvv-index-bench/src/bfs_vector.c:136-145`) and `e` comes
+  from the `off[u]` chain at a row start but from `e += vl` on every
+  later strip: the same static `slli/add` link is legitimately fed by
+  two dynamic paths, and the compiled row-start chain is exactly the
+  one wanted (future rows; the strip tail is the announcement
+  stream's job). Invalidating on each strip gated the head off
+  two-thirds of the time (813K -> 272K triggers, 152K re-adoptions,
+  766K failed walks because the strip path has no head): 1.214x ->
+  1.192x on bfs, and bc's dct48 recovery stalled at 1.024x (0.96x
+  without the flag, 1.066x at dct24) for the same reason. bc's
+  phase change is the other face of the same event — a re-route to a
+  different head through shared links, where the compiled chain is
+  not wrong but silent — and that is precisely what a re-walk
+  handles.
+- **`scalar_shape_invalidate`** (`Prefetcher.py`, default off,
+  bit-neutral): `Viper::scalarChainKey()` returns `chainVersion()`
+  instead of `generation()`; it replaces every `generation()` compare
+  on the scalar path (adoption memo, level stamp `LstEntry::scalarGen`,
+  head trigger, `convertScalarLine`'s stale flush, pending-capture
+  registration). Nothing else changes: a bump stops the stale head at
+  its next trigger, flushes buffered level lines at the next drain
+  (`scalarStaleFlushes`), and the next producer chunk re-walks and
+  re-adopts. Re-adoption is refused while a changed constant is
+  re-stabilising (`needHandle()` needs conf 3), which is the intended
+  gap — no replay of a half-trained value.
+
+**Why a counter, not a flag.** A dirty flag must be cleared by its
+consumer, and the scalar path has several consumers reading at
+different times (one memo entry per producer PC, one stamp per level
+entry, checked at trigger / drain / capture). Clearing on the first
+consumer would hide the change from the rest; a version number is a
+flag that never needs clearing, and it is the idiom `generation()`
+already uses, so viper gains no new code path. The alternative that
+does work with a flag — a broadcast invalidate from the table into the
+prefetcher — needs a table->prefetcher back-pointer that does not
+exist (the prefetcher pulls through `scalarTbl`).
+
+**Validation** (`rvv/sweeps/viper_sweep_827.py` legs `sc_si` /
+`sc_si_dct48`, sheet `postfix`; earlier cuts kept in
+`runs_postfix_si_v1|v2`). Flag off is bit-neutral (viper_sc_bfs_vector
+rerun: ROI stats identical). Flag on, two-tier:
+
+| cell | bfs speedup | bfs head trig | bc speedup | bc head trig | bc baseMiss |
+|---|---|---|---|---|---|
+| sc center dct24 | 1.214 | 813K | 1.066 | 446K | 44K |
+| sc_si dct24 | 1.215 | 834K | 1.067 | 458K | 39K |
+| sc dct48 (no flag) | 1.208 | 804K | 0.960 | 24K | 397K |
+| sc_si dct48 | 1.209 | 824K | 1.032 | 276K | 173K |
+
+Shape bumps are zero on both kernels (constants never change); route
+bumps are ~one per non-first strip (bfs 522K, bc 250K/305K Pred) plus
+one join move per clear, and cost nothing: zero stale flushes, the
+head never stops. The flag is neutral where the capacity churn was
+already keeping the chain fresh (dct24) and recovers most of the
+dct48 collapse (0.96x -> 1.032x) without any clear.
+
+**Residual gap (open).** bc at dct48+flag stays below dct24 (1.032x
+vs 1.066x: half the head triggers, 4x the base misses). It is not an
+exported-link change — the table inserts only 12 heads / 63 links in
+the whole ROI at dct48 (vs 20.6K / 218K at dct24) and refreshes that
+fixed set 13M times, so the promotion walk runs over long-lived links
+whose predecessor pointers, `dense` flags and PT taint were last
+refreshed in whichever phase last executed them, and some walks
+compile a chain through a head that no longer runs (the chain is
+silent, not wrong: no Const/Op bump can see it). Clear-on-full fixed
+that by forgetting everything; the version counters by design only
+notice changes to links a copy was made from. Closing it needs link
+liveness — age out links not re-observed within a head window, or
+have the walk reject heads whose IPT stride has not fired recently —
+not more versioning.
+
+## TycheChainTable: link liveness (`live_window` / `--tyche-live-window`, 2026-08-29)
+
+**What this fork had.** The DCT (`src/cpu/tyche_table.hh`) only ever
+forgets a link wholesale: `clearDct()` on capacity overflow or ROI
+reset. A link that stopped executing keeps its predecessor pointer,
+its `formed`/`dense` flags and — through the Propagation Table — the
+taint on any register it wrote that was never rewritten. At a table
+that never fills (`--tyche-dct-entries 48` on bc_vector: 12 heads /
+63 links inserted in the whole ROI, refreshed 13M times) that state
+belongs to whichever phase last ran the link, and three things go
+wrong for the phase that is running now: an instruction reading a
+register tainted by a dead link is classified both-dependent
+(`doubleDepends` 1.09M -> 1.13M) and never becomes a link; a join
+tail can name a dead link; and the promotion walk happily compiles a
+chain up to a head that no longer runs (silent, not wrong — nothing a
+shape or route version can see, since nothing on the copy *changed*).
+Clear-on-full fixed all three by accident; the two-tier invalidation
+above left bc at dct48 on 1.032x against 1.066x at dct24.
+
+**What was added — a liveness clock, no replacement policy.**
+`seq` counts DCT-matching dispatches (one increment at the top of
+`dispatch()` where `denseCount` already found the link), each link
+stamps `lastSeen = seq` when dispatched or inserted, and
+`linkLive(idx)` is `seq - lastSeen <= live_window`. A dead link keeps
+its state (a re-observation revives it with everything intact) but
+is invisible at the three places above:
+
+- `dispatch()` taint evaluation: a source register whose PT entry
+  points at a dead link reads as untracked (`taintsDead`), so the
+  instruction becomes a normal link with a register constant instead
+  of a both-dependent chain break;
+- `noteVectorBase()`: a dead tail is `vectorBasesUntracked`;
+- `scalarChainFor()`: any dead link on the path fails the walk
+  (`scalarWalksDead`, also counted in `scalarWalksFailed`).
+
+`live_window` (TycheChainTable param, `--tyche-live-window`, default
+0 = off, bit-neutral: every test short-circuits) is in DCT-matching
+dispatches, so it scales with how much chain code is executing rather
+than with wall time; 4096 is the validation value (a row of bfs/bc
+touches ~10-30 links per strip, a phase is thousands of rows). The
+hardware equivalent is a small per-entry age counter aged on a
+periodic tick and reset on hit — the same cost class as `cnt`.
+
+**Validation — a measured no-op.** `rvv/sweeps/viper_sweep_827.py`
+legs `sc_si_lw` / `sc_si_lw_dct48` (bfs, bc, window 4096): all four
+cells are bit-identical to their `sc_si` counterparts (cycles and
+every prefetcher stat equal; `scalarWalksDead` = 0, `taintsDead` =
+0-11 over the whole ROI). Every link in the dct48 table is live: the
+12 heads / 63 links are the working set, refreshed 13M times, and no
+walk ever crosses a dead one. So the residual dct48 gap is not
+staleness of any kind. What the non-clearing table does differently
+is *classify more instructions as chain-dependent* — 13.0M vs 11.9M
+link refreshes, 9.7M vs 6.9M constant captures, 1.13M vs 1.09M
+both-dependent breaks — because PT taint is never wiped, so a value
+that a clear would have turned into a "constant" operand stays a
+chain input and the promotion walk compiles a deeper, rarer-firing
+chain (bc's backward phase: when `queue[qi]` loses IPT confidence at
+a depth-level boundary it is demoted to a dependent link fed by the
+tainted `qi`, and the walk continues up to the `depth_index[d]` head,
+which triggers once per level instead of once per row — consistent
+with equal IPT stride hits but 40% fewer landing on a compiled head,
+and 4x the base misses). That is a chain *selection* question
+(nearest useful head), not a liveness one. The mechanism stays,
+default off, at the cost of one counter and one stamp per entry; if it
+is still unused after the next campaign it should go.
+
+**Regression set (full stack `scalar_chain_enable` +
+`scalar_shape_invalidate` + `--tyche-live-window 4096`, dct24, vs the
+`viper_ed0` postfix cells):**
+
+| kernel | ed0 vs base | full stack vs base | vs ed0 | note |
+|---|---|---|---|---|
+| pr_vector | 1.726x | 1.940x | **+12.4%** | 1.06M adoptions, 5.2M head triggers, baseHit 7.06M / miss 59; pfIssued 26M -> 165M (140M pfHitInCache) |
+| cc_sv_vector | 1.461x | 1.597x | **+9.3%** | baseHit 723K / miss 19; pfIssued 2.7M -> 20.7M |
+| cc_vector | 1.303x | 1.303x | 0 | no join ever forms (chain never compiles) — bit-identical |
+| sssp_vector | 1.000x | 1.000x | 0 | never discovers (strided producer) — bit-identical |
+| rivec_spmv | 2.024x | 1.884x | **-6.9%** | see below |
+| bfs_vector | 1.125x | 1.215x | +8.0% | (sc center 1.214x) |
+| bc_vector | 0.962x | 1.067x | +10.9% | (sc center 1.066x) |
+
+The spmv loss is the pre-existing scalar chain, not the new
+invalidation: the attribution control `viper_sc_rivec_spmv` (sc alone)
+is 1.824x, the full stack 1.884x — si/lw help slightly. The chain is
+right (baseHit 163K / miss 505) but redundant: CSR rows are
+contiguous, so viper's stream walk already covers them (ed0 coverage
+0.96); the chain triples pfIssued (2.7M -> 8.6M, 5.5M pfHitInCache),
+pfLate rises 10x and coverage drops to 0.86. On pr/cc_sv the same
+redundancy (pfHitInCache 140M / 18M) is outweighed by the rows the
+stream cannot reach. A policy that suppresses the scalar chain where
+the producer's stream walk is already contiguous is the obvious next
+lever; not attempted here.
+
+## VIPER: strided (`vlse`) producer loads (2026-08-29)
+
+**What this fork had.** Only a unit-stride `vle` could be an
+index-stream producer. `StaticInst::VecMemInfo::Kind` had no strided
+kind (`src/cpu/static_inst.hh`); the strided element micro-op
+(`VlElementMicroInst`, `src/arch/riscv/insts/vector.hh`) reported
+`None` and only tagged its *request* with the stride (`RVVExtension`,
+read by nothing on the prefetch side); `VectorChainTable::dispatch()`
+treated "any other memory op (strided/whole-register)" as a taint
+kill (`src/cpu/vector_chain_table.cc`), so a gather fed by a `vlse`
+result never linked (sssp: `vv = vlse32(base, 8)` -> `vsll` ->
+`vluxei32 dist` — the "sssp never discovers" result of every campaign);
+and the scalar-to-vector join in `src/cpu/o3/inst_queue.cc` was gated
+on `UnitStrideLoad`. On the prefetcher side the ISA issues a `vlse`
+as **one EEW-byte request per element** (`VlElementMicroInitiateAcc`,
+`EA = Rs1 + Rs2*ei + offset`), against viper's chunk model of one
+line-sized access per chunk (`addr != lastAddr`, stream window sized
+from the access size, read-hit capture requiring a whole line inside
+the access).
+
+**What was added.**
+
+- **Classification.** `VecMemInfo::StridedLoad`; `VlElementMicroInst::
+  vecMemInfo()` reports it with `elemBytes`, the macro-op's `vl`, and
+  `microIdx` = the element index (`regIdx*vlenb/EEW + microIdx`), so
+  "micro 0" keeps meaning "the macro-op's first element" for the
+  scalar join, which now accepts both kinds (`inst_queue.cc`, both
+  insert paths).
+- **Stride capture.** The stride is rs2, a scalar register, known only
+  at issue. The IQ's existing chain snoop (`inst_queue.cc`, "sources
+  are ready at issue") takes source slot 1 for a `StridedLoad` instead
+  of the first integer source (rs1, the base); commit routes it to the
+  new `VectorChainTable::captureStride()` (`commit.cc`, beside
+  `armBase`/`captureScalar`). The head row carries `strided`,
+  `stride`, `strideValid` and the last dispatched `vl`;
+  `producerInfo()` exports `stride` (0 = unit-stride) and `vl`, and
+  reports a strided head as not-found until its stride has arrived.
+  `dispatch()` inserts the head on the first element micro and
+  refreshes `vl` on every one — the gather-side linking is untouched
+  (PT provenance is the same).
+- **Chunking (`Viper::notify`).** For `info.stride != 0` a chunk is the
+  span `[first, first + vl*stride)`; an access inside the current span
+  is the same chunk, one outside (or backwards) opens a new one and
+  latches `stride`, `phase = first % stride`, `chunkEnd`, and
+  `strideStep = vlenBytes/EEW * stride` on the level entry. The stream
+  walk gets `chunk_bytes = vl*stride` and the VLEN-pinned frontier
+  advances by `strideStep` per `prefetch_distance` unit (`streamAhead`).
+  Strides below EEW, not a multiple of it, or wider than a line are
+  refused (`stridedUnsupported`) — the walk is line-granular, so a
+  stride beyond the line would emit every line of the span.
+- **Slot masks.** `strideSlotMask(line, EEW, stride, phase)` marks the
+  element slots on the stride's phase; it rides the 16-bit
+  `elemMask` the IRT / captured-line records already carry for the
+  scalar levels (`registerCapture` coalescing included). Set at the
+  three registration points: the stream-window departure in
+  `getPacket()`, the strided read-hit capture, and the scalar chain's
+  terminal hop (a future-row base line under a strided producer is
+  masked from `target % stride`, so the interleaved payload words —
+  sssp's weights — never become gather targets). `convertChunk()`
+  honours a nonzero mask the way `convertScalarLine()` does (slots off
+  the mask cost no lane). EEW >= 4 B at 64 B lines, as for the scalar
+  levels.
+- **Read-hit capture.** The element access that hits carries EEW
+  bytes, not the line, so `captureStridedReadHit()` reads the resident
+  line off the cache (`accessor.readLine`, the scalar chain's
+  resident-capture path) and latches it under the slot mask; it
+  retires the registration at once, so the other vl-1 element hits on
+  the same line read as this producer's own re-capture and are
+  suppressed by the retired tail (`stridedHitsCaptured`).
+
+**Not covered.** `limit_gate` extents (STT announcements are `vl*EEW`
+bytes, not `vl*stride`); strides wider than a line; two strided
+producers sharing lines that BOTH feed gathers (the IRT keeps one
+producer per line — sssp's second `vlse` feeds only arithmetic, so it
+is unaffected); a shorter final strip absorbing the adjacent next
+row's first accesses into the previous span (its stream trigger is
+lost, its captures are not). Unit-stride producers see no change:
+every new path is behind `stride != 0` / a nonzero mask, and the
+table's new branch only fires on a `StridedLoad` kind that previously
+killed taint.
+
+**Validation.** sssp_vector (the only campaign kernel with `vlse`:
+`rvv-index-bench/src/sssp_vector.c:109-110`) in run era `strided`
+(`runs/viper_sweep_827/runs_strided/`): `viper_ed0_sssp_vector`
+(discovery + gather prefetch without the scalar chain) and
+`viper_sc_si_lw_sssp_vector` (row-hop chain joined through the strided
+base), against the postfix cells; `viper_ed0_rivec_spmv` rerun as the
+bit-neutrality control (bit-identical: 12,897,759 cycles, every ROI
+stat equal).
+
+| sssp_vector (unified, L1 attach, m16/20, VLEN 2048) | cycles | vs base | DRAM reads | pfIssued | pfUseful | coverage |
+|---|---|---|---|---|---|---|
+| base | 183.3M | 1.000 | 1.94M | - | - | - |
+| stride deg16 | 180.9M | 1.014 | 2.02M | 181K | 74K | 0.03 |
+| viper ed0, before | 183.4M | 1.000 | 1.94M | 0 | 0 | 0 |
+| viper ed0, strided | 187.5M | 0.978 | 3.54M | 3.89M | 29K | 0.01 |
+| full stack (sc+si+lw), before | 183.4M | 1.000 | 1.94M | 0 | 0 | 0 |
+| full stack (sc+si+lw), strided | **156.6M** | **1.171** | 4.33M | 17.9M | 361K | 0.13 |
+
+Discovery works as built: 2 heads, 1 gather linked, 258K forms
+adopted, 893K strided chunks, 276K fill captures, 9K/71K read-hit
+captures, `stridedUnsupported` 0. The split between the two viper
+cells is the bfs/bc lesson again. Without the scalar chain the only
+trigger is the stream walk, and delta-stepping relaxes vertices in
+bin order, so the rows after the current one in `wnbr` are not the
+rows relaxed next: the walk captures the wrong rows' neighbours and
+2.24M of 3.89M gather prefetches go unused (-2.2%). With the chain
+joined through the strided base (344K joins, 22.5K adoptions, 364K
+head triggers, 635K base hits / 42K misses = 94%), the right rows are
+predicted and the kernel is 17% faster — the first sssp win of any
+campaign. The cost is DRAM reads at 2.2x base: the walk's wrong-row
+traffic is still underneath, and a way to run a strided producer
+chain-triggered only (no stream walk) is the obvious next knob.
+
+## VIPER: demand-span-only emission (`demand_span_only`, 2026-08-31)
+
+**What this fork had.** Viper's vector-side emission is a run-ahead
+stream walk (`Viper::streamAhead`, `src/mem/cache/prefetch/viper.cc`):
+every new chunk at a producer PC extends a window
+`streaming_distance` chunks (or `prefetch_distance` whole-VLEN
+chunks) PAST the current chunk, on the assumption that the next
+chunks sit contiguously after it in address order. That assumption is
+only true when traversal order == memory order; on bin-order
+traversals (delta-stepping sssp) the whole window is cross-row
+garbage — the 2026-08-29 strided-producer section measured 2.2M of
+3.9M prefetches unused and DRAM reads at 2.2x base even in the
+winning full-stack cell. The walk is also the capture engine's fuel:
+a departing stream candidate inside a producer's window is what
+registers index lines for fill capture (`getPacket()`), so it cannot
+simply be skipped without replacing the registration source.
+
+**What was added** (all in `viper.cc/.hh` +
+`src/mem/cache/prefetch/Prefetcher.py`, default off, bit-neutral).
+One param, `demand_span_only`, that removes the notion of a
+streaming/prefetch distance entirely, for ALL producers:
+
+- **Emission (`Viper::spanComplete`).** On a new chunk the vector
+  side emits only the REMAINDER of that chunk's own span —
+  `[line(addr)+blkSize, addr + vl*stride)` for a strided producer,
+  `[line(addr)+blkSize, addr + vl*EEW)` for unit-stride. Line 0 is
+  the demand access itself; the later lines beat the per-element
+  (strided) / per-line (unit-stride) demands that would otherwise
+  fetch them serially. `streamAhead` is bypassed, and with it
+  `streaming_distance`, `prefetch_distance`,
+  `stream_start_at_distance` and the `limit_gate` walk clamp (the
+  span is demand-derived and bounded by the granted vl — there is
+  nothing to gate). The high-water mark (`limitAddr`) keeps its
+  meaning, so `getPacket()`'s stream-window registration captures the
+  span lines exactly as it does walk candidates (slot masks
+  included); `spanLinesIssued` counts them and `streamCandidates`
+  reads 0 under the flag.
+- **Unit-stride span chunking.** The legacy unit-stride chunk rule
+  (`addr != lastAddr` — every line-split of a strip is its own chunk)
+  would re-emit an overshooting span from every split, re-introducing
+  lookahead. Under the flag, unit-stride chunk detection switches to
+  the strided rule: one chunk = one strip `[first, first + vl*EEW)`
+  via `chunkEnd` absorption, with `producerInfo().vl` (captured at
+  dispatch for every producer kind, `src/cpu/vector_chain_table.cc`)
+  sizing the span and `vlenBytes/EEW` as the fallback before the
+  first vl arrives.
+- **Future-chunk coverage moves to the scalar chain.** With no walk,
+  the only future-base source is `scalar_chain_enable`'s Form B
+  future-row bases (plus their chain registrations); captures arrive
+  from span-line window registrations, Form B registrations and
+  read-hit capture — keep `capture_on_read_hit` on, it is
+  load-bearing here.
+
+### The dynamic per-producer gate (`demand_span_chained`)
+
+`demand_span_only` is the global, pure-form ablation: it gates every
+producer, including those the scalar chain can never predict. The
+dynamic gate is the shipping form of the same idea — **each producer
+decides for itself, from a signal the design already computes.**
+
+The partition is the point. A producer's base register advances one of
+two ways:
+
+1. **Arithmetic** (`ptr += vl*eew`, from the induction variable). No
+   memory read is involved, so the Tyche tracker cannot root a chain
+   there — `scalarChainFor`'s promotion walk needs a head that is an
+   IP-stride-confident *load* (`cpu/tyche_table.cc`), and bfs's `e +=
+   vl` strip advance is the recorded failure case. But such a base is
+   by construction a LINEAR function of the trip count, which is
+   exactly what the run-ahead walk extrapolates. The walk is the right
+   mechanism.
+2. **Load-fed** (`base = ja + ia[i]*8`; sssp's `off[u]`). The next
+   base is data-dependent: only dereferencing ahead predicts it, which
+   is what the chain's Form B terminal hop does. Here the walk is the
+   wrong-row traffic the chain replaces.
+
+So "a scalar chain terminates at this producer" is precisely the
+discriminator between the two, and it is already computed —
+`adoptScalarChain()` writes the terminal level with
+`scalarSuccIsProducer` and `scalarSuccessorPc = producer_pc`.
+
+**Mechanism.** `--pf-param demand_span_chained=true` (needs
+`scalar_chain_enable`; the constructor rejects the combination
+without it, since no producer could ever arm). At the end of a
+successful `adoptScalarChain(producer_pc)` the producer's own LST row
+is armed: `spanGated = true`, `spanGateGen = scalarChainKey()`
+(`spanGateArmed` counts first arms and re-arms at a new key). At each
+chunk event a single `span_mode` decision — computed once, before
+chunk detection, so it selects the chunking rule and the emission
+path together — reads
+
+```
+span_mode = demand_span_only ||
+            (demand_span_chained && ps.spanGated &&
+             ps.spanGateGen == scalarChainKey())
+```
+
+and routes to `spanComplete()` or `streamAhead()` accordingly
+(`spanGatedChunks` counts the gated events).
+
+**Fail-safe in both directions.** A producer with no chain never arms
+and keeps its walk, so streaming kernels (axpy, the synthetic gather)
+are untouched. A producer whose chain later stales — a DCT capacity
+clear, or a shape/route bump under `scalar_shape_invalidate` — fails
+the `spanGateGen` comparison and reverts to streaming rather than
+being left with no lookahead at all. Cold iterations stream by
+construction: adoption is lazy (it needs the producer linked, IPT
+confidence, and a successful walk), which is also exactly when there
+is no better predictor available. The arm lives in the LST row, so
+`resetLearnedState()`'s existing `levelStreamTable.clear()` wipes it
+per ROI with no extra code.
+
+**Hardware cost.** One valid bit plus a small wrapping generation
+stamp per LST row, written at adoption and compared at the chunk
+event. No new table, no new discovery.
+
+**Watch spot.** spmv's `ja` producer *is* load-fed (the `ia[i]`
+scalar loads), so with the chain on it flips to span-only. The
+recorded −7% from `sc` on spmv (2026-08-29) was pre-existing
+walk/chain redundancy; this gate removes exactly that redundancy, so
+it could recover that loss or forfeit the deep `pd4` lookahead the
+walk was providing. Measure it rather than predicting it.
+
+### Validation (2026-08-31)
+
+Synthetic gather (`rvv/vector_indirect_eval.bin`, `line_locality
+65536 4 67108864 16`, unified/L1/m16, VLEN 2048) and RiVec spmv
+(poisson3Db), under `runs/demand_span_validation/`.
+
+**Bit-neutrality — exact, twice.** Three runs of the same flag-off
+config across the two builds (`r0` pre-span binary, `r1` span binary,
+`r4` gate binary) differ only by the new counters' presence, all
+reading 0. Every other stat is identical, `numCycles` included.
+
+**Guard.** `demand_span_chained=true` without `scalar_chain_enable`
+exits at `viper.cc:94` with the explanatory fatal, rather than
+running as a silent no-op.
+
+**The gate's fail-safe direction is exact.** The synthetic's producer
+base advances arithmetically, so no chain is ever adopted
+(`scalarChainsAdopted` 0), nothing arms, and the gated run is
+BIT-IDENTICAL to the walk baseline:
+
+| synthetic, unified L1 | cycles | pfIssued | pfUseful | L1 misses | streamCand | spanLines | armed |
+|---|---|---|---|---|---|---|---|
+| walk baseline (`r1`) | 268,477 | 41,551 | 22,026 | 2,545 | 8,188 | 0 | - |
+| `demand_span_chained` (`r6`) | **268,477** | **41,551** | **22,026** | **2,545** | **8,188** | **0** | **0** |
+| `demand_span_only` (`r2`) | 534,468 | 38,875 | 0 | 24,571 | 0 | 6,141 | - |
+
+The global flag costs this kernel 2.0x cycles and all of its
+coverage; the dynamic gate leaves it untouched. That is the entire
+argument for the gate in one table.
+
+**The arm fires, and spmv regresses.** spmv's `ja` producer IS
+load-fed (the `ia[i]` scalar loads), so it arms — and the documented
+watch-spot risk is what actually happened (both runs `RESULT: PASS`,
+golden checksum `-2.5723580227460658`):
+
+| spmv poisson3Db, unified L1, m16 | cycles | vs control | L1 misses | pfIssued | pfUseful | streamCand | spanLines | armed | gated chunks |
+|---|---|---|---|---|---|---|---|---|---|
+| `sc` control (`r8`) | 13.86M | 1.000 | 297K | 7.47M | 1.97M | 596,595 | 0 | 0 | 0 |
+| `sc` + gate (`r7`) | 18.33M | **0.756** | 858K | 7.13M | 1.42M | 384,926 | 150,210 | 519 | 66,708 |
+
+The mechanism is doing exactly what it was built to do — 519 arms,
+66,708 chunk events routed to span completion, stream candidates down
+35% — and the kernel is 32% slower for it.
+
+**sssp: the opposite end, and a win.** sssp_vector on amazon0302
+(`src=3 delta=16`, full stack `sc+si+lw`, strided producer), against
+the recorded `strided`-era control that used the walk (`RESULT: PASS`,
+checksum `109482824`):
+
+| sssp_vector, unified L1, m16 | cycles | vs walk | DRAM reads | L1 misses | pfIssued | pfUseful | streamCand | spanLines |
+|---|---|---|---|---|---|---|---|---|
+| full stack, walk (control) | 156.6M | 1.000 | 4.33M | 5.95M | 17.91M | 361K | 1,255,496 | 0 |
+| full stack, `demand_span_only` | **151.9M** | **1.031** | **3.35M** | 5.39M | 18.13M | **646K** | 0 | 661,063 |
+
+Removing the walk on sssp is a straight win: 3.1% faster, **22.8%
+less DRAM traffic**, L1 misses down 9.5%, and prefetch usefulness
+nearly doubles (accuracy 2.0% → 3.6%) for the same issue count. The
+scalar chain is untouched by the change — 634,176 base hits / 41,389
+misses versus the control's 635,443 / 41,850 — which is the point:
+the chain was already predicting the right rows, and the walk was
+adding traffic for rows the kernel never relaxes. Against the
+no-prefetcher baseline (183.3M) this is **1.207x**, up from the
+strided era's 1.171x.
+
+**What that teaches (the model refinement).** The arithmetic/load-fed
+partition correctly predicts *which mechanism can supply the next ROW
+BASE*. It does NOT follow that the walk has nothing else to do. A
+producer can need both at once:
+
+- the **chain** for the cross-row jump (where the next row starts),
+- the **walk** for within-row readahead (the rest of a long row).
+
+`viper.hh`'s own Form B note already says this — "the row TAIL is
+demand/announcement work, not the chain's" — and the two kernels sit
+at opposite ends of it. sssp's rows are roughly one strip, so the
+walk has no in-row work left and everything it emits is cross-row
+overrun: gating it is pure win. spmv's poisson3Db rows are long and
+contiguous, so the walk's in-row readahead at `prefetch_distance=4`
+is most of its value, and span completion (which stops at the current
+chunk) forfeits it: L1 misses nearly triple.
+
+With both endpoints now measured, the real discriminator is visible,
+and it is NOT "is the base load-fed" — it is **row length against the
+walk's lookahead**:
+
+| | row length | walk emits | removing the walk |
+|---|---|---|---|
+| sssp | ~1 strip (vertex degree) | pure cross-row overrun | **1.031x** |
+| spmv poisson3Db | long, contiguous | in-row readahead the demand needs | **0.756x** |
+
+"Load-fed base" correlates with short rows in these two kernels but
+does not cause the effect, so the arm is a proxy — a good one for
+sssp, a wrong one for spmv.
+
+So the gate as built is the right *classifier* attached to a
+too-blunt *action*. The next iteration should suppress only the
+walk's cross-row overrun — **clamp the walk window at the current
+row's end** (the announced extent, or the chain-predicted next base,
+which the terminal hop already computes) instead of replacing the
+window with the chunk span. That single mechanism collapses to the
+right behaviour at both ends automatically: where rows are ~1 strip
+the clamp lands at the span and reproduces sssp's win, and where rows
+are long the clamp is inert and spmv keeps its readahead. No arm bit
+is needed to choose — the row end does the choosing.
+`demand_span_only` and `demand_span_chained` stay as the measured
+endpoints of that axis, and as proof the arm/stale/fail-safe
+machinery works.
+
+**Caveats.** `info.vl` is the last committed vl, so a row's first
+strip is sized by the previous row's vl (usually VLMAX; a shorter
+final strip can absorb the next row's first access — the strided
+case's existing caveat, now shared by unit-stride under the flag).
+Kernels whose producer base advances by arithmetic rather than a
+scalar load (axpy, pathfinder, spmv's linear `ja[]` pass within a
+row-ordered traversal) have no scalar chain to predict future
+chunks: expect streaming coverage to collapse there by design — this
+flag is the pure-form experiment for chain-predicted traversals. With
+`scalar_chain_enable` on unit-stride kernels, contiguous strip
+advances exceed the scalar accuracy CAM's 2-line contiguity band, so
+`scalarBaseMisses` over-counts (diagnostic only, behaviour
+unaffected).
+
+## VIPER-FINAL: the shipping subset (`--prefetcher viper_final`, 2026-08-31)
+
+**What this fork had.** `ViperPrefetcher`
+(`src/mem/cache/prefetch/viper.{hh,cc}`) accumulated every mechanism
+tried during the campaign as an opt-in, default-off parameter — 57 of
+them by the end (`viper_final` has 41). That is right for exploration (each ablation is
+bit-neutral when off, so a sweep can isolate it) and wrong as a
+description of the design: reading `viper.cc` gives no signal about
+which mechanisms carried their weight, and the storage accounting has
+to caveat every structure with "only when this knob is set."
+
+**What was added.** `ViperFinalPrefetcher` — the same engine with five
+subsystems **removed outright rather than defaulted off**, so the code
+carries no trace of them. New files
+`src/mem/cache/prefetch/viper_final.{hh,cc}` (782 / 1,835 lines against
+viper's 1,202 / 2,656), CLI `--prefetcher viper_final`.
+
+Removed:
+
+1. **Scalar level chain** (`scalar_chain_enable`) and everything it
+   pulled in: the `TycheChainTable` sideband and its include, the
+   IP-stride head trigger, compiled scalar levels in the LST
+   (`scalarLevel`/`scalarOps`/`scalarSuccessorPc`/…), `adoptScalarChain()`,
+   `convertScalarLine()`, `scalarPendingReg()`, the chain-pending
+   registration map, the resident-capture path for chain lines, the
+   `predictedBase` accuracy CAM, the lineage `ttl` carried through
+   `IrtEntry` / `CapturedLine` / `registerCapture()`, and the
+   `demand_span_chained` span gate the chain armed (with
+   `LstEntry::spanGated`/`spanGateGen`). This drops viper's only
+   dependence on `cpu/tyche_table.hh`, so `viper_final` never joins
+   `CHAIN_TABLE_PREFETCHERS`.
+2. **Residency-interval registers** (`residency_intervals`):
+   the `ResidencyInterval` array, `residencyObserveDrop/Miss()`,
+   `residencyCovered()`, the emission-side suppression, and the
+   `lastIssuedTarget` one-shot tag feeding them.
+3. **Set-pressure gate** (`set_pressure_threshold`): the per-set 3-bit
+   counters, the `pfOriginLines` membership set, `pressureSet()`, the
+   fill (+1) / evict (−1) / first-touch-decrement bookkeeping, and the
+   emission-side drop.
+4. **Stream-page registry publication**: the `tbl->registerStreamPage()`
+   call in `getPacket()` that fed `StreamDemoteLRURP`. The registry
+   itself lives in `VectorChainTable` and is untouched — `viper_final`
+   simply stops feeding it.
+5. **DRAM row-aware issue reordering** (`row_schedule_bits`):
+   `rowSchedule()`, the bounded comparator window
+   (`reorder_window_size`), and the `lastRow` state.
+6. **Span-completion emission** (`demand_span_only`): `spanComplete()`,
+   the `spanLinesIssued` stat, and the unit-stride span-chunking branch
+   it required. **The run-ahead walk is the only emission policy.**
+
+16 parameters and 22 statistics go with them.
+
+**Why `demand_span_only` went too.** It is not a bug fix or a
+throttle — it is an alternative *emission policy*, and the 2026-08-31
+measurements put it at the opposite end of one axis from the walk
+rather than ahead of it: sssp 1.031x (rows about one strip, so the
+walk's whole window is cross-row overrun), spmv poisson3Db 0.756x
+(long contiguous rows, where the walk's in-row readahead is most of
+its value), synthetic gather 0.502x (a pure stream with no lookahead
+left at all). A policy that doubles one kernel's cycles is a
+workload-specific alternative, not a default, and the mechanism that
+would be right at both ends — clamping the walk window at the current
+row's end from the `vsetvl`-announced extent — is not built yet.
+`viper` keeps both policies for that comparison; `viper_final` ships
+the walk.
+
+**What is preserved verbatim.** Architectural discovery through the
+shared `VectorChainTable`; the collapsed linear form
+`target = base + (extend(idx) >> r << s)` and its rejection path;
+range-based fill capture and the IRT; per-producer slice buffers;
+whole-line conversion through the shift-and-add lane array
+(`conversion_lanes`); the strided (`vlse`) producer path with its
+element slot masks; cross-line (`dedup_buffer_size`), vl-window,
+pre-lane and eviction-clocked (`evict_dedup_entries`) dedup; the
+retired-IRT tail; capture admission backpressure; the random
+tail-drop throttle; batch-confidence feedback; the announced-limit
+gate (`limit_gate`, so `viper_final` still joins
+`REVELA_TABLE_PREFETCHERS` when it is on); multi-way consumers; and
+the stall-on-full demand-clocked drain.
+
+**Why `demand_span_chained` had to go with the chain.** The gate is
+armed only at the end of a successful `adoptScalarChain()` — the
+terminal level names its producer, and that is the arm signal. With no
+chain, no producer ever arms and the flag is a silent no-op (viper's
+constructor rejects the combination for exactly this reason).
+`demand_span_only` is independent and is kept.
+
+**Wiring** (`rvv/prefetcher_factory.py`): `viper_final` is registered in
+`PREFETCHERS`, `VA_PREFETCHERS` (trains on VAs, so the MMU is
+registered automatically) and `VECTOR_CHAIN_TABLE_PREFETCHERS` (needs
+the per-core `VectorChainTable` on both `link_table` and the CPU's
+`vector_chain_table`). It joins `REVELA_TABLE_PREFETCHERS` only with
+`limit_gate=true`, matching viper. Build wiring:
+`src/mem/cache/prefetch/SConscript` (`Source('viper_final.cc')` +
+`ViperFinalPrefetcher` in the SimObject list) and
+`src/mem/cache/SConscript` (`DebugFlag('ViperFinal')`).
+
+**Relationship to viper.** `viper` is retained unchanged as the
+research vehicle — every ablation in this document still runs there.
+`viper_final` is not expected to be bit-identical to `viper` at
+matching parameters in general: it is identical only for
+configurations where all five removed subsystems are off, which is the
+default. Any run comparing the two should assert that first.
+
+**Status: implemented, NOT BUILT and NOT VALIDATED** (built per the
+user's instruction to hold builds). Before trusting it: build, then
+run a bit-neutrality check against `viper` at the shared default
+configuration — same kernel, `--prefetcher viper` vs
+`--prefetcher viper_final` with all removed knobs at their viper
+defaults — and diff the ROI stats. Every stat that exists in both
+should match exactly.
+
+### Validation of the post-port changes (2026-08-31, build 3)
+
+Six edit rounds landed on `viper_final` after the sweep binary was cut:
+`streaming_distance` removal, demand-miss capture, vl-window and
+`validBytes` removal, the `producer_slots`/STT renames plus the review
+fixes, strided removal, and the switch from generation counters to
+invalidate pulses (with the phase-grid iteration anchor). Build clean
+after three narrowing errors the `uint8_t` fields introduced
+(`std::min(unsigned, uint8_t)` has no overload; three assignments
+needed explicit casts) — all caught by grepping the build log for
+`error:`, since **docker exits 0 even when scons fails**.
+
+**Port fidelity (the pre-change binary).** `viper_final` at the sweep
+center is **bit-identical to the recorded `viper_ed0` cells** on both
+rivec_spmv (12,897,759 cycles) and sssp_vector (187,451,234) — every
+ROI stat equal, including `pfIssued`, `pfUseful`, `chunksObserved`,
+`streamCandidates` and `formsAdopted`. That is the evidence that all
+five removed subsystems really were default-off-equivalent in viper.
+
+**Behaviour preservation (the new binary).** rivec_spmv is
+**bit-identical again** across all six rounds — same cycles, same
+2,745,922 issued / 2,123,274 useful, same 619,453 stream candidates —
+with `RESULT: PASS` and the golden checksum. The new counters confirm
+the invalidate mechanism is live rather than dormant:
+`globalInvalidates = 1` (one DCT clear in the ROI), `formsInvalidated
+= 0`, `noFormSkips = 0`. This is the load-bearing result: it says the
+counter-to-pulse switch, the removals and the renames are all exactly
+behaviour-preserving where they were meant to be.
+
+**Demand-miss capture and the phase grid** (cc_vector, amazon0302,
+`demand_miss_capture=true`, both `RESULT: PASS`):
+
+| | captures | tooLate | skipped | cycles |
+|---|---|---|---|---|
+| `demand_capture_lookahead=0` (off) | — | — | — | 12,844,971 |
+| `demand_capture_lookahead=16` | 2,715 | 911 | 0 | 12,852,757 |
+| `demand_capture_lookahead=8` | 3,561 | 65 | 6,152 | 12,852,757 |
+
+Three things fall out, and each checks a different part of the
+mechanism:
+
+- **The grid lands where it should.** At VLEN 2048 / e32 an iteration
+  is 4 lines, so a lookahead of 16 should drop exactly the first line
+  of every iteration: 25.0%. Measured 911/3,626 = **25.1%**.
+- **`captures + tooLate` is invariant at 3,626** across both
+  lookaheads — the demand-miss *trigger* is independent of where
+  conversion starts, which is what the two-stage design intends.
+- **The straddling-line path only appears at a non-multiple
+  lookahead.** `skipped = 0` at 16 is correct, not a bug: 16 is a
+  whole multiple of the line's 16 elements, so every line is entirely
+  before or entirely after the point. At 8 the partial path engages
+  (6,152 elements skipped). The residual `tooLate = 65` at lookahead 8
+  is also real: `start = 8` overruns a line only at EEW = 8, and
+  cc_vector has a `vluxei64` producer alongside its e32 ones.
+
+**What it does not show.** Demand-miss capture costs ~8K cycles
+(+0.06%) and buys nothing measurable here, exactly as predicted: the
+path only fires on lines that actually miss, and 3,626 of those
+against 490K issued prefetches is a rounding error. A lookahead sweep
+measures recovery traffic, not steady state; to make the path dominate
+it needs pairing with a short frontier.
+
+---
+
+## The walk confidence throttle (`walk_throttle`, 2026-08-31) — REMOVED 2026-09-01
+
+**Status: deleted from `viper_final`.** Kept here for the measurements.
+It demoted bc from 0.962x to 0.983x by cutting 57% of its prefetches
+(`walk_confidence_down=4`), but every operating point still lost to no
+prefetcher, and it was structurally blind on sssp (see the granularity
+note at the end). `demand_miss_capture` and
+`demand_capture_lookahead` were removed in the same pass, having
+measured at +0.06% cycles and no benefit. VIPER-FINAL keeps only the
+unconditional walk.
+
+## The walk confidence throttle (`walk_throttle`, 2026-08-31)
+
+### What gem5 already had
+
+Nothing. gem5's own feedback-directed prefetching lives in
+`src/mem/cache/prefetch/queued.cc` only as a *queue-pressure* bound
+(`queue_size`, `queue_squash`, `queue_filter`) — it limits how many
+prefetches may be outstanding, never whether a given *stream* deserves
+to be prefetched at all. The classic accuracy/lateness/pollution
+feedback of Srinath et al. (HPCA'07) has no implementation in this
+tree. Every stride-style prefetcher here (`StridePrefetcher`,
+`IndirectMemoryPrefetcher`) instead gates on a *pattern* confidence:
+`confidence_counter_bits` in
+`src/mem/cache/prefetch/indirect_memory.cc` counts how often the
+observed delta matched the predicted one. That is a question about
+whether the address *formula* is right.
+
+VIPER-FINAL's walk never had even that, deliberately: the trigger is
+architectural. `vle32.v` *is* a unit-stride load, so
+`streamAhead()` (`src/mem/cache/prefetch/viper_final.cc:597`) ran at
+the full `prefetch_distance` for every producer, forever, and the
+comment at its head said so — "no confidence: the opcode said
+unit-stride".
+
+### Why the opcode is not enough
+
+The opcode is a promise about *one* gather's addresses, not about the
+sequence of gathers. Two workload shapes were measured to disagree:
+
+| | index array traversed | walk outcome |
+|---|---|---|
+| CSR spmv (`poisson3Db`) | in **address order** — row *r+1*'s `ja[]` begins where row *r*'s ends | frontier is always on the next thing read; 1.47–1.63× |
+| `bc_vector`, `sssp_vector` | in **visit order** — `u = queue[i]`, then `nbr[off[u]]` | frontier reads rows the kernel will not go to next; 0.96×, ~0.7% accuracy |
+
+Both are unit-stride *within* a gather, so nothing in the ISA
+separates them. What separates them is whether the *next* gather
+continues the last one's address range, and that is only observable at
+run time. bc and sssp are not mispredicted-formula cases the indirect
+confidence counter would catch — the formula is right, the *rows* are
+wrong.
+
+### The mechanism
+
+One saturating counter per STT entry
+(`SttEntry::confidence`, `src/mem/cache/prefetch/viper_final.hh`),
+scaling that entry's own frontier:
+
+```
+distance(c) = 0                                    if c == 0
+              min(prefetch_distance, (c >> S) + 1) otherwise
+```
+
+With the defaults (`walk_confidence_max=15`, `walk_confidence_shift=2`,
+`prefetch_distance=4`) the ladder is `c>=12 → 4`, `8..11 → 3`,
+`4..7 → 2`, `1..3 → 1`, `0 → walk off`. It is a shift and a clamp, so
+in hardware it is a wire, not an arithmetic unit.
+
+**New entries start saturated.** The opcode is real evidence and
+unit-stride is the common case; the throttle exists to demote the
+streams that disprove themselves, not to make every stream earn its
+first prefetch.
+
+**The scoring signal is free.** `updateWalkConfidence()`
+(`viper_final.cc:562`) runs on each new chunk *before* `lastAddr` and
+`limitAddr` are updated, so `limitAddr` is still the frontier the
+previous walk left. The counter asks one question:
+
+```
+consumed = (addr >= lastAddr) && (blockAddress(addr) < limitAddr)
+```
+
+— did the demand stream walk *into* the lines the walk fetched? If so
+those prefetches were demanded: step up. If not, the stream jumped
+(backwards, or clean past the frontier) and every line still
+outstanding in that window was fetched for a row the kernel never went
+on to read: step down. **No prefetched line is tracked individually**
+— the frontier `limitAddr` already *is* the window the counter is
+evaluated over, so there is no timer, no per-line use bit, and no
+PA→producer attribution table. The whole cost is the counter.
+
+### The shadow frontier
+
+A demoted entry (`confidence == 0`) would otherwise be trapped: with
+nothing emitted, `limitAddr` stops advancing, the demand stream
+inevitably passes it, and every subsequent event scores as "not
+consumed". Recovery would be impossible.
+
+So a demoted entry still **runs the walk as a shadow**: the window is
+computed and `limitAddr` raised, but the `addresses.push_back()` is
+skipped (`streamAhead(..., shadow=true)`). The shadow uses a
+one-chunk frontier — the minimum the test needs. A demoted stream that
+becomes address-ordered again therefore starts scoring `consumed` and
+climbs back out; one that stays jumpy stays at zero, at the cost of an
+adder and a compare per chunk and no memory traffic at all.
+
+### Scope: the walk, not the engine
+
+`streamAhead()` is the engine's fuel — every capture comes from a line
+it emitted — so silencing it would take the *indirect* half down with
+it. That is the wrong coupling: a stream whose row *order* defeats the
+frontier can still have perfectly good gather targets inside the row
+the demand is on. `demand_miss_capture` (added in the section above) is
+exactly the path that keeps conversion alive without a frontier, so by
+default a fully demoted producer keeps converting off its demand
+misses. `walk_throttle_stops_capture=true` couples them, to measure a
+producer switched off outright.
+
+### Parameters (`src/mem/cache/prefetch/Prefetcher.py`)
+
+| param | default | meaning |
+|---|---|---|
+| `walk_throttle` | `False` | arm it; bit-neutral when off (`walkDistance()` returns `prefetch_distance` unconditionally and no counter is touched) |
+| `walk_confidence_max` | 15 | saturating max and a new entry's starting value; 15 is a 4-bit counter |
+| `walk_confidence_shift` | 2 | the confidence→distance shift |
+| `walk_confidence_up` | 1 | step on a consumed window |
+| `walk_confidence_down` | 1 | step on an abandoned window |
+| `walk_throttle_stops_capture` | `False` | at zero, also stop demand-miss capture |
+
+### Stats
+
+`walkConfidenceUp` / `walkConfidenceDown` (the scoring events),
+`walkThrottledOff` (chunk events at a demoted entry),
+`walkDistanceSum` (÷ `chunksObserved` = the mean realised lookahead —
+the single number that says how hard the throttle actually bit), and
+`walkThrottledCaptures`.
+
+### What it cannot catch
+
+The counter scores *whether the demand stream arrived*, not *whether
+the prefetch was useful when it did*. A stream that walks contiguously
+forever but is always too late, or whose lines are always already
+resident, scores as fully consumed and keeps the maximum distance.
+Catching that needs a per-line use bit and PA→producer attribution —
+the storage this design deliberately avoids. The failure mode it is
+built for (bc, sssp) is a row-order failure, which this does see.
+
+---
+
+## Rejecting strided (vlse) producers (2026-09-01)
+
+`viper_final` was documented from birth as tracking "only unit-stride
+index loads" — item 10 of the removal list in
+`src/mem/cache/prefetch/viper_final.hh`. The code did not do that. The
+span model for strided producers was deleted, but nothing rejected the
+producers themselves, so they were **mis-modelled as unit-stride**,
+which is worse than either tracking or ignoring them.
+
+`VectorChainTable::producerInfo()`
+(`src/cpu/vector_chain_table.cc:819`) returns a strided head as a
+usable producer and reports its stride:
+
+```cpp
+if (dct[idx].strided && !dct[idx].strideValid) {
+    return out;              // only rejects an UNCAPTURED stride
+}
+out.found  = true;
+out.stride = dct[idx].strided ? dct[idx].stride : 0;   // reported
+```
+
+`viper_final.cc` never read `info.stride`, and `streamAhead()` runs
+before and independently of the `info.linked` gate, so an unlinked
+strided producer was walked too. A `vlse32` issues one access per
+element, 4 bytes each, so every element tripped `new_chunk` and got
+its own walk: a 4-byte window placed `prefetch_distance * VLEN / 8` =
+1024 bytes ahead of a cursor advancing by the stride.
+
+**Measured on sssp_vector** (the only one of the seven campaign
+kernels containing `vlse` — 2 sites; pr, bfs, cc_sv, cc, bc and spmv
+have none):
+
+| | span model present | span model deleted |
+|---|---:|---:|
+| chunksObserved | 893,489 | **3,851,851** (4.3x) |
+| pfIssued | 3,893,196 | **4,545,324** |
+| cycles | 187,451,234 | 187,184,764 |
+
+Removing the feature made the prefetcher issue 17% *more* prefetches.
+It also made the walk confidence throttle inert on sssp: consecutive
+strided elements advance the cursor far less than the 1024-byte
+frontier, so `blockAddress(addr) < limitAddr` held on 84% of events
+and only 104 of 3.85M chunk events ever demoted.
+
+**The fix** is one guard in `calculatePrefetch`, making the code match
+the contract the header already stated:
+
+```cpp
+if (!info.found || info.stride != 0) {
+    drainEmission(addresses);
+    return;
+}
+```
+
+The chain table is untouched — it is shared with GDP, vhybrid and
+viper, which have their own strided handling. Rejection is local to
+`viper_final`.
+
+---
+
+## VIPER-FINAL: redundant-state trim (2026-09-02)
+
+**Why.** A hardware pass over `viper_final` and its design doc
+("Viper Final in Silicon") looking for state that another field
+already determines, and for mechanisms that existed twice. Everything
+below is deleted from `src/mem/cache/prefetch/viper_final.{hh,cc}`,
+not defaulted off. The engine's behaviour is meant to be unchanged
+(see *Expected effect*); what changes is how many bits and how many
+paths say the same thing.
+
+**What gem5 had, and what each item duplicated.**
+
+1. **The op-list adoption path** — `ConsumerGroup::form`, the
+   engine-side `LinearForm` and `collapse()`, and the
+   `tbl->pipelineConfig()` walk in `calculatePrefetch`. The chain
+   table's backward walk already folds every chain (`foldChain`,
+   `src/cpu/vector_chain_table.cc`) and pushes the result into the
+   IPT here (`installForm`), so the engine held a second fold of the
+   same algebra and a second copy of the form in every consumer way.
+   `folded_forms` is now REQUIRED (`fatal_if` in the constructor) and
+   the config script sets it for `--prefetcher viper_final`
+   (`rvv/riscv-rvv-se-ara-prefetcher.py`). The lane array reads the
+   IPT record directly (`wayForm()`); `applyForm`/`preLaneKey` take a
+   `VectorChainTable::FoldedForm`.
+
+   *Latent bug this exposed:* with `folded_forms` on, the old code
+   never adopted anything. `producerInfo().linked` is
+   `!consumers.empty()` (`vector_chain_table.cc`, producerInfo), and
+   `consumers[]` is written only inside the `if (!foldedForms)` branch
+   of the walk, so the "bit-neutral" folded path silently streamed
+   without converting. The engine no longer reads `linked` at all —
+   the IPT is its own record of the same fact — so the path is now
+   the only path, and it works.
+
+2. **`ConsumerGroup::configured` and `configuredCount` /
+   `producer_slots` gating, plus the `ipt_sets` param.** A way is live
+   iff its IPT way holds a valid form; a producer holds a slot iff it
+   holds an IPT set. `producer_slots` now sizes the IPT
+   (`ipt.resize(producerSlots)`); `ipt_sets` is removed from
+   `ViperFinalPrefetcher` (`Prefetcher.py`). `producerSlotsSaturated`
+   folds into `iptSetConflicts`. Per-way liveness is one function,
+   `wayForm(pc, way)`, and producer liveness is `producerLive(pc)`.
+
+3. **`IptWay::consumerDctPtr`'s empty encoding (−1) beside
+   `FoldedForm::valid`.** Two occupancy bits per way. A push always
+   arrives valid (the walk sets `f.valid = true` right before
+   `installForm`, `vector_chain_table.cc`), so `form.valid` IS the
+   way's liveness; the pointer is only the routing key an invalidate
+   names. `invalidateForm` now clears the form rather than leaving an
+   "occupied but invalid" way; a cleared way keeps its stale pointer
+   (don't-care, like a free set's tag) so a re-walk of the same gather
+   lands in the same way and the dedup record beside it stays put.
+   Hardware width: 3 b pointer, not 4.
+
+4. **`SttEntry::valid`.** Always true. The entry is created by
+   `streamTrackingTable[pc]` in `calculatePrefetch` and `valid` was set
+   on the same path before anything else could read it; the only clear
+   was the map clear. Presence in the map is the bit (in hardware, the
+   row's tag valid). `calculatePrefetch` now uses `try_emplace` to
+   detect the first chunk event, which also sizes `groups` once to
+   `consumers_per_producer` (the ways are physical) and latches
+   `elemBytes` from the producer query on every chunk.
+
+5. **`SttEntry::latchValid`.** Derivable: the latch is live iff
+   `next < targets.size()` (`ConvertedLine::pending()`); flushes call
+   `ConvertedLine::clear()`. In hardware the latch already needs a
+   count register, so valid = cursor < count.
+
+6. **The polled `globalInvalidate` flag / `takeGlobalInvalidate()`**
+   in `VectorChainTable`, checked by `applyGlobalInvalidate()` on
+   every `calculatePrefetch`. `clearAll()` already pushed
+   `formSink->invalidateAllForms()`; only the unresolved-head case in
+   `noteOperandChange()` raised the flag without pushing. That case
+   now pushes too, and the flag and method are removed from the shared
+   table (viper_final was their only consumer; gdp/viper/vhybrid use
+   `operandGen()`). `invalidateAllForms()` clears the IPT and flushes
+   every producer's ILQ and latch itself.
+
+7. **The whole-producer "no form" flush blocks in `drainEmission`**
+   (three sites) and the duplicated `anyConfigured` check in
+   `notifyFill`. Replaced by an invariant: a producer's ILQ and latch
+   are non-empty only while it is live, because captures are admitted
+   only for live producers (`getPacket`, `notifyFill`,
+   `captureFromReadHit`'s caller) and the invalidate that frees a
+   producer's last way flushes both (`flushConversion`). The
+   per-target way check (a way invalidated mid-latch forfeits its own
+   targets) stays. Helpers `clearLineState` / `closeLineDedup` replace
+   the three hand-copied dedup-window closes.
+
+8. **The duplicated post-lane dedup path in `convertChunk`.** The
+   `pre_lane_dedup` if/else were two near-identical loops whose
+   seen-sets held different things (target lines vs. folded keys).
+   They are provably the same set: with `X = extend(idx) << shift`,
+   `line = (base + X) >> 6 = (base >> 6) + ((X + (base & 63)) >> 6)`
+   exactly, so `preLaneKey` names the target line and the emitted set
+   is identical in both placements. One loop now runs the key compare
+   first; `pre_lane_dedup` decides only whether a hit spends a
+   `conversion_lanes` slot (true: the lane is clock-gated; false: it
+   fired first). `elementsPreDeduped` is dropped (it equalled
+   `targetsDeduplicated` when the knob was on).
+
+**Stats removed:** `formsAdopted`, `formsMemoHits`, `chainNotReady`,
+`chainsRejected`, `producerSlotsSaturated` (→ `iptSetConflicts`),
+`elementsPreDeduped`. `formsInstalled` is the replacement for
+`formsAdopted`. The two `viper_final` sweep parsers
+(`rvv/sweeps/viper_final_sweep.py`, `viper_final_ed_sweep.py`) now read
+`formsInstalled` and the table's `formsPushed` instead of
+`formsAdopted`/`linksFormed` (the latter is never incremented under
+folded forms).
+
+**Params removed:** `ipt_sets`. `pre_lane_dedup`'s doc now states the
+slot-accounting-only semantics. The script also wires `vlen` for
+`viper_final` as it did for `viper` (the sweeps passed it explicitly,
+so the documented command line had been fataling without it).
+
+**Expected effect.** Bit-neutral in cycles and prefetch counts against
+the 2026-08-31 binary at the sweep centre (`conversion_lanes=0`), with
+three known, small timing deltas: (a) a producer becomes live at the
+gather's commit that pushes its form rather than at the producer's
+next chunk event, so a capture landing in that window now converts
+instead of counting a `noFormSkips`; (b) a global invalidate flushes
+buffered work at the pulse rather than at the next drain (same lines
+lost, different stat); (c) at `conversion_lanes > 0` with
+`pre_lane_dedup=false` the slot accounting is preserved exactly, and
+with it `true` the emitted set is unchanged by construction.
+
+**Status: NOT BUILT, NOT VALIDATED** (build held per CLAUDE.md). A
+host `g++ -std=c++17 -fsyntax-only` of `viper_final.cc` and
+`vector_chain_table.cc` against `build/RISCV` passes with no new
+warnings. Validation to run: the spmv/poisson3Db centre from the
+2026-08-31 campaign, diffing `pfIssued`, `pfUseful`, `chunksObserved`,
+`streamCandidates`, `fillsCaptured`, `targetsGenerated` and cycles.
+`formsInstalled` should be nonzero and `formsPushed` (chain table)
+should match it minus `iptSetConflicts + iptWaysExhausted`.
+
+**Design doc updated:** "Viper Final in Silicon"
+(https://claude.ai/code/artifact/80c371ec-cba7-4881-9eeb-fb26a0924043),
+§1 adoption/invalidate text, §2 slot text, §4 dedup placement, §6
+widths (IPT way 73 b, latch count), §7 field entries, §8 ledger rows
+7 and 9, footer revision.
+
+## VIPER-FINAL: IPT way extension code (2026-09-02)
+
+**Existing method.** `VectorChainTable::FoldedForm`
+(`src/cpu/vector_chain_table.hh`) held the index extension width as
+`unsigned extBits`, a magnitude in bits. The hardware accounting
+charged it 7 b (the value 64 needs seven bits), so the IPT way was
+73 b = consumer pointer 3 + form 70 (valid 1, base 48, shift 6,
+rshift 6+1, ext 7+1). The DCT row already stored the same quantity
+(`extWidth`) as a 3-bit *encoding* — the width is always a point on
+the SEW ladder {none, 8, 16, 32, 64}, five states — so the two
+records disagreed on the width of one field.
+
+**What changed.** The form now stores the code, not the magnitude:
+
+- `FoldedForm::extCode` (`uint8_t`, 0 = none, 1..4 = extend from
+  8/16/32/64 bits) replaces `extBits`. `encodeExtWidth()` maps a
+  width onto the ladder and `extWidth()` decodes it back
+  (`4 << code`). Both live on the struct.
+- `foldChain()` (`src/cpu/vector_chain_table.cc`) writes the code at
+  both extension sites (`SExt`/`ZExt` and `WMul`/`WMulU`) and now
+  **refuses the chain** if the width is off the ladder, instead of
+  silently folding it. No legal RVV encoding produces such a width
+  (`vsext.vfN` sources are 8/16/32, widening multiplies use SEW), so
+  the rejection is a guard, not a behaviour change.
+- `ViperFinal::extendRaw()` (`src/mem/cache/prefetch/viper_final.cc`)
+  decodes the code once and applies the same sign/zero extension as
+  before. `applyForm()` and `preLaneKey()` are unchanged.
+
+The other prefetchers (`viper`, `vhybrid`, `vector_tyche2`) keep
+their own `LinearForm` copies with `extBits`; only `FoldedForm` — the
+one form the IPT way holds — changed.
+
+**Storage.** IPT way 73 b → 69 b (form 70 b → 66 b); IPT at two
+single-way sets 29 B → 28 B; engine 2,911 B → 2,910 B; control
+structures 824 B → 823 B. The shifts keep their 6-bit ranges because
+they feed a shifter; the extension only selects a mux, which is why
+the code is enough.
+
+**Behaviour.** Bit-neutral on any chain the old fold accepted: the
+decoded width is identical, so every target address is identical.
+Host `g++ -std=c++17 -fsyntax-only` of both files passes; gem5
+rebuild pending.
+
+**Design doc updated:** "Viper Final in Silicon"
+(https://claude.ai/code/artifact/80c371ec-cba7-4881-9eeb-fb26a0924043),
+§1 adoption text, §6 IPT row and totals, §7 IPT way and folded-form
+entries, footer revision.
+
+## VIPER-FINAL as Verilated RTL (`--prefetcher viper_rtl`, 2026-09-02)
+
+This section uses ASD-STE100 Simplified Technical English.
+
+### What gem5 provides
+
+A prefetcher is a `prefetch::Base` SimObject
+(`src/mem/cache/prefetch/base.hh`). The cache calls it through probes:
+`notify()` for a demand access, `notifyFill()` for a fill,
+`notifyEvict()` for a data update, and `getPacket()` when the cache
+wants a prefetch (`src/mem/cache/base.cc`, `sendMSHRQueuePacket`).
+`Queued` (`src/mem/cache/prefetch/queued.cc`) adds the prefetch queue,
+the translation queue, and `insert()`. `ViperFinal`
+(`src/mem/cache/prefetch/viper_final.cc`) is the VIPER-FINAL algorithm
+on top of `Queued`. The CPU-side `VectorChainTable`
+(`src/cpu/vector_chain_table.cc`) pushes folded forms into the
+prefetcher through `VectorChainTable::FormSink`.
+
+### What was added
+
+The repository `~/viper_rtl` holds a SystemVerilog implementation of
+`ViperFinal` and of the `Queued` queue. gem5 runs it through Verilator.
+The additions to this tree are:
+
+| File | Role |
+|---|---|
+| `src/mem/cache/prefetch/viper_rtl.hh`, `viper_rtl.cc` | The wrapper class `prefetch::ViperRtl`. It derives from `Base` (not `Queued`), because the queue is in the RTL. It also implements `VectorChainTable::FormSink`. |
+| `ext/viper_rtl/` | The Verilated model (`gen/`), the Verilator runtime, the driver (`harness/`), and a `SConscript` that builds them into `libviper_rtl.a`. |
+| `src/mem/cache/prefetch/Prefetcher.py` | `class ViperRtlPrefetcher(BasePrefetcher)`: the `ViperFinalPrefetcher` knobs plus the `QueuedPrefetcher` knobs and `trace_file`. |
+| `src/mem/cache/prefetch/SConscript`, `src/mem/cache/SConscript` | The SimObject, the source, and the debug flag `ViperRtl`. |
+| `rvv/prefetcher_factory.py`, `rvv/riscv-rvv-se-ara-prefetcher.py` | The CLI name `viper_rtl`, its chain-table and MMU wiring, `vlen` from `--vlen`, and `folded_forms`. |
+
+`make gem5-install` and `gem5/install_hooks.py` in the repository write
+these files. Every hook line carries the marker `viper_rtl-hook`.
+
+### How the wrapper works
+
+Each `Base` or `FormSink` call becomes one RTL event. The driver
+(`ext/viper_rtl/harness/viper_rtl_driver.cc`) sets the event ports,
+pulses `ev_valid`, and clocks the model until its `busy` output is low.
+The gem5 tick does not advance during these cycles. The RTL therefore
+gives the same prefetches at the same ticks as `ViperFinal` (exact
+mode). The wrapper reports the RTL cycles as `rtlCycles`, `rtlEvents`,
+and `rtlMaxCyclesPerEvent`.
+
+The RTL has three service ports that the wrapper answers with gem5
+objects:
+
+- `xl_req_*`: an address translation. The wrapper builds a `Request` like `Queued::createPrefetchRequest()` and calls `mmu->translateTiming()`. A synchronous completion is answered in the same RTL cycle. A later completion becomes an `EV_XL_RESP` event.
+- `snoop_*`: `inCache() || inMissQueue()` on the hosting cache's `CacheAccessor` (`cache_snoop`).
+- `hit_rd_*`: a 64-byte window of the demand packet's payload for `capture_on_read_hit`.
+
+The wrapper builds the prefetch `Packet` when the RTL pops a queue
+entry, exactly like `Queued::DeferredPacket::createPkt()`. The
+self-clocked drain of `ViperFinal::drainTick()` is kept: the wrapper
+schedules a drain event one cycle later when the RTL reports pending
+work.
+
+The wrapper mirrors every RTL statistic pulse onto a gem5 statistic
+with the `ViperFinal` and `Queued` names, so the sweep parsers need no
+change.
+
+### Assumptions
+
+The RTL is bit-exact with a gem5-free reference copy of `ViperFinal`.
+The reference differs from gem5 in documented points (repository
+`README.md`, section 4): producer visit order, a bounded STT with LRU
+replacement, the dedup window in the producer slot, a xorshift RNG,
+fixed-point fractions, and tolerance of stale translation completions.
+
+### How to run
+
+1. In `~/viper_rtl`: `make verilate` (add capacities such as `ILQ_ENTRIES=8` when a run needs them).
+2. `make gem5-install GEM5_ROOT=~/gem5`, then `python3 gem5/install_hooks.py ~/gem5`.
+3. Build gem5 with `scons build/RISCV/gem5.opt -j$(nproc) --ignore-style` in the docker container.
+4. Run with `--prefetcher viper_rtl` and the `viper_final` wiring. Compare `stats.txt` with a `--prefetcher viper_final` run.
+
+Status at the time of writing: the wrapper compiles against the gem5
+headers (host syntax check) but was not built into `gem5.opt`. The
+repository owner builds gem5.
+
+## VectorChainTable: affine-only transform decode (2026-09-02)
+
+### What gem5 provided
+
+Nothing: the vector chain table is this fork's own
+(`src/cpu/vector_chain_table.cc`). Its forward propagation decodes each
+OP-V arithmetic instruction that consumes a tagged register with
+`decodeTransform()` and either extends the chain with a transform row
+or breaks it (`chainsBroken`).
+
+### What changed
+
+`decodeTransform()` accepted `vrsub`, `vand`, `vor` and `vxor` as
+transforms. They were left over from the op-list replay engines, which
+applied each op to a captured value. `foldChain()`, the only consumer
+of a chain since `folded_forms` became required, cannot fold them: it
+folds a chain into `(elem << shift) + bias`, and a negated scale or a
+bitwise op has no such form, so it rejected the chain in the backward
+walk (`foldsRejected`).
+
+That left two places deciding what a chain is, with different
+answers. A gather behind a `vxor` was walked, folded, rejected, and its
+`linked` bit set so the walk would not retry, which was the only case
+in which `linked` carried information the IPT does not.
+
+The decoder now accepts only the ops `foldChain()` folds: `vadd`,
+`vsub.vx`, `vsll`, `vsrl`, `vsra`, `vmul.vx`, `vwmul[u|su].vx`,
+`vsext`, `vzext`. `vrsub` and `vand`/`vor`/`vxor` are chain breakers.
+The four `VOp` values were deleted from the enum and from GDP's replay
+switch (`src/mem/cache/prefetch/gdp.cc`), which was the only other
+reader.
+
+`foldChain()` still rejects on operand *values* the decoder cannot see
+at dispatch: a `vmul.vx` by a non-power-of-2 scalar, a right shift
+after a scale, a sign-mismatched `vsra`, an extend after a scale. Those
+scalars arrive at issue (`captureScalar`), so the rejection has to stay
+in the walk. Across every `folded_forms` run on disk at the time of
+writing, `foldsRejected` was 0.
+
+Effect on results: GDP loses replay of `vrsub`/`vand`/`vor`/`vxor`
+chains. No run on disk exercised them (`foldsRejected` = 0 on the
+folding prefetchers, and the same chains would have reached GDP). Any
+chain that did use one now shows up as `chainsBroken` instead.
+
+## VIPER-FINAL: slice width moves from the STT to the IPT (2026-09-03)
+
+**Existing method.** `ViperFinal::SttEntry::elemBytes`
+(`src/mem/cache/prefetch/viper_final.hh`) held the producer's EEW/8 —
+the width the lane array slices a captured index line at. It was
+rewritten from the chain table's producer query at every chunk event
+(`calculatePrefetch`, `src/mem/cache/prefetch/viper_final.cc`) and
+read once, in `convertChunk`. The hardware accounting charged every
+STT row 3 b for it.
+
+**Why it was redundant there.** Three facts, each from the code:
+
+- The value is per producer and constant. The DCT head row writes
+  `elemBytes` once at allocation (`VectorChainTable::dispatch`,
+  `src/cpu/vector_chain_table.cc`) and afterwards refreshes only `vl`.
+  A capacity clear broadcasts `invalidateAllForms`, which frees every
+  IPT set, so a re-allocated head with a different width always
+  arrives on a fresh install. The per-chunk refresh therefore rewrote
+  the same value every time.
+- The only reader runs on a live producer. `convertChunk` runs at the
+  drain on a queued captured line. Captures are admitted only for
+  producers that hold an IPT set (the `producerLive` gates on the
+  read-hit capture, the fill-window match, and the fill capture in
+  `viper_final.cc`), and the invalidate that frees a set's last way
+  flushes that producer's index line queue and latch. An IPT lookup at
+  conversion therefore always finds the set.
+- Every unit-stride vle owns an STT row, producer or not (the row is
+  the stream window). On a stream-only row the width was never read.
+
+**What changed.**
+
+- `VectorChainTable::FormSink::installForm`
+  (`src/cpu/vector_chain_table.hh`) takes `elem_bytes`. The push site
+  in `dispatch()` passes `dct[ptr].elemBytes`, the head row it already
+  reads the producer PC from.
+- `ViperFinal::IptSet::elemBytes` holds it once per producer set,
+  beside the ways. `installForm` writes it on every push (a re-push
+  rewrites the same value); `convertChunk` reads it through
+  `iptFind(pc)` and asserts the set exists. `SttEntry::elemBytes` and
+  its per-chunk write are gone. The producer query in
+  `calculatePrefetch` stays, for `found` and `stride`.
+- `ViperRtl::installForm` (`src/mem/cache/prefetch/viper_rtl.hh/.cc`)
+  takes the argument and does not forward it: the RTL in `~/viper_rtl`
+  still keeps `stt_elem` on its STT, written from the access event's
+  `producer_elem_bytes`. Moving it onto the RTL's IPT set is a change
+  in that repository and was not made here.
+
+**Storage.** STT row 140 b → 137 b (8 rows: 140 B → 137 B). IPT set
+tag 40 b → 42 b: the four legal widths {1,2,4,8} are a 2-bit log2
+code, and no "unset" state is needed because set occupancy is already
+the ways' valid bits (the STT's 3 b had counted one). IPT at two
+single-way sets 218 b → 222 b, still 28 B. Engine 2,910 B → 2,907 B;
+control structures 823 B → 820 B; whole design still ≈ 2.97 KB.
+
+**Behaviour.** Bit-neutral: the width read at every conversion is the
+same DCT head-row value as before. Host
+`g++ -std=c++17 -fsyntax-only` of `vector_chain_table.cc` and
+`viper_final.cc` passes; `viper_rtl.cc` cannot be host-checked in this
+tree (its params header is not generated). gem5 rebuild pending.
+
+**Design doc updated:** "Viper Final in Silicon"
+(https://claude.ai/code/artifact/80c371ec-cba7-4881-9eeb-fb26a0924043),
+§1 adoption text and the producer-query aside, §2 STT contents, §4
+slice source, §6 STT and IPT rows and totals, §7 IPT set (new
+`elemBytes` entry, struct sources corrected to `ViperFinal::IptSet` /
+`IptWay`), STT entry, and DCT `elemBytes`, footer revision.
+
+## Removed: GDP, VIPER (research build), VTyche2, and VHybrid (2026-09-04)
+
+Four experimental prefetchers were deleted now that `viper_final` (and
+its RTL twin `viper_rtl`) is the shipping design. The sections above
+that describe them are kept as the design record; the code is gone:
+
+- **gdp** (`mem/cache/prefetch/gdp.cc/.hh`, `GDPPrefetcher`): the
+  transform-chain-replay Gather Dataflow Prefetcher.
+- **viper** (`mem/cache/prefetch/viper.cc/.hh`, `ViperPrefetcher`): the
+  full research VIPER with every subsystem `viper_final` later cut
+  (scalar level chain, eviction-clocked dedup, set-pressure gate,
+  residency intervals, demand-span-only, strided producers, ...).
+- **vtyche2** (`mem/cache/prefetch/vector_tyche2.cc/.hh`,
+  `VectorTyche2Prefetcher`): the decoupled metadata/data-lead variant.
+- **vhybrid** (`mem/cache/prefetch/vhybrid.cc/.hh`,
+  `VHybridPrefetcher`): ReVeLA streams driving VIPER's indirect half.
+
+What went with them: the `GDP`, `Viper`, `VTyche`, and `VHybrid` debug
+flags (`src/cpu/SConscript`, `src/mem/cache/SConscript`), the
+`--prefetcher gdp|viper|vtyche2|vhybrid` choices and the
+`scalar_chain_enable` unified-cache check in
+`rvv/riscv-rvv-se-ara-prefetcher.py`, their `rvv/prefetcher_factory.py`
+entries (`needs_chain_table` no longer has a viper opt-in;
+`REVELA_TABLE_PREFETCHERS` is now just `revela`), and the orphaned
+`gdp_test`/`gdp_ext_test` targets in `rvv/Makefile.tests` (their
+sources were already gone).
+
+What stayed, because `viper_final`/`viper_rtl` still use it: the
+`VectorChainTable` (`src/cpu/vector_chain_table.*`), the
+`TycheChainTable` (standalone `tyche`), the `RevelaStreamTable`
+(`revela`, and `viper_final`'s opt-in `limit_gate`), the
+`StreamDemoteLRURP` replacement policy, and the
+`--vector-dct-entries` / `--vector-max-transform-stages` /
+`--stream-demote*` script flags. The hierarchy wiring in
+`rvv/*_cache_hierarchy.py` was already guarded by parameter presence
+(`"link_table" in prefetcher._params`), so it needed only comment
+updates. Sweep scripts and run directories under `rvv/sweeps/` and
+`runs/` that targeted the deleted prefetchers were left in place.
+
+## VIPER-FINAL: the staleness abort — measured, then deleted (2026-09-05)
+
+**What gem5 does.** `QueuedPrefetcher` (`src/mem/cache/prefetch/queued.cc`)
+has no notion of a candidate being "too late": whatever `calculatePrefetch`
+pushes sits in the queue until the cache pulls it or the queue overflows.
+Timeliness is the prefetcher's own problem.
+
+**What viper_final had.** Its drain loop (`ViperFinal::drainEmission`,
+`src/mem/cache/prefetch/viper_final.cc`) compared every buffered or latched
+index line against the producer's current demand line and discarded lines
+the walk had already passed: a latched batch whose `lineVaddr` was below
+`blockAddress(ps.demandAddr)` was cleared before emission, and a queued
+`CapturedLine` in the same position was popped before conversion. Both
+sites counted `stalenessAborts` and forfeited the line's dedup entries
+(`clearLineState`). The reasoning was that targets converted from such a
+line issue behind the demand and can only pollute.
+
+**Measurement.** A `staleness_abort` Bool param was added for one day to
+gate both sites, and the Sep 2 campaign centre was re-run with it off
+(driver `rvv/sweeps/viper_final_nostale_sweep.py`, results
+`runs/viper_final_nostale/viper_final_nostale.xlsx`; a same-binary parity
+run with the abort on reproduced the Sep 2 spmv cycles bit-exactly). The
+abort fired on 0.04 % (spmv) to 1.3 % (cc_vector) of registered captures
+in the Sep 2 runs; removing it moved every kernel by less than 0.07 %
+of cycles in either direction (spmv +0.064 %, cc_vector +0.039 %, pr
+0.000 %, bfs −0.000 %, cc_sv −0.014 %, bc −0.012 %, sssp identical with
+zero prefetches) and the geomean speedup from 1.3278 to 1.3276. The
+lines that survived added at most 0.2 % more prefetches per kernel,
+most of which the cache dropped as already resident.
+
+**What was deleted.** The two comparisons, the `stalenessAborts` stat,
+the one-day `staleness_abort` param and its `ViperFinal::stalenessAbort`
+member. `CapturedLine::lineVaddr` and `ConvertedLine::lineVaddr` stay:
+the latch's copy is the batch tag that `drop_batch_confidence` keys
+`emittedFrom`/`abortedBatches` on, and the captured line's copy feeds
+it (and the debug trace). Hardware saved: one line-address compare per
+producer per drain event. `capture_queue_gate` still exists and still
+sheds captures under queue backpressure; its parameter text no longer
+claims those captures would be aborted — they now convert and issue
+late, which the measurement above says is harmless.
+
+**Not changed.** `ViperRtl` and the SystemVerilog model in `~/viper_rtl`
+still implement the abort (`ST_stalenessAborts` in
+`ext/viper_rtl/harness/viper_rtl_driver.hh`). The RTL is therefore no
+longer an exact port of `viper_final` on this point until its abort is
+removed too; runs that compare the two will diverge wherever the RTL
+aborts a batch (≤1.3 % of captures on the campaign kernels).
+
+## VIPER-FINAL: persistent seen-set (`seen_set_entries`, 2026-09-06)
+
+**What viper_final did.** The intra-line coalescing structure is the
+per-way seen-set, `ViperFinal::ConsumerGroup::lineSeen`
+(`src/mem/cache/prefetch/viper_final.hh`): folded index keys
+(`preLaneKey()`, one per distinct target line) that the lane loop in
+`convertChunk()` (`src/mem/cache/prefetch/viper_final.cc`) compares each
+element against, before or after the shift/add lane per
+`pre_lane_dedup`. Its scope was exactly one captured index line:
+`convertChunk()` called `clearLineState()` whenever a line's first
+chunk converted (`cap.nextElem == 0`), and `flushConversion()` called
+it when a producer's buffered work was discarded. The keys survived
+only across the `conversion_lanes` chunks of one line. Cross-line
+redundancy was left to the emission-time structures: the fixed-depth
+dedup window (`dedup_buffer_size`, keyed by target line address,
+first-emit-wins, no touch-refresh) and the eviction-clocked table
+(`evict_dedup_entries`). The per-line scope bought a fixed-size CAM
+(at most `blkSize/EEW` keys per way, reset by a broadside valid-bit
+clear, RTL `seen_valid[IPT_SETS][CPP_MAX]`), kept the folded key
+exact (it names a target line only at a fixed form base), and kept
+emission-time drops re-emittable from the next line, because the
+seen-set inserts at conversion and never learns what emission did.
+At VLEN=512 one gather chunk is one 64 B index line, so that scope is
+also the ISA-guaranteed-safe one (elements of one gather sharing a
+target line coalesce in the LSQ onto one MSHR).
+
+**What was added.** `seen_set_entries` (`ViperFinalPrefetcher`,
+`src/mem/cache/prefetch/Prefetcher.py`; member
+`ViperFinal::seenSetEntries`). At the default 0 nothing changes. At
+N > 0 the seen-set is a persistent FIFO CAM of N keys per consumer
+way that does not clear between index lines:
+
+- `lineSeen` became a `std::deque<Addr>` (oldest key first). The lane
+  loop still pushes every distinct converted key; when the CAM holds
+  more than N keys the oldest is popped (`seenSetReplaced`). The
+  compare is unchanged: `std::find` over the keys, hits counted in
+  `targetsDeduplicated` in either `pre_lane_dedup` placement.
+- `clearLineState()` skips the seen-set at N > 0 (it still resets the
+  window contribution `pendingEmitted`), so the first chunk of a new
+  line converts against the keys of every earlier line still in the
+  CAM.
+- Three re-arm events empty the CAM, because its keys stop naming
+  target lines: (1) a form push whose operands differ from the way's
+  current form, `installForm()` -> `clearWaySeenSet()` (a re-push of
+  the same gather keeps the keys only when `sameKeying()` finds
+  base/shift/rshift/extension identical; a free way taken by a
+  different gather, or a newly pushed way, always clears); (2) a
+  producer flush, `flushConversion()` -> `clearSeenSets()` (last way
+  invalidated, or a global invalidate); (3) a backward demand jump on
+  the producer's index stream, the same site that clears the dedup
+  window in `calculatePrefetch()`. Events (1) and (3) are guarded by
+  `seenSetEntries != 0` so the default stays bit-identical to the
+  Sep 5 binary (at the per-line scope a mid-line clear would have
+  changed behaviour).
+
+**How it interacts with the dedup window.** The window still never
+sees the line in progress and still records only targets that were
+actually pushed; the persistent seen-set now catches cross-line
+duplicates first, at conversion, so the window's `targetsCrossDeduplicated`
+falls to whatever the CAM's FIFO horizon lets through. The two differ
+in what they suppress: the CAM holds every converted key regardless
+of emission outcome, so at N > 0 a target dropped by `drop_on_full`,
+`drop_batch_confidence`, or `evict_dedup_entries` cannot re-emit until
+its key ages out of the CAM (the "a later duplicate may re-emit"
+comments at those sites now hold only across that horizon). Every
+cross-line suppression is a residency bet, as with the window; the
+CAM has no touch-refresh either (a hit does not move the key), so a
+line re-referenced every index line still ages out after N distinct
+keys and is re-emitted.
+
+**Hardware.** Per way, an N-entry key CAM with a FIFO write pointer
+replaces the `MAX_ELEMS`-entry CAM with a valid vector. The broadside
+clear survives for the three re-arm events. At `pre_lane_dedup`
+the CAM sits before the lanes as before, so a persistent hit still
+spends no `conversion_lanes` slot.
+
+**Not measured.** No run yet. To try it:
+`--pf-param seen_set_entries=64` (or another N) with the usual
+viper_final flags; compare `targetsDeduplicated`,
+`targetsCrossDeduplicated`, `seenSetReplaced`, and `pfHitInCache`.
+
+**Not changed.** `ViperRtl` and `~/viper_rtl` keep the per-line
+`seen_valid`/`seen_key` arrays; a gem5 run with `seen_set_entries > 0`
+has no RTL counterpart.
+
+**Same day, `seen_set_dedup` (Bool, default True).** An ablation knob
+to turn the seen-set off entirely: at False the lane loop neither
+compares nor inserts keys, so every element fires and every converted
+target reaches the latch, `targetsDeduplicated` reads 0, and the
+emission-side structures see the full duplicate stream. Within one
+source line only the eviction-clocked table can then catch a
+duplicate (the first copy is emitted and inserted, the rest hit
+`evictDedupSuppress`), since the dedup window never scans the line in
+progress. Added for the user's request to isolate the eviction table's
+effect on spmv with the intra-line dedup removed.
+
+**Measurement (2026-09-06, spmv poisson3Db, Sep 2 centre, local
+docker on the same-day binary;
+`runs/viper_final_seenoff/runs/seenoff_ed64_rivec_spmv`).** One run,
+`seen_set_dedup=false evict_dedup_entries=64`, against the Sep 2
+centre (`ed0`, seen-set on) and the Sep 1 `vf_ed64` leg (seen-set on):
+
+| stat | centre ed0 | seen on, ed64 | seen OFF, ed64 |
+|---|---|---|---|
+| numCycles | 12,897,759 | 12,899,725 | 12,899,723 |
+| dram.readBursts | 1,027,111 | 1,027,115 | 1,027,116 |
+| pfIssued | 2,745,922 | 2,442,218 | 2,442,843 |
+| pfHitInCache | 577,036 | 277,510 | 278,015 |
+| targetsGenerated | 2,196,715 | 1,832,735 | 1,833,560 |
+| targetsDeduplicated | 176,789 | 176,782 | 0 |
+| targetsEvictDeduplicated | 0 | 364,179 | 541,096 |
+| evictDedupReplaced | 0 | 1,801,722 | 1,802,525 |
+
+With the seen-set off, the eviction table's suppressions rose by
+176,917, matching the 176,782 the seen-set used to take to within
+0.1 %: an intra-line duplicate's first copy is emitted and inserted in
+the same latch drain, so the rest hit the table. Only 825 more targets
+went out (first copies dropped at emission, or replaced from the
+64-entry table before the duplicate arrived) and cycles differ by 2.
+On this kernel and config the eviction table subsumes the intra-line
+seen-set entirely; the seen-set's remaining value is structural (no
+residency bet, no global table, and at `conversion_lanes > 0` with
+`pre_lane_dedup` it saves lane slots the emission-side table cannot).
+The eviction table's own isolated effect versus the centre is
+unchanged from the Sep 1 sweep: pfHitInCache −52 %, pfIssued −11 %,
+cycles and DRAM reads flat.
+
+## VectorChainTable: vrsub folds as a negated index (2026-09-11)
+
+**What gem5/this fork did before.** `VectorChainTable::decodeTransform()`
+(`src/cpu/vector_chain_table.cc`) tagged only the affine OP-V ops the
+walk can fold (`vadd/vsub.vx|vi`, `vsll/vsrl/vsra`, `vmul.vx`, the widening
+multiplies, `vsext/vzext`); everything else returned `VOp::Invalid`, so a
+tagged index value flowing into it broke the chain (`chainsBroken`).
+`vrsub` (funct6 `000011`, `c - v`) was in that breaker set, documented as
+"a negated scale". `foldChain()` represented a chain as
+`addr = base + (ext(raw) >> rshift) << shift` with only a positive index
+term, and it rejected any extension that came after an add/sub
+(`if (scaled || extended || out.rshift) return false`).
+
+**Why it mattered.** TSVC `s4114_modified` (`tsvc-gem5/src/tsvc.c`) forms
+its gather index as `(LEN_1D-1) - k` with `vrsub.vx` at e32, then
+`vsext.vf2 → vsll.vi 2 → vluxei64`. In the Sep 9 campaign viper_final
+installed **zero** forms on it (`formsInstalled 0`, `chainsBroken 32000`
+per ROI) and fell back to its stream walk, giving 1.04x where the sibling
+kernels s4112/s4115 got 1.19x.
+
+**What changed.**
+- `VOp::Rsub` added (`vector_chain_table.hh`), decoded from OPIVI/OPIVX
+  funct6 `0x03` (`.vi` immediate or `.vx` scalar; the `.vx` operand rides
+  the existing `wantsScalar`/`captureScalar` issue-time snoop).
+- `FoldedForm::negate`: the index term is subtracted instead of added.
+  `foldChain()` folds `Rsub` as `bias = c - bias; negate = !negate`
+  (shifts and multiplies distribute over the negation, so the existing
+  shift/bias handling is untouched; bias wraps in uint64 like the lane's
+  adder).
+- `foldChain()` now allows `vsext` after a narrow-width add/sub/rsub when
+  no shift has been applied yet: `sext(c ± x) == c ± sext(x)` unless the
+  narrow arithmetic wrapped, which index chains do not do in practice.
+  `vzext` stays strict (not equal for negative intermediates), and
+  anything already shifted stays strict.
+- The lane (`ViperFinal::applyForm`, `preLaneKey`,
+  `src/mem/cache/prefetch/viper_final.cc`) honours `negate`: one
+  add/subtract mux in the adder path, no extra width.
+- `ViperRtl::installForm` (`viper_rtl.cc`) skips negated forms: the
+  SystemVerilog lane has no subtract path, so such gathers stay
+  stream-only in the RTL co-sim until the RTL grows the mux.
+
+## VIPER-FINAL: cross-page translation kick (2026-09-11)
+
+**What gem5 did.** `Queued::getPacket()` is the only place stock gem5
+starts the translations of prefetches parked in `pfqMissingTranslation`
+(`src/mem/cache/prefetch/queued.cc`); the cache calls it only when
+`nextPrefetchReadyTime()` says a ready entry exists, i.e. when `pfq` is
+non-empty.
+
+**The wedge.** When every candidate a prefetcher emits is on another
+page than the demand access, `pfq` never gets a ready entry, the cache
+never pulls, the translation queue (`max_prefetch_requests_with_pending_translation`,
+32) fills, and further inserts evict its entries forever
+(`pfRemovedFull`). Nothing is ever issued. ReVeLA hit exactly this on
+Aug 12 and got a kick (`processMissingTranslations()` made protected
+and called from its drain/notify); viper_final did not. It surfaced in
+the Sep 9 campaign's VLEN=8192 spmv leg: lookahead
+`prefetch_distance(4) x vlen_bytes(1024)` = one full page, so all 635K
+stream candidates were cross-page, `pfIssued 0`, cycles identical to
+base. At VLEN=4096 the 2 KB lookahead keeps half the candidates on the
+demand page, which masked it.
+
+**What changed.** `ViperFinal::drainTick()` and `ViperFinal::notify()`
+call `processMissingTranslations(queueSize - pfq.size())` after their
+inserts whenever `pfqMissingTranslation` is non-empty, the same kick
+ReVeLA has. No parameter; bit-neutral whenever pfq is non-empty
+(translations were already started by the pull).
+
+**Era note.** Both changes alter viper_final behaviour, so results on
+the rebuilt binary are a new era. The Sep 9 campaign keeps its
+original binary for every row; only the two affected cells
+(s4114_modified viper, spmv viper VLEN=8192) are re-measured on the new
+binary and marked as such in `viper_final_eval_results.xlsx`.
+
+## VIPER-FINAL: strided (`vlse`) index producers (2026-09-12)
+
+**What this fork had.** The CPU side already classified a `vlse` as
+`VecMemInfo::StridedLoad`, captured its byte stride at commit
+(`VectorChainTable::captureStride`) and exported it through
+`ProducerInfo::stride`/`vl` (`src/cpu/vector_chain_table.{hh,cc}`,
+2026-08-29 work). `viper_final` rejected every such producer with one
+guard in `calculatePrefetch` (2026-09-01): a `vlse` reaches the cache
+as one EEW-byte access per element, and viper's chunk model ("one
+line-sized access per chunk", walk window sized from the access) would
+have treated each element as its own chunk. The research viper's span
+model was deleted with that build on 2026-09-04; only its design record
+survived. sssp, the one campaign kernel with a `vlse` index producer,
+therefore never got a gather prefetch.
+
+**What was added** (`src/mem/cache/prefetch/viper_final.{hh,cc}`, all
+behind `info.stride != 0` or a nonzero slot mask, so unit-stride
+behaviour is unchanged; `strided_producers=false` restores the
+rejection).
+
+- **Admission.** A strided producer is accepted when the stride is a
+  positive multiple of the element width and the width divides the
+  line (`stridedUnsupported` otherwise): then every element occupies
+  exactly one EEW-wide slot of the line it sits in.
+- **Span chunking** (`SttEntry::stride/strideElemBytes/stridePhase/
+  chunkStart/chunkEnd`). A chunk is `[chunkStart, chunkStart + vl·stride)`.
+  An element access inside the span, or up to one span behind its
+  recorded start (element micro-ops can complete out of order), is the
+  same chunk; an earlier element only moves the start back on the same
+  grid. Anything else opens a new chunk (`stridedChunks`); a backward
+  jump restarts the walk as for unit-stride.
+- **Walk** (`streamAheadStrided`). The window keeps the unit-stride
+  lookahead in *bytes of index data*: `prefetch_distance × (vlenBytes/EEW)`
+  elements ahead of the chunk start, `vl` elements wide, scaled by the
+  stride into a span. It emits the lines the span touches above the
+  high-water mark: every line when the stride is below a line, one
+  line per element otherwise. `limit_gate` extents are `vl·EEW` bytes,
+  not `vl·stride`, so the announced limit is not applied to strided
+  walks (not covered, as in the 2026-08-29 design).
+- **Chain-only trigger.** Only a strided head that feeds a gather
+  streams (`stridedWalkGated` counts the rest). This is the 2026-08-29
+  lesson: walking every `vlse` (sssp's weight load included) prefetched
+  the wrong rows and lost 2%. The proof used is a live IPT form for the
+  producer (`producerLive`), or the chain table's link bit. The link
+  bit alone was tried first and gated every chunk on sssp: the DCT is
+  small (8–16 rows) and clears every strip, so at element-access time
+  the head row has been re-inserted and the strip's gather has not yet
+  re-linked it, while the form the previous strip pushed persists.
+- **Slot masks** (`IrtEntry::slotMask`, `CapturedLine::slotMask`,
+  `strideSlotMask`). Registered at the stream-window departure in
+  `getPacket` and carried by `notifyFill` into the captured line: bit
+  `k` is set when slot `k` (byte `k·EEW`) holds an element, i.e. for
+  the offsets `phase_L + j·stride < 64` with
+  `phase_L = (chunkStart − line) mod stride`. `convertChunk` skips
+  off-mask slots; they fire no lane and spend no budget. A mask of 0
+  means "every slot" (unit-stride lines).
+- **Read-hit capture** (`captureStridedReadHit`). The hitting element
+  access carries EEW bytes, so the resident line is read off the cache
+  (`CacheAccessor::readLine`, the path the scalar chain used) and
+  latched under the mask; the registration retires immediately so the
+  other `vl−1` element hits on the line are recognised as recaptures.
+- Stats: `stridedChunks`, `stridedHitsCaptured`, `stridedUnsupported`,
+  `stridedWalkGated`. The RTL model (`viper_rtl`) is a separate class
+  and is untouched; its lane has no slot select yet.
+
+**Not covered.** Two strided producers sharing lines that both feed
+gathers (the IRT keeps one producer per line); a short final strip
+whose next row's first accesses fall inside the previous span (its
+stream trigger is late, its captures are not); `limit_gate` on
+strided walks.
+
+**Validation** (2026-09-12, `runs/strided_val/`). Unit-stride
+neutrality: cc_vector on amazon0302, new binary vs the pre-patch one,
+every counter identical (12,450,397 cycles, 846,467 issued). Strided
+path on sssp_vector, amazon0302 weighted `.gug` (`bfs2gug -w 1`,
+checksum 109482824 as the host golden), era-3 configuration (VLEN 4096,
+8 lanes, pd1, base 189,118,815 cycles): the pipeline runs end to end —
+873K span chunks, the weight `vlse` gated as unlinked (430K), 381K walk
+candidates, 378K fills captured, 2.2M targets from 378K lines (~5.9 per
+line, i.e. the 8 masked slots minus dedup: the slot mask selects the
+vertex ids, not the weights), checksum unchanged. Performance is
+**0.98x**: 2.6M issued, 34K useful, 2.5M unused, DRAM reads 2.04M ->
+3.68M. Cause is structural, not the mechanism: delta-stepping visits
+rows in FRONTIER order, and amazon0302 rows are under one line long, so
+"the span 1 KB ahead in the edge array" is some other vertex's row that
+is not about to be relaxed. The 2026-08-29 research build got its 1.17x
+on sssp only with the scalar chain (`frontier[i] -> off[] -> row`)
+supplying the next row's address; viper_final deleted that subsystem.
+The strided path pays off on kernels whose `vlse` stream is sequential
+in memory (AoS arrays walked in order); none of the campaign kernels
+is one.
+
+## VIPER-FINAL: `prefetch_distance` in cache lines (2026-09-12)
+
+**What this fork had.** `ViperFinalPrefetcher::prefetch_distance` was
+denominated in whole-VLEN chunks (`vlen/8` bytes each). In
+`src/mem/cache/prefetch/viper_final.cc` the unit-stride walk placed its
+window at `addr + prefetch_distance * vlenBytes` (`streamAhead`), the
+strided walk looked `prefetch_distance * vlenBytes/EEW` elements ahead
+(`streamAheadStrided`), and the strided span model fell back to
+`vlenBytes/EEW` elements when the DCT row had no `vl` yet. `vlenBytes`
+came from a `vlen` parameter on the prefetcher
+(`src/mem/cache/prefetch/Prefetcher.py`), which
+`rvv/riscv-rvv-se-ara-prefetcher.py` auto-wired from `--vlen` unless
+`--pf-param vlen=` overrode it. Four consequences surfaced in the Sep 9
+campaign and its follow-ups:
+
+1. The byte lookahead scaled with VLEN, so the VLEN sweep confounded
+   the vector length with the lookahead (pd=4 was 64 B at VLEN 128 and
+   4 KB at VLEN 8192; the 4 KB point is a full page and hit the
+   cross-page translation wedge fixed on 2026-09-11).
+2. The Sep 11 `prefetch_distance` sweep showed the VLEN "knee" was a
+   lookahead-in-bytes artefact (pd1 at VLEN 4096 1.967x vs pd4 1.734x).
+3. Holding the lookahead constant in bytes across VLENs (the Sep 12
+   128 B and 512 B sweeps) required decoupling the prefetcher's `vlen`
+   from the core's (`--pf-param vlen=1024 prefetch_distance=1` for
+   128 B), a workaround that misused a "hardware VLEN" parameter as a
+   unit of measure.
+4. Any distance below one chunk was unrepresentable at wide VLENs.
+
+**What changed** (user request 2026-09-12). `prefetch_distance` now
+counts cache lines and the prefetcher carries no VLEN at all:
+
+- `viper_final.cc`: `from = addr + prefetchDistance * blkSize`
+  (`streamAhead`); `elems_ahead = prefetchDistance * blkSize / EEW`
+  (`streamAheadStrided`); the strided `vl` fallback is `blkSize / EEW`
+  (one line of elements; reached only if an element access precedes
+  the DCT row's `vl` capture, which `VectorChainTable` performs at the
+  producer's dispatch). The `vlenBytes` member and the
+  `vlen`-must-be-set check are deleted; `prefetch_distance >= 1` is
+  kept (0 lines would walk the demand line itself).
+- `Prefetcher.py`: the `vlen` parameter is removed from
+  `ViperFinalPrefetcher`; `prefetch_distance` defaults to 8 lines
+  (512 B, the measured spmv sweet spot at the 64-entry queue / 16
+  MSHR sizing).
+- `rvv/riscv-rvv-se-ara-prefetcher.py`: the `--vlen` auto-wire now
+  applies only to `viper_rtl`, whose Verilated model still uses the
+  chunk unit (`~/viper_rtl` is untouched, so `viper_rtl`'s
+  `prefetch_distance` and `viper_final`'s are no longer the same
+  quantity; the RTL diff testbench must be driven with byte-equal
+  distances).
+
+**Equivalence to the recorded runs.** For a chunk-era cell
+`(pd_chunks, VLEN)` the same window is
+`prefetch_distance_lines = pd_chunks * VLEN/8 / 64` whenever that is a
+whole number, and `elems_ahead` is identical because both are
+`bytes / EEW`. The campaign centres map as: era-1 centre pd4 @ VLEN
+4096 = 32 lines; era-3 centre pd1 @ VLEN 4096 = 8 lines; the fixed
+128 B / 512 B legs = 2 / 8 lines; the VLEN sweep at pd4 = 1/4/8/16/32/64
+lines for VLEN 128/512/1024/2048/4096/8192; the pd1 VLEN legs =
+0.25/1/2/4/8/16 lines, of which VLEN 128 (16 B) is not representable
+and rounds up to one line. Results on the rebuilt binary are expected
+bit-identical to the `vlen`-workaround runs at equal byte distances,
+but this is unverified until the binary is rebuilt (the current
+`build/RISCV/gem5.opt`, md5 055d7afd..., predates this change); viper
+rows measured on it are a new era.
+
+**Drivers.** `rvv/sweeps/viper_final_eval_sweep.py`,
+`viper_final_eval_pd1_sweep.py` and `viper_final_ed_sweep.py` no
+longer pass `vlen=` and express `prefetch_distance` in lines, with a
+`chunk_lines()` helper mapping the recorded chunk-era legs to the same
+byte lookahead (so re-running any DONE-less cell reproduces the
+recorded configuration up to the VLEN 128 @ pd1 rounding above).
+
+**Storage.** None: one parameter removed, no state added.
+
+## VIPER-FINAL: segmented (`vlseg`) index producers and way/field IPT ways (2026-09-16)
+
+**What this fork had.** A unit-stride segment load (`vlseg<nf>e<eew>`)
+was invisible to the whole chain. gem5 splits it into memory micros
+(`VlSegMicroInst`, `src/arch/riscv/isa/templates/vector_mem.isa`
+`VlSegMicroInitiateAcc`) that each issue ONE contiguous request of
+`microVl * EEW/8` bytes into an internal `vtmp` register
+(`EA = rs1 + mem_size * (microIdx + field * numMicroops)`,
+`formats/vector_mem.isa`), followed by arithmetic de-interleave micros
+(`VlSegDeIntrlvMicroInst`, `src/arch/riscv/insts/vector.{hh,cc}`) that
+read every `vtmp` and write one field's architectural `vd`. Neither
+class overrode `vecMemInfo()`, so the memory micro fell into
+`VectorChainTable::dispatch`'s "any other memory op: invalidate" branch
+(`src/cpu/vector_chain_table.cc`) and the de-interleave copied a cleared
+provenance slot: no head, no PT tag, no gather link. TSVC `seg1`/`seg2`
+(added 2026-09-16, `tsvc-gem5/src/tsvc.c`: `vlseg2e32 -> vsext.vf2 ->
+vsll.vi -> vluxei64`, one and two consumer gathers) streamed nothing.
+Also, an IPT way knew only the gather's folded form; two gathers on two
+different fields of one producer were indistinguishable from two gathers
+on the same index vector (`multi_way`).
+
+**What was added.** Three pieces, none touching unit-stride behaviour
+(verified bit-identical on `s4112`/`multi_way`, see below).
+
+1. *ISA reporting* (`src/cpu/static_inst.hh`, `VecMemInfo`): two kinds.
+   `SegmentLoad` on the memory micro (`VlSegMicroDeclare` template):
+   `elemBytes = EEW/8`, `nfields = nf`, `microIdx` = the chunk index
+   (0 = the macro's base access), `vl`. `SegmentField` on the
+   de-interleave micro: `field` (0..nf-1) and `srcVReg` = its first
+   `vtmp` source. The memory micro's own `field` member is a chunk
+   index, not a data field; data fields are born at the de-interleave.
+
+2. *Chain table* (`src/cpu/vector_chain_table.{hh,cc}`):
+   - `PtEntry::field` (3 bits). Written by the `SegmentField` branch of
+     `dispatch()`: `pt[vd] = pt[srcVReg]` with the field stamped. Carried
+     through every transform (`PtEntry{true, idx, dep_field}`, read
+     before the destination write so in-place ops keep it) and every
+     plumbing copy (`VCpyVs` copies the whole entry).
+   - `DctEntry::nfields` (head, from `SegmentLoad`; every field micro
+     carries the macro PC, so `searchPc` lands them on one row),
+     `DctEntry::segBase/segBaseValid` (head, see 3), `DctEntry::field`
+     (gather row, `= pt[srcVReg].field` at backprop, re-anchored with
+     `lastDctPtr`).
+   - `FoldedForm::field`: set from the gather row when the walk pushes;
+     `FormSink::installForm` gains `nfields` (per producer, like
+     `elem_bytes`). `ProducerInfo` exports `nfields`, `segBase`.
+   - `captureSegBase(pc, base)`: called from `src/cpu/o3/commit.cc` at
+     commit of the chunk-0 `SegmentLoad` micro with `effAddr` (loads
+     carry their VA at commit; no issue-time snoop). It is the phase
+     reference of the slot masks and is refreshed every strip; the
+     phase `base mod (nf*EEW)` is what matters and it does not move.
+   - Stats: `segmentHeadsAllocated`, `segBasesCaptured`,
+     `segmentFieldsTagged`.
+
+3. *Prefetcher* (`src/mem/cache/prefetch/viper_final.{hh,cc}`):
+   - Memory-side a `vlseg` IS a unit-stride stream, so chunk detection,
+     the walk, IRT registration and fill capture are the unit-stride
+     path unchanged. Admission (`calculatePrefetch`): `segment_producers`
+     true, EEW dividing the line, <= 64 slots (`segmentUnsupported`
+     otherwise). The STT entry mirrors `nfields`, `elemBytes`, `segBase`
+     from `ProducerInfo` on every access.
+   - `IptSet::nfields` (per producer, beside `elemBytes`, written at
+     every `installForm`).
+   - `captureSlotMask(ps, line)`: the mask a captured line carries.
+     Strided -> the vlse grid mask as before; segment ->
+     `segmentSlotMask(line, EEW, nf, base)`: the FIELD-0 BASE MASK in
+     closed form, `PATTERN[nf] << phase_slot`, `PATTERN[nf]` a constant
+     with one bit every nf slots and `phase_slot = ((base - line) mod
+     (nf*EEW)) / EEW`. When the stride divides the line (nf 1/2/4/8)
+     the phase is the low bits of the base, constant per producer; for
+     nf 3/5/6/7 it is a small constant-modulo per line. Wired into the
+     `getPacket` registration and the read-hit capture; the fill path
+     already copied the IRT record's mask. Without a captured base the
+     grid is assumed line-aligned (`segmentPhaseUnknown`).
+   - `fieldSlotMask(base, nf, f)`: a way's mask = the base mask rotated
+     by its field id within the nf-slot period,
+     `(base << f) | (base >> (nf - f))`. Derived in `convertChunk` at
+     the head of the ILQ from the line's base mask and the way's
+     `FoldedForm::field`; NEVER stored per way (3 bits per way replace
+     64). The element loop gained one per-way bit test: a slot outside
+     a way's field gates that way's lane set (`fieldSlotsSkipped`,
+     no lane, no budget), and a slot no live way wants is skipped
+     before the broadcast like an off-grid vlse slot (`any_mask`).
+     The any-miss slot rule is unchanged, so `seg2` (fields 0 and 1)
+     costs the same lane budget per line as `s4112`.
+   - Ways are now way/fields: `consumers_per_producer` default 2 -> 4
+     (`Prefetcher.py`; the config scripts copy it onto the chain
+     table's `consumers_per_producer`). Bit-neutral for producers with
+     <= 2 gathers; kernels with 3-4 gathers on one producer (`s353`)
+     now install 4 forms.
+   - `ConvertedLine::next` widened `uint8_t -> uint16_t`: 64 e8 slots x
+     4 ways = 256 targets overflowed 8 bits.
+   - `viper_rtl` (`src/mem/cache/prefetch/viper_rtl.cc`): signature
+     updated; segment forms are dropped there (stream-only in the RTL
+     co-sim, like negated forms) — the RTL port itself is unchanged.
+
+**Target generation on the three TSVC shapes** (way = (field -> base)):
+
+| kernel | ways | slots 0,1,2,3... |
+|---|---|---|
+| `multi_way` | (0 -> b), (0 -> c), nf 1 | both ways every slot |
+| `seg1` | (0 -> b), nf 2 | way 0 on even slots; odd slots free |
+| `seg2` | (0 -> b), (1 -> c), nf 2 | way 0 even, way 1 odd; one slot each |
+
+**Storage.** +3 bits per PT slot (40), +3 bits per DCT row (field) and
++3 bits + 1 VA per head row (`nfields`, `segBase`), +3 bits per IPT set
+(`nfields`), +3 bits per IPT way (`FoldedForm::field`), +1 bit per latch
+cursor. No per-way mask storage; the per-line 64-bit mask already
+existed for `vlse`.
+
+**Intra-macro fragment reordering (found in verification).** A vlseg
+macro is nf memory micros of `vl*EEW` bytes back to back, and the LSQ
+issues their line fragments out of order. The unit-stride chunk
+detector in `calculatePrefetch` treated every access behind the cursor
+as a restarted walk (`limitAddr = 0`), and a queued index line beyond
+the shrunken high-water mark then failed the registration test in
+`getPacket` at issue: on `seg1` (MEDIUM) only 8,644 of 16,384 index
+lines registered, coverage 0.50. For segment producers a step back
+that stays inside the macro span (`vl x nf x EEW` bytes) is now
+treated as that reordering: no reset, the cursor keeps its higher
+position (the capture window is measured from it), and the walk from
+the earlier address lands below the mark and emits nothing
+(`segmentReorderTolerated`; `walkRestarts` counts the resets that still
+happen). Unit-stride producers keep the plain rule, so `s4112` and
+`multi_way` stay bit-identical.
+
+**Per-fragment pushes without the high-water filter (found in
+verification).** The reorder tolerance alone left registrations at
+half. The `--debug-flags=ViperFinal` trace (`chunk:` / `issue:` lines
+added 2026-09-16, `runs/seg_verify/tiny_seg1/`) showed why: the two
+memory micros' 64 B fragments interleave at the cache (A, A+512, A+64,
+A+576, ...). The unit-stride walk pushes one line per fragment and
+drops any line below the monotone high-water mark as already walked;
+micro 1's first fragment raised the mark 512 B past micro 0's
+remaining targets, so every line in between was never pushed, issued,
+registered or converted: exactly half. A first fix walked the whole
+next-macro window (16 lines) on each macro's first fragment; it
+restored coverage but delivered the 16 fills in one burst that
+overflowed the 8-entry index line queue (`bufferBusyDrops` 1,869 on
+seg1, 5,466 on seg2). The shipped shape keeps the per-fragment
+one-line push of a `vle` and, for nf >= 2 only, skips the high-water
+filter in `streamAhead`: each fragment maps to exactly one distinct
+line by its offset in the macro, so the filter's premise (in-order
+accesses) is what fails, not the push. A replayed fragment re-pushes
+a line the queue filter or the resident-line check drops. The mark is
+still raised because `getPacket` bounds the capture window with it.
+`streamAhead` also scales the frontier by nf (`prefetch_distance x nf`
+lines, one macro ahead) so the lookahead in elements per field equals
+the unit-stride one, the rule `streamAheadStrided` applies to `vlse`.
+`nf <= 1` producers are untouched.
+
+**Verification (2026-09-16, `runs/seg_verify/`, TSVC MEDIUM `-i 1
+-synth -S 1 s4112 multi_way seg1 seg2`, campaign core + era-3 viper
+config, local docker).** `s4112` and `multi_way` are bit-identical to
+the era-4 binary on both arms in every counter compared (cycles,
+simInsts, DRAM reads, L1D misses, pfIssued/pfUseful, targets), with
+`consumers_per_producer` 4 vs 2. On the era-4 binary `seg1`/`seg2`
+installed no forms (stream-only, ~1.01x). Final build (45c6d0f21e2b,
+per-fragment pushes), viper over base, MEDIUM: `seg1` 1.303x (accuracy
+0.82, coverage 0.64, 15,979 of 16,384 index lines registered and 15,440
+captured, `bufferBusyDrops` 539 versus 1,869 on the macro-walk build;
+one form per gather, the macro base captured every strip, field masks
+`0x5555`), `seg2` 1.165x (accuracy 0.91, coverage 0.57;
+`fieldSlotsSkipped == elementsConverted`, i.e. every converted slot
+fired exactly one of the two field ways; targets for both `b[]` and
+`c[]`). seg2's remaining 4,397 queue drops are the stall-gated drain
+(`drain_floor=0`) holding lines while the prefetch queue is full
+(`pfRemovedFull` ~17k), the same mechanism that drops 1,172 fills on
+`multi_way`, not the segment path. Replayed fragments re-push their
+line: 1,162 resident-drops on seg2, 58 on seg1.
+
+**Not covered.** Strided segment loads (`vlsseg`) and indexed segment
+loads (`vluxseg`) keep their old handling (rejected / invisible). A
+producer base that is not EEW-aligned truncates the phase to a slot.

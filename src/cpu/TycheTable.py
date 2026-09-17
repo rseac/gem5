@@ -26,3 +26,12 @@ class TycheChainTable(SimObject):
         "A chain link is dense (replayable) when it executes more than "
         "this many times per 256 executions of its chain head",
     )
+    live_window = Param.Unsigned(
+        0,
+        "Link liveness window in DCT-matching dispatches (0 = off, "
+        "bit-neutral). A link not dispatched within the last N matching "
+        "dispatches is treated as absent: its PT taint does not "
+        "propagate, it cannot be a join tail, and a promotion walk "
+        "through it fails. Replaces what clear-on-full did by accident "
+        "(forgetting dead phases) at tables that never fill.",
+    )

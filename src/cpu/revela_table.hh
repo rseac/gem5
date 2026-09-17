@@ -82,7 +82,8 @@ class RevelaStreamTable : public SimObject
         unsigned lru = 0;
         /** PC of the last access that updated this entry (stamped at
          *  allocation and every forward hit). Consumers that need a
-         *  producer/consumer identity for the stream (vhybrid.hh)
+         *  producer/consumer identity for the stream (viper_final's
+         *  limit_gate)
          *  resolve it through this PC on use — the STT itself stores
          *  no classification. */
         Addr lastPc = 0;

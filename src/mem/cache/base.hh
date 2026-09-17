@@ -46,8 +46,10 @@
 #ifndef __MEM_CACHE_BASE_HH__
 #define __MEM_CACHE_BASE_HH__
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <string>
 
 #include "base/addr_range.hh"
@@ -344,6 +346,10 @@ class BaseCache : public ClockedObject
 
         bool coalesce() const override
         { return cache.coalesce(); }
+
+        bool readLine(Addr addr, bool is_secure, uint8_t *dst,
+                      unsigned size) const override
+        { return cache.readLineData(addr, is_secure, dst, size); }
 
     } accessor;
 
@@ -1266,6 +1272,21 @@ class BaseCache : public ClockedObject
 
     bool inMissQueue(Addr addr, bool is_secure) const {
         return mshrQueue.findMatch(addr, is_secure);
+    }
+
+    /**
+     * Copy a resident block's data into dst (accessor.readLine); the
+     * data pointer is valid for any resident block in this fork's
+     * configurations (no external data arrays).
+     */
+    bool readLineData(Addr addr, bool is_secure, uint8_t *dst,
+                      unsigned size) const {
+        const CacheBlk *block = tags->findBlock({addr, is_secure});
+        if (!block || !block->isValid() || block->data == nullptr) {
+            return false;
+        }
+        std::memcpy(dst, block->data, std::min(size, blkSize));
+        return true;
     }
 
     void incMissCount(PacketPtr pkt)

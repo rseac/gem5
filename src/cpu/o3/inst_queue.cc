@@ -221,22 +221,24 @@ InstructionQueue::WakeDependents::description() const
 
 InstructionQueue::FUCompletion::FUCompletion(const DynInstPtr &_inst,
                                              FUPool *fu_pool, int fu_idx,
-                                             InstructionQueue *iq_ptr)
+                                             InstructionQueue *iq_ptr,
+                                             bool _chained)
     : Event(Stat_Event_Pri, AutoDelete),
       inst(_inst),
       fuPool(fu_pool),
       fuIdx(fu_idx),
       iqPtr(iq_ptr),
-      freeFU(false)
+      freeFU(false),
+      chained(_chained)
 {}
 
 void
 InstructionQueue::FUCompletion::process()
 {
     if (freeFU) {
-        iqPtr->processFUCompletion(inst, fuPool, fuIdx);
+        iqPtr->processFUCompletion(inst, fuPool, fuIdx, chained);
     } else {
-        iqPtr->processFUCompletion(inst, nullptr, -1);
+        iqPtr->processFUCompletion(inst, nullptr, -1, chained);
     }
     inst = NULL;
 }
@@ -521,6 +523,8 @@ InstructionQueue::resetState()
         squashedSeqNum[tid] = 0;
     }
 
+    pendingPinFill.clear();
+
     for (int i = 0; i < Num_OpClasses; ++i) {
         while (!readyInsts[i].empty()) {
             readyInsts[i].pop();
@@ -696,6 +700,23 @@ InstructionQueue::insert(const DynInstPtr &new_inst)
     if (cpu->tycheTable && !new_inst->isVector()) {
         cpu->tycheTable->dispatch(new_inst->staticInst.get(),
                                   new_inst->pcState().instAddr());
+    } else if (cpu->tycheTable) {
+        // Vector instructions on the scalar PT: taint-kill written
+        // integer registers (vsetvl's rd), and record the scalar
+        // provenance of a unit-stride load's base register (the
+        // scalar-to-vector join, viper's scalar level chain). Must
+        // run HERE, in the same program-ordered stream as the scalar
+        // dispatch() calls above — the PT state at this instant is
+        // exactly this vle's dataflow.
+        const StaticInst *v_si = new_inst->staticInst.get();
+        const StaticInst::VecMemInfo vmi = v_si->vecMemInfo();
+        if ((vmi.kind == StaticInst::VecMemInfo::UnitStrideLoad ||
+             vmi.kind == StaticInst::VecMemInfo::StridedLoad) &&
+            vmi.microIdx == 0) {
+            cpu->tycheTable->noteVectorBase(
+                v_si, new_inst->pcState().instAddr());
+        }
+        cpu->tycheTable->noteVectorWriter(v_si);
     }
     // Vector chain-table construction has MOVED TO COMMIT (cpu/o3/commit.cc):
     // dispatch is speculative, and an instruction decoded under a stale vtype
@@ -752,6 +773,17 @@ InstructionQueue::insertNonSpec(const DynInstPtr &new_inst)
     if (cpu->tycheTable && !new_inst->isVector()) {
         cpu->tycheTable->dispatch(new_inst->staticInst.get(),
                                   new_inst->pcState().instAddr());
+    } else if (cpu->tycheTable) {
+        // Scalar-to-vector join + vector taint-kill (see insert()).
+        const StaticInst *v_si = new_inst->staticInst.get();
+        const StaticInst::VecMemInfo vmi = v_si->vecMemInfo();
+        if ((vmi.kind == StaticInst::VecMemInfo::UnitStrideLoad ||
+             vmi.kind == StaticInst::VecMemInfo::StridedLoad) &&
+            vmi.microIdx == 0) {
+            cpu->tycheTable->noteVectorBase(
+                v_si, new_inst->pcState().instAddr());
+        }
+        cpu->tycheTable->noteVectorWriter(v_si);
     }
     // Vector chain-table construction (see insert() above).
     if (cpu->vectorChainTable && new_inst->isVector()) {
@@ -855,7 +887,7 @@ InstructionQueue::moveToYoungerInst(ListOrderIt list_order_it)
 
 void
 InstructionQueue::processFUCompletion(const DynInstPtr &inst, FUPool *fu_pool,
-                                      int fu_idx)
+                                      int fu_idx, bool chained)
 {
     DPRINTF(IQ, "Processing FU completion [sn:%llu]\n", inst->seqNum);
     assert(!cpu->switchedOut());
@@ -873,13 +905,15 @@ InstructionQueue::processFUCompletion(const DynInstPtr &inst, FUPool *fu_pool,
         return;
     }
 
-    // Check if this was a chained vector instruction that already issued functionally
-    // via the WakeDependents event.
-    Cycles op_latency = inst->staticInst->dynamicOpLatency(inst->tcBase());
-    Cycles chaining_latency = inst->staticInst->chainingLatency(inst->tcBase());
-
-    if (chaining_latency > Cycles(0) && chaining_latency < op_latency &&
-        !inst->isMemRef()) {
+    // This was a chained vector instruction that already issued
+    // functionally via the WakeDependents event scheduled at issue.
+    // The flag is recorded at issue instead of being recomputed here:
+    // recomputing can disagree with the issue-time decision (that one
+    // falls back to the FU-pool latency when dynamicOpLatency() is 0,
+    // and vtype may have changed since), which would push the
+    // instruction into instsToExecute a second time and execute it
+    // twice.
+    if (chained) {
         // Already added to instsToExecute by WakeDependents::process()
         return;
     }
@@ -960,6 +994,32 @@ InstructionQueue::scheduleReadyInsts()
             continue;
         }
 
+        // Pinned-destination write ordering: a memory micro writing a
+        // pinned register must not issue before its macro's pin fill
+        // has executed — every writer shares one un-renamed physical
+        // register and nothing else orders the writes (element micros
+        // do not source vd). Defer exactly like a busy FU; re-checked
+        // every cycle, cleared by the pin's execution or squash.
+        if (issuing_inst->isMemRef()) {
+            bool pin_pending = false;
+            for (int i = 0; i < issuing_inst->numDestRegs(); i++) {
+                PhysRegIdPtr dest = issuing_inst->renamedDestIdx(i);
+                if (!dest || !dest->isPinned()) {
+                    continue;
+                }
+                auto pit = pendingPinFill.find(dest->flatIndex());
+                if (pit != pendingPinFill.end() &&
+                    pit->second < issuing_inst->seqNum) {
+                    pin_pending = true;
+                    break;
+                }
+            }
+            if (pin_pending) {
+                ++order_it;
+                continue;
+            }
+        }
+
         // Vector chain table: sources are ready at issue — snoop the gather's rs1
         // (base) or a .vx transform's scalar operand off the operand
         // read it is already doing (see cpu/vector_chain_table.hh).
@@ -972,8 +1032,15 @@ InstructionQueue::scheduleReadyInsts()
         // decision of whether to consume the value moves to commit too.
         if (cpu->vectorChainTable && issuing_inst->isVector()) {
             const StaticInst *si = issuing_inst->staticInst.get();
+            // A strided load's first integer source is rs1 (the base);
+            // the value the table wants is rs2, the byte stride, in
+            // source slot 1 (VlElementMicroConstructor).
+            const int want =
+                (si->vecMemInfo().kind ==
+                 StaticInst::VecMemInfo::StridedLoad) ? 1 : -1;
             for (int i = 0; i < si->numSrcRegs(); i++) {
-                if (si->srcRegIdx(i).is(IntRegClass)) {
+                if (si->srcRegIdx(i).is(IntRegClass) &&
+                    (want < 0 || i == want)) {
                     issuing_inst->chainSnoopValue =
                         issuing_inst->getRegOperand(si, i);
                     issuing_inst->chainSnoopValid = true;
@@ -1114,16 +1181,37 @@ InstructionQueue::scheduleReadyInsts()
                 // so that its results are available for the consumers.
                 // We only do this for non-memory instructions to avoid double-issue
                 // in the LSQ.
-                if (chaining_latency < op_latency && !issuing_inst->isMemRef()) {
+                // An instruction whose destination is PINNED must not be
+                // early-executed: pinned registers are deliberately not
+                // renamed, so all writers share one physical register and
+                // partial in-place writes accumulate in it. Executing such
+                // an instruction ahead of its issue order (e.g. the VPinVd
+                // tail fill of a later indexed load) overwrites elements an
+                // older, still in-flight micro-op sequence has already
+                // written into that same register.
+                bool pinned_dest = false;
+                for (int i = 0; i < issuing_inst->numDestRegs(); i++) {
+                    auto dest = issuing_inst->renamedDestIdx(i);
+                    if (dest && dest->isPinned()) {
+                        pinned_dest = true;
+                        break;
+                    }
+                }
+                const bool chained =
+                    chaining_latency < op_latency &&
+                    !issuing_inst->isMemRef() && !pinned_dest;
+                if (chained) {
                     auto wakeup = new WakeDependents(issuing_inst, this);
                     cpu->schedule(wakeup,
                                   cpu->clockEdge(Cycles(chaining_latency - 1)));
                 }
 
-                // Generate completion event for the FU release and final cleanup.
+                // Generate completion event for the FU release and final
+                // cleanup. It is told whether the WakeDependents event was
+                // scheduled, so it never re-queues an already-queued inst.
                 ++wbOutstanding;
                 auto execution =
-                    new FUCompletion(issuing_inst, fu_pool, idx, this);
+                    new FUCompletion(issuing_inst, fu_pool, idx, this, chained);
 
                 cpu->schedule(execution,
                               cpu->clockEdge(Cycles(op_latency - 1)));
@@ -1249,6 +1337,21 @@ InstructionQueue::wakeDependents(const DynInstPtr &completed_inst)
         return 0;
     }
     completed_inst->setResultReady();
+
+    // Pinned-destination write ordering: this pin's fill has executed
+    // — its element micros may issue (see pendingPinFill).
+    if (!completed_inst->isMemRef()) {
+        for (int i = 0; i < completed_inst->numDestRegs(); i++) {
+            PhysRegIdPtr dest = completed_inst->renamedDestIdx(i);
+            if (dest && dest->isPinned()) {
+                auto pit = pendingPinFill.find(dest->flatIndex());
+                if (pit != pendingPinFill.end() &&
+                    pit->second == completed_inst->seqNum) {
+                    pendingPinFill.erase(pit);
+                }
+            }
+        }
+    }
 
     int dependents = 0;
 
@@ -1518,6 +1621,22 @@ InstructionQueue::doSquash(ThreadID tid)
             continue;
         }
 
+        // Pinned-destination write ordering: a squashed pin's entry
+        // must not gate a later reuse of its register (its elements
+        // are younger and squashed with it).
+        if (!squashed_inst->isMemRef()) {
+            for (int i = 0; i < squashed_inst->numDestRegs(); i++) {
+                PhysRegIdPtr dest = squashed_inst->renamedDestIdx(i);
+                if (dest && dest->isPinned()) {
+                    auto pit = pendingPinFill.find(dest->flatIndex());
+                    if (pit != pendingPinFill.end() &&
+                        pit->second == squashed_inst->seqNum) {
+                        pendingPinFill.erase(pit);
+                    }
+                }
+            }
+        }
+
         if (!squashed_inst->isIssued() ||
             (squashed_inst->isMemRef() && !squashed_inst->memOpDone())) {
 
@@ -1698,6 +1817,14 @@ InstructionQueue::addToProducers(const DynInstPtr &new_inst)
         }
 
         dependGraph.setInst(dest_reg->flatIndex(), new_inst);
+
+        // Pinned-destination write ordering: a NON-memory writer of a
+        // pinned register is the macro's pin fill (VPinVd) — its
+        // element memory micros are gated at issue until this entry
+        // clears (see pendingPinFill in inst_queue.hh).
+        if (!new_inst->isMemRef() && dest_reg->isPinned()) {
+            pendingPinFill[dest_reg->flatIndex()] = new_inst->seqNum;
+        }
 
         // Mark the scoreboard to say it's not yet ready.
         regScoreboard[dest_reg->flatIndex()] = false;

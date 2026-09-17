@@ -2,9 +2,9 @@
  * VectorChainTable — the shared CPU-to-prefetcher channel for vector
  * instruction dependency chains, built on Tyche's skeleton (see
  * cpu/tyche_table.hh for the scalar analog this borrows from).
- * Originally built for the Gather Dataflow Prefetcher (GDP,
- * mem/cache/prefetch/gdp.hh); today its clients are GDP, Viper and
- * VTyche2 (chain discovery + base/scalar snoops via link_table),
+ * Originally built for the Gather Dataflow Prefetcher (GDP, since
+ * removed); today its clients are ViperFinal and ViperRtl (chain
+ * discovery + base/scalar snoops via link_table),
  * StreamDemoteLRURP (the stream-page registry below), and the O3 LSQ's
  * demand-side stream registration (demand_stream_pages).
  *
@@ -76,11 +76,15 @@ class VectorChainTable : public SimObject
     enum class VOp : uint8_t
     {
         Invalid = 0,
-        SExt,   // vsext.vfN: sign-extend from extFromBits
+        SExt,   // vsext.vfN: sign-extend from extWidth
         ZExt,   // vzext.vfN
         Sll, Srl, Sra,
-        Add, Sub, Rsub,
-        And, Or, Xor,
+        Add, Sub,
+        /** vrsub.vi/.vx: scalar - vector, i.e. a NEGATED index plus a
+         *  constant. Folds as negate + bias (2026-09-11; was a chain
+         *  breaker). TSVC s4114 forms its gather index as
+         *  (LEN_1D-1) - k this way. */
+        Rsub,
         Mul,
         // Widening multiplies: a FUSED extend-and-multiply. clang emits
         // these for A[B[i]] where gcc emits vsext.vf2 + vsll, so the
@@ -88,7 +92,7 @@ class VectorChainTable : public SimObject
         // looks unprefetchable. Semantics (decoder.isa:5945):
         //   Vd_vwi[i] = vwi(Vs2_vi[i]) * vwi(Rs1_vi)
         // i.e. extend the SEW-wide source to 2*SEW, then multiply — so
-        // extFromBits is the vtype SEW itself, NOT sew/2 as for
+        // extWidth is the vtype SEW itself, NOT sew/2 as for
         // vsext.vfN (which runs under the DESTINATION vtype).
         WMul,   // vwmul.vx / vwmulsu.vx: source sign-extended
         WMulU,  // vwmulu.vx: source zero-extended
@@ -102,7 +106,7 @@ class VectorChainTable : public SimObject
          *  issue) */
         uint64_t scalar = 0;
         /** Source width in bits for SExt/ZExt */
-        unsigned extFromBits = 0;
+        unsigned extWidth = 0;
     };
 
     VectorChainTable(const VectorChainTableParams &p);
@@ -129,6 +133,23 @@ class VectorChainTable : public SimObject
 
     /** Deliver the .vx scalar operand at issue (refresh, no training) */
     void captureScalar(Addr pc, uint64_t value);
+    /** Commit-time capture of a strided producer's byte stride (rs2,
+     *  snooped at issue like a .vx scalar) */
+    void captureStride(Addr pc, uint64_t value);
+    /** Commit-time capture of a segment (vlseg) producer's base
+     *  address: the effective address of the macro's chunk-0 access
+     *  (VecMemInfo::SegmentLoad, microIdx 0). The prefetcher's field
+     *  slot masks take their phase from it. */
+    void captureSegBase(Addr pc, Addr base);
+
+    /**
+     * Invalidation is PUSHED to the FormSink: a per-gather pulse
+     * (invalidateForm) when an operand a form was folded from moves,
+     * and one broadcast (invalidateAllForms) when the table clears or
+     * when a changed operand's head cannot be resolved. There is no
+     * polled flag and no version number — the sink's own way records
+     * are the only state, and a pulse edits them directly.
+     */
 
     /** Producer lookup for the prefetcher's observed accesses */
     struct ProducerInfo
@@ -142,6 +163,17 @@ class VectorChainTable : public SimObject
          *  prefetcher walks slots [0, numConsumers) via
          *  pipelineConfig's slot argument) */
         unsigned numConsumers = 0;
+        /** Element byte stride of a strided (vlse) producer; 0 =
+         *  unit-stride (elements contiguous, chunk = one access) */
+        int64_t stride = 0;
+        /** Granted vl (elements) of the producer's last dispatch */
+        uint32_t vl = 0;
+        /** Segment (vlseg) producer: field count nf (0/1 =
+         *  unit-stride) and the macro's base address captured at
+         *  commit (the field slot masks' phase reference) */
+        uint8_t nfields = 0;
+        bool segBaseValid = false;
+        Addr segBase = 0;
     };
     ProducerInfo producerInfo(Addr pc) const;
 
@@ -159,6 +191,102 @@ class VectorChainTable : public SimObject
      * scalar and the base have been snooped at issue; operands are
      * therefore always the architecturally freshest values.
      */
+    /**
+     * A chain already folded to base + ((elem >> r) << s), the shape
+     * the lane array executes. Produced by the BACKWARD WALK, once
+     * once per chain, instead of by the engine at every adoption
+     * (folded_forms).
+     *
+     * The gather's base register is folded in like any other add on
+     * the chain. The walk folds the chain's own constants and leaves
+     * the total in `base`; armBase then adds the gather's base to it
+     * and sets `valid` LAST, so a record whose gather has not armed
+     * can never read as complete. A base that moves is therefore an
+     * operand change like any other: it clears the linked bit and
+     * invalidates the record, and the next walk rebuilds both.
+     */
+    struct FoldedForm
+    {
+        /** The operand delivery has added the gather's base, so the
+         *  form is complete. A chain the affine form cannot express
+         *  gets no way at all, so this is the only state a way
+         *  record needs. */
+        bool valid = false;
+        /** Every folded addition, the gather's base included once
+         *  armBase has run */
+        Addr base = 0;
+        unsigned shift = 0;
+        unsigned rshift = 0;
+        bool rshiftSigned = false;
+        /** Index extension width, as a 3-bit code rather than a
+         *  7-bit magnitude: 0 = none (use the slice unchanged),
+         *  1..4 = extend from 8/16/32/64 bits. The width is always a
+         *  point on the SEW ladder, five states, and the lane only
+         *  needs a mux select for where the extension starts, so the
+         *  code is the field a way stores. extWidth() decodes it. */
+        uint8_t extCode = 0;
+        bool extSigned = false;
+        /** Index term is subtracted instead of added: addr = base -
+         *  (ext(raw) >> rshift << shift). Set by an odd number of
+         *  vrsub stages in the chain; one extra mux in the lane's
+         *  adder path (add/subtract), no extra width. */
+        bool negate = false;
+        /** Segment producers: the field (0..nf-1) of the producer's
+         *  interleaved index line this way consumes. The lane array
+         *  derives the way's slot mask from it (field-0 base mask
+         *  rotated by `field` within the nf-slot period); on a
+         *  unit-stride producer (nf <= 1) it is don't-care. 3 bits. */
+        uint8_t field = 0;
+
+        static uint8_t encodeExtWidth(unsigned bits)
+        {
+            switch (bits) {
+              case 8:  return 1;
+              case 16: return 2;
+              case 32: return 3;
+              case 64: return 4;
+              default: return 0;
+            }
+        }
+        unsigned extWidth() const { return extCode ? (4u << extCode) : 0; }
+    };
+
+    /**
+     * One consumer way on a head row (folded_forms). This replaces
+     * the consumers[] entry, and the difference is the point: a
+     * consumers[] slot is a pointer to the TAIL, used only to find a
+     * starting place for a walk that ends back at the head. A way
+     * record holds that walk's RESULT.
+     */
+    /**
+     * Where folded forms go. The walk runs here, at commit, but the
+     * lane array that consumes a form is at the cache, so the form is
+     * written across once for each chain instead of being stored here
+     * and read back on every adoption. The consumer implements this;
+     * the table only calls it.
+     */
+    class FormSink
+    {
+      public:
+        virtual ~FormSink() {}
+        /** The walk folded a chain. Install it for this producer's
+         *  consumer, or drop it when there is no room. elem_bytes is
+         *  the producer's EEW/8 — the slice width of its index
+         *  array, held once on the head row — so the sink can keep
+         *  it once per producer beside the ways the lane reads.
+         *  nfields is the producer's segment field count (0/1 =
+         *  unit-stride), the other per-producer value the lane
+         *  array needs (slot-mask period). */
+        virtual void installForm(Addr producer_pc, int consumer_dct_ptr,
+                                 unsigned elem_bytes, unsigned nfields,
+                                 const FoldedForm &f) = 0;
+        /** A constant folded into that form has moved. */
+        virtual void invalidateForm(Addr producer_pc,
+                                    int consumer_dct_ptr) = 0;
+        /** Every form is backed by nothing: the table was cleared. */
+        virtual void invalidateAllForms() = 0;
+    };
+
     struct ChainSnapshot
     {
         bool valid = false;
@@ -191,7 +319,7 @@ class VectorChainTable : public SimObject
      * re-captured differently). The chain's SHAPE is covered by
      * generation(); this covers the values folded into it.
      *
-     * Consumers that memoise a compiled form (viper's LinearForm)
+     * Consumers that memoise a compiled form (viper_final's LinearForm)
      * gate re-compilation on (generation, operandGen) so the on-demand
      * chain walk runs only when something it depends on moved, instead
      * of on every observed chunk. Deliberately COARSE — one counter
@@ -259,7 +387,7 @@ class VectorChainTable : public SimObject
         /** Scalar operand is an immediate (vs .vx rs1 at issue) */
         bool immType = true;
         int64_t imm = 0;
-        unsigned extFromBits = 0;
+        unsigned extWidth = 0;
     };
     /** Decode an OP-V transform from the raw encoding (getEMI) */
     static DecodedVArith decodeTransform(uint64_t emi);
@@ -273,14 +401,29 @@ class VectorChainTable : public SimObject
         VOp op = VOp::Invalid;
         /** Transform scalar / gather base */
         uint64_t scalar = 0;
-        /** true = immediate from the encoding; false = .vx rs1,
-         *  snooped at issue */
-        bool immType = true;
-        /** The stored operand has arrived: set at insert for
+        /** Source of `scalar`: true = an immediate from the
+         *  encoding, false = a register value snooped at issue (a
+         *  .vx transform's rs1, or a gather's base) */
+        bool scalarType = true;
+        /** `scalar` holds its real value: set at insert for
          *  immediates, at captureScalar for .vx rs1 values, and at
-         *  armBase for gather bases */
-        bool immValid = false;
-        unsigned extFromBits = 0;
+         *  armBase for gather bases. Until then the chain is NOT
+         *  READY rather than wrong — adoption retries later. */
+        bool scalarReady = false;
+        unsigned extWidth = 0;
+        /** Resolved head (producer) row of the chain this link sits
+         *  on, stamped by the backward-propagation walk that already
+         *  runs at every gather dispatch. 3 bits in hardware. It
+         *  exists so an operand change can be routed to the ONE
+         *  producer whose compiled form it invalidates, without
+         *  re-walking: the walk's result is latched instead of
+         *  discarded. -1 = not resolved (fail toward invalidating). */
+        int headPtr = -1;
+        /** This gather's chain is linked: the walk resolved a
+         *  head and linked it. Gates the walk (see dispatch) and is
+         *  cleared by a table clear, by a consumer-slot eviction and
+         *  by any operand invalidation on this chain. */
+        bool linked = false;
         /** Back-pointer to the previous chain link. 3 bits in
          *  hardware: heads have no predecessor, but every walker
          *  terminates on the head flag BEFORE following the pointer,
@@ -305,6 +448,29 @@ class VectorChainTable : public SimObject
         /** Head only: producer element bytes (EEW/8), the slice
          *  width, from the encoding at dispatch */
         unsigned elemBytes = 0;
+        /** Head only: strided producer (vlse) — its byte stride
+         *  arrives at commit (captureStride) like a .vx scalar; the
+         *  head is not reported to the prefetcher until it has */
+        bool strided = false;
+        bool strideValid = false;
+        int64_t stride = 0;
+        /** Head only: the macro-op's granted vl (elements) at its
+         *  last dispatch — the strided chunk span is vl * stride */
+        uint32_t vl = 0;
+        /** Head only: segment (vlseg) producer field count nf; 0 for
+         *  a plain unit-stride head. 3 bits. The producer's lines
+         *  interleave nf fields at EEW each, so a consumer of field f
+         *  reads slots f, f+nf, f+2nf... of every captured line. */
+        uint8_t nfields = 0;
+        /** Head only: the macro's base address, captured at commit of
+         *  its chunk-0 access (captureSegBase); the phase reference
+         *  for the field slot masks. Refreshed every strip. */
+        bool segBaseValid = false;
+        Addr segBase = 0;
+        /** Tail (gather) only: the producer field its index register
+         *  descended from (PtEntry::field at dispatch), pushed into
+         *  the folded form as FoldedForm::field. 3 bits. */
+        uint8_t field = 0;
     };
 
     /** Walk consumer->head (the backprop path) and build the
@@ -316,6 +482,13 @@ class VectorChainTable : public SimObject
     {
         bool depend = false;
         int ptr = -1;
+        /** Segment producers (vlseg): which field of the producer's
+         *  interleaved line this register's values came from, 0..7
+         *  (3 bits). Set where the field is born (the de-interleave
+         *  micro, kind SegmentField) and carried through every
+         *  transform and plumbing copy, so the gather's backprop can
+         *  stamp it on its row. Don't-care (0) on unit-stride chains. */
+        uint8_t field = 0;
     };
 
     int searchPc(Addr pc) const;
@@ -329,10 +502,20 @@ class VectorChainTable : public SimObject
     /** Consumer slots per head row (multi-way gather support);
      *  1 = the historical single-link overwrite behavior */
     const unsigned consumerSlots;
+    /** Skip the backward walk for an linked chain (see
+     *  VectorChainTable.py) */
+    const bool backpropMemo;
+    /** Fold the chain during the backward walk and store the result
+     *  in the IPT, instead of walking again at every engine adoption
+     *  (see VectorChainTable.py) */
+    const bool foldedForms;
+
     /** Register stream pages from demand unit-stride accesses (LSQ) */
     const bool demandStreamPages;
 
     std::vector<DctEntry> dct;
+    /** Where folded forms are pushed (null when nothing wants them) */
+    FormSink *formSink = nullptr;
     /** PT slots: the 32 architectural vregs PLUS the 8 vtmp internal
      *  registers vector-memory micros stage through (VecMemInternalReg0
      *  = 32, arch/riscv/regs/vector.hh). They need their own slots:
@@ -343,6 +526,44 @@ class VectorChainTable : public SimObject
     uint64_t gen = 0;
     /** See operandGen(): bumped on a CHANGED snooped operand value. */
     uint64_t opGen = 0;
+    /** Route an operand change to the producer whose form it stales.
+     *  slot < 0 invalidates every way of that producer (a shared
+     *  transform), otherwise just the one gather's way. */
+    /** An operand on this chain moved. The callers clear the linked
+     *  bits of the gathers they affect; this handles only the case
+     *  where the head is unresolved, where no gather can be named
+     *  and the broadcast is the one safe answer. */
+    void noteOperandChange(int dct_idx);
+
+    /**
+     * backprop_memo: is this gather's chain already linked, so
+     * the backward walk would only re-derive what the last one
+     * latched? True when the head is resolved and valid, the
+     * gather's own anchor still matches the PT entry tainting its
+     * index register, and the gather is still listed in that head's
+     * consumers. The last term is what keeps the memo bit-neutral at
+     * consumers_per_producer = 1: two gathers on one producer
+     * overwrite each other's slot, so the evicted one fails here and
+     * re-walks exactly as it does today.
+     */
+    bool isLinked(int gidx, int src_ptr) const;
+
+    /** Fold an ops list (head-to-gather order) into an affine form.
+     *  Same algebra as the engine's collapse(); it runs here so the
+     *  walk that already crosses these rows folds them as it goes. */
+    bool foldChain(const StageOp *ops, unsigned n, FoldedForm &out) const;
+
+
+
+  public:
+    /** folded_forms is on for this table */
+    bool foldedFormsEnabled() const { return foldedForms; }
+    /** Attach the consumer that folded forms are pushed to. Done once
+     *  at init, not through a param: the prefetcher already points at
+     *  this table, and a second param would make the wiring circular. */
+    void attachFormSink(FormSink *sink) { formSink = sink; }
+
+  private:
 
     /** Stream-page registry: FIFO of the last streamPageEntries
      *  physical pages seen leaving as stream prefetches, with a set
@@ -424,6 +645,14 @@ class VectorChainTable : public SimObject
         statistics::Scalar chainsBroken;
         /** .vx scalars snooped at issue */
         statistics::Scalar scalarsCaptured;
+        /** Strided producer byte strides captured at commit */
+        statistics::Scalar stridesCaptured;
+        /** Segment (vlseg) producer heads allocated */
+        statistics::Scalar segmentHeadsAllocated;
+        /** Segment producer base addresses captured at commit */
+        statistics::Scalar segBasesCaptured;
+        /** De-interleave micros that tagged a field register */
+        statistics::Scalar segmentFieldsTagged;
         /** Gather bases snooped at issue */
         statistics::Scalar basesArmed;
         /** Wholesale clears on capacity */
@@ -436,6 +665,19 @@ class VectorChainTable : public SimObject
         statistics::Scalar monotonePagesDropped;
         /** Demand registrations suppressed (pre-arm or post-revoke) */
         statistics::Scalar monotoneRegsSuppressed;
+        /** Gather dispatches that ran the backward walk */
+        statistics::Scalar backpropWalks;
+        /** Gather dispatches that skipped it (backprop_memo) */
+        statistics::Scalar backpropMemoHits;
+        /** Transform rows whose predecessor actually MOVED. The memo
+         *  assumes this never happens; counted always, so a non-zero
+         *  value flags a workload the memo is unsound for. */
+        statistics::Scalar transformPredecessorMoved;
+        /** Walks whose chain the affine fold could not express
+         *  (folded_forms; the engine's chainsRejected equivalent) */
+        statistics::Scalar foldsRejected;
+        /** Chains whose folded form the table pushed to the sink */
+        statistics::Scalar formsPushed;
     } tableStats;
 };
 

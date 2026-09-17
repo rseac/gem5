@@ -441,10 +441,30 @@ class StaticInst : public RefCounted, public StaticInstFlags
             UnitStrideLoad,
             IndexedLoad,
             UnitStrideStore,
+            /** vlse*: elements stride bytes apart; the byte stride is a
+             *  scalar register, snooped at issue (chainSnoopValue)
+             *  and captured into the chain table at commit */
+            StridedLoad,
+            /** vlseg<nf>e<eew> (unit-stride segment load) MEMORY
+             *  micro: one contiguous request over the interleaved
+             *  region (VlSegMicroInitiateAcc). nfields = nf;
+             *  microIdx = chunk index within the macro (0 = the
+             *  access at the macro's base address). */
+            SegmentLoad,
+            /** The de-interleave micro of a vlseg (VlSegDeIntrlvMicroInst,
+             *  an arithmetic micro): reads the vtmp registers the
+             *  SegmentLoad micros filled and writes ONE field's
+             *  architectural vd. field = which field; srcVReg = its
+             *  first vtmp source. */
+            SegmentField,
         };
         Kind kind = None;
         uint8_t elemBytes = 0;
         uint8_t srcVReg = 0;
+        /** Segment loads: number of fields (nf), 2..8; 0 otherwise */
+        uint8_t nfields = 0;
+        /** SegmentField: the field (0..nf-1) this micro's vd holds */
+        uint8_t field = 0;
         /** ReVeLA (cpu/revela_table.hh): micro-op position within the
          *  macro-op and the macro-op's granted vector length in
          *  elements, so the stream update runs once per macro-op

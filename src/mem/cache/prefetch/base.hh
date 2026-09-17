@@ -472,7 +472,7 @@ class Base : public ClockedObject
      *  calls this synchronously right after getPacket() handed it the
      *  packet (BaseCache::sendMSHRQueuePacket), so the prefetcher can
      *  attribute the drop to the address it just issued and react
-     *  (e.g. Viper's drop_batch_confidence). The default is
+     *  (e.g. viper_final's random tail-drop throttle). The default is
      *  unchanged: count and return. */
     virtual void
     pfHitInCache()

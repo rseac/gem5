@@ -14,7 +14,7 @@
  * Trigger logic (paper Section 3.3): unlike every other prefetcher in
  * this tree, ReVeLA is NOT driven by cache events. A self-clocked
  * drain event (every cycle, the paper's fixed cadence — the same
- * machinery as vector_tyche2.hh's drain, but not parameterized: any
+ * machinery as viper_final.hh's drain, but not parameterized: any
  * other period would be a different design) evaluates the trigger
  * whenever the prefetch queue has room:
  *
@@ -80,13 +80,13 @@ class ReVeLA : public Queued
      *  initialDistance lines instead of ramping from current@ — the
      *  distance-zero region is doomed-late (demand reaches it well
      *  inside one memory round trip). Skipped lines are never
-     *  prefetched; demand pays their full miss. Viper's
+     *  prefetched; demand pays their full miss. viper_final's
      *  streaming_distance analogue; 0 = paper behavior. */
     const unsigned initialDistance;
 
     /**
      * Latched translation context for the self-clocked drain, exactly
-     * as vector_tyche2.hh does it: insert() needs a request with a VA
+     * as viper_final.hh does it: insert() needs a request with a VA
      * and a ContextID plus the cache accessor, all captured from the
      * last observed demand access.
      */

@@ -33,6 +33,9 @@ extern int iterations_val;
 extern int ip_locality_L;
 extern int ip_locality_W;
 extern unsigned ip_locality_seed;
+/* -synth: block-structured synthetic ip[] (see init()); replaces the
+ * L/W generator and additionally builds a LEN_2D-sized ip2d[] for s4116. */
+extern int ip_synth;
 
 // Closed form of the stock ip[] initialisation in common.c: each aligned
 // 5-block holds {i+4, i+2, i, i+3, i+1} — (4 + 3*r) % 5 = {4,2,0,3,1} for
@@ -100,7 +103,7 @@ typedef float real_t;
 
 int dummy(real_t[LEN_1D], real_t[LEN_1D], real_t[LEN_1D], real_t[LEN_1D], real_t[LEN_1D], real_t[LEN_2D][LEN_2D], real_t[LEN_2D][LEN_2D], real_t[LEN_2D][LEN_2D], real_t);
 
-void init(int** ip, real_t* s1, real_t* s2);
+void init(int** ip, int** ip2d, real_t* s1, real_t* s2);
 
 int initialise_arrays(const char* name);
 real_t calc_checksum(const char * name);

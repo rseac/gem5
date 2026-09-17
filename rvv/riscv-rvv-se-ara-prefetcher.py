@@ -216,7 +216,7 @@ parser.add_argument(
     "Unlike the bare default hierarchy this strips the stdlib caches' "
     "built-in stride prefetchers, so a run without --prefetcher is a "
     "true no-prefetcher base, and it honors --l1d-mshrs/--l2-mshrs. "
-    "gdp/viper/tyche work here because the shared L1D sees every "
+    "viper_final/tyche work here because the shared L1D sees every "
     "access class; --prefetcher-side is ignored (there is only one "
     "chain), --prefetcher-level still picks L1D vs L2. Mutually "
     "exclusive with --vector-cache and --scalar-prefetcher.",
@@ -231,7 +231,7 @@ parser.add_argument(
     "modeling CVA6's private L1D + Ara's VLSU-to-L2 path. Coherent by "
     "ordinary snooping on the L2 crossbar. Stdlib stride prefetchers "
     "are stripped, --l1d-mshrs/--l2-mshrs are honored. Vector-side "
-    "prefetchers (gdp/viper/vtyche2/vhybrid/revela) must use "
+    "prefetchers (viper_final/viper_rtl/revela) must use "
     "--prefetcher-level l2 (the L1D never sees vector accesses); "
     "--prefetcher-side is ignored. --scalar-prefetcher may attach to "
     "the scalar L1D alongside. Mutually exclusive with --vector-cache "
@@ -323,25 +323,22 @@ parser.add_argument(
     "--prefetcher",
     type=str,
     default=None,
-    choices=["none", "stride", "imp", "vimp", "gdp", "viper",
-             "vtyche2", "isb", "stems", "tyche", "revela", "vhybrid"],
+    choices=["none", "stride", "imp", "vimp", "viper_final", "viper_rtl",
+             "isb", "stems", "tyche", "revela"],
     help="Attach a hardware prefetcher to one cache. Implies "
     "(forces) --vector-cache. By default no cache has a prefetcher. "
     "Use --prefetcher-side and --prefetcher-level to place it. "
-    "'vimp' (chunk-trained indirect), 'gdp' (Gather Dataflow "
-    "Prefetcher: architectural transform-chain replay, exact "
-    "A[f(B[i])] plus vector streaming), 'viper' (VIPER: gdp's "
-    "architectural discovery with imp's base+(index<<shift) equation, "
-    "A[B[i]] only, converted a whole index line at a time), "
+    "'vimp' (chunk-trained indirect), 'viper_final' (VIPER: "
+    "architectural A[B[i]] discovery through the VectorChainTable "
+    "with imp's base+(index<<shift) equation, converted a whole "
+    "index line at a time), 'viper_rtl' (the same design as a "
+    "Verilated RTL model), "
     "'revela' (ReVeLA ICS'24: unit-stride streams announced by the "
-    "vsetvl AVL, every-cycle trigger, near-perfect accuracy), "
-    "'vhybrid' (revela's announcement-driven streams + viper's "
-    "capture/convert indirect half; needs both sideband tables, "
-    "wired automatically) "
+    "vsetvl AVL, every-cycle trigger, near-perfect accuracy) "
     "and 'tyche' (scalar dependency-chain replay) are this "
     "fork's prefetchers; they train on virtual addresses, so the CPU "
     "MMU is registered automatically (override with --pf-param "
-    "use_virtual_addresses=false). gdp, viper and revela need "
+    "use_virtual_addresses=false). viper_final and revela need "
     "--prefetcher-side vector; tyche needs --prefetcher-side scalar "
     "(it decodes scalar instructions, which never reach the vector "
     "caches).",
@@ -360,10 +357,9 @@ parser.add_argument(
     "--vector-dct-entries",
     type=int,
     default=8,
-    help="gdp/viper/vtyche2/vhybrid: Dependency Chain Table entries on "
+    help="viper_final/viper_rtl: Dependency Chain Table entries on "
     "the CPU-side VectorChainTable (default 8, minimum 3). One table is "
-    "built per core and shared by whichever of those prefetchers is "
-    "attached, so this sizes vhybrid's indirect half too. The whole "
+    "built per core. The whole "
     "table clears when full, and it also bounds the consumer->head walk "
     "length, so a small DCT both wipes learned chains more often and "
     "caps how far back a walk may reach. Storage accounting in "
@@ -372,10 +368,59 @@ parser.add_argument(
     "hardware than that note claims.",
 )
 parser.add_argument(
+    "--vector-backprop-memo",
+    action="store_true",
+    help="Skip the VectorChainTable's backward-propagation walk for a "
+         "gather whose chain is already established (default off, "
+         "bit-neutral). The walk re-derives a pure function of the DCT "
+         "link structure at every gather dispatch; the memo skips it "
+         "while the head is resolved, the gather's anchor is unmoved "
+         "and it is still listed in that head's consumers. dispatch() "
+         "costs no simulated time, so this changes nothing measurable "
+         "-- it takes a commit-path chain traversal out of the "
+         "hardware story. Check transformPredecessorMoved is 0 before "
+         "trusting it on a new binary.",
+)
+parser.add_argument(
+    "--vector-folded-forms",
+    action="store_true",
+    help="Fold the chain during the VectorChainTable's backward walk "
+         "and store the result in a head-row way record, so the engine "
+         "reads a form instead of walking the same rows again "
+         "(default off, bit-neutral). viper_final requires it and turns "
+         "it on itself. Pairs with --vector-backprop-memo, which is what "
+         "makes the fold happen once per chain rather than once per "
+         "gather commit.",
+)
+parser.add_argument(
+    "--tyche-dct-entries",
+    type=int,
+    default=24,
+    help="tyche: Dependency Chain Table "
+    "entries on the CPU-side TycheChainTable (default 24, the Tyche "
+    "artifact's size; minimum 2). The whole table clears when full "
+    "(clear-on-capacity), so kernels with a large scalar footprint "
+    "churn learned chains at small sizes (bc_vector re-adopted its "
+    "chains 8417x at 24 entries in the 8/28 campaign). One table per "
+    "core, owned by the standalone tyche prefetcher.",
+)
+parser.add_argument(
+    "--tyche-live-window",
+    type=int,
+    default=0,
+    help="TycheChainTable link liveness window in DCT-matching "
+    "dispatches (default 0 = off). A link not dispatched within the "
+    "window is invisible to taint propagation, join tails and "
+    "promotion walks, so a table that never fills (large "
+    "--tyche-dct-entries) cannot compile a chain through a head that "
+    "stopped running a phase ago. Stats tyche_table.taintsDead / "
+    "scalarWalksDead.",
+)
+parser.add_argument(
     "--vector-max-transform-stages",
     type=int,
     default=4,
-    help="gdp/viper/vtyche2/vhybrid: maximum transform links between a "
+    help="viper_final/viper_rtl: maximum transform links between a "
     "producer index load and the gather it feeds (VectorChainTable "
     "max_transform_stages, default 4). Chains longer than this do not "
     "link at all, so raising --vector-dct-entries alone will not admit "
@@ -417,8 +462,8 @@ parser.add_argument(
     "--vector-cache. For a scalar-only prefetcher either use this with "
     "--prefetcher none, or use the existing --prefetcher-side scalar "
     "(combining --prefetcher-side scalar with this option is an error: "
-    "both would claim the scalar chain). gdp and viper are not "
-    "accepted here (their CPU-side records only reach vector-side "
+    "both would claim the scalar chain). viper_final is not "
+    "accepted here (its CPU-side records only reach vector-side "
     "caches); tyche is (it is a scalar-side design).",
 )
 parser.add_argument(
@@ -473,7 +518,7 @@ parser.add_argument(
     "isolation, e.g. --prefetcher none/stride) and broadens "
     "classification from the prefetcher's producer index arrays to "
     "every unit-stride-touched array, including store streams. With a "
-    "gdp/viper prefetcher both sources feed the same registry.",
+    "viper_final prefetcher both sources feed the same registry.",
 )
 parser.add_argument(
     "--stream-demote-second-touch",
@@ -567,11 +612,18 @@ if pf_params and not prefetcher_active:
     print("Error: --pf-param requires --prefetcher (and not 'none')")
     sys.exit(1)
 
-# viper's prefetch_distance is denominated in whole-VLEN chunks; wire the
-# hardware VLEN from --vlen so the two knobs cannot drift apart (an explicit
-# --pf-param vlen=N still overrides).
-if args.prefetcher == "viper" and "vlen" not in pf_params:
+# viper_rtl's prefetch_distance is denominated in whole-VLEN chunks (the
+# RTL model keeps that unit); wire the hardware VLEN from --vlen so the two
+# knobs cannot drift apart (an explicit --pf-param vlen=N still overrides).
+# viper_final counts prefetch_distance in cache lines since 2026-09-12 and
+# has no vlen param.
+if args.prefetcher == "viper_rtl" and "vlen" not in pf_params:  # viper_rtl-hook
     pf_params["vlen"] = str(args.vlen)
+
+# viper_final adopts forms only from the VectorChainTable's backward walk
+# (its IPT is the one place a form lives), so the table must fold them.
+if args.prefetcher in ("viper_final", "viper_rtl"):  # viper_rtl-hook
+    args.vector_folded_forms = True
 
 scalar_pf_params = {}
 for item in args.scalar_pf_param or []:
@@ -635,10 +687,10 @@ if prefetcher_active:
     prefetcher_mmu = prefetcher_needs_mmu(args.prefetcher, pf_params)
     # Tyche decodes scalar instructions; the vector caches never see
     # scalar accesses in the split hierarchy.
-    prefetcher_tyche_table = needs_chain_table(args.prefetcher)
+    prefetcher_tyche_table = needs_chain_table(args.prefetcher, pf_params)
     # The side guards below only apply to the split hierarchy: the
     # unified L1D sees scalar and vector accesses alike, so both the
-    # tyche and the gdp/viper sideband channels reach it.
+    # tyche and the viper_final sideband channels reach it.
     if prefetcher_tyche_table and not args.unified_cache \
             and not args.ara_cache \
             and args.prefetcher_side != "scalar":
@@ -647,7 +699,7 @@ if prefetcher_active:
               "which the VectorSplitter never routes to the vector "
               "caches)")
         sys.exit(1)
-    # GDP's CPU-side records are extracted from vector loads; those
+    # viper_final's CPU-side records are extracted from vector loads; those
     # only reach a vector-side cache in the split hierarchy.
     prefetcher_vector_chain_table = needs_vector_chain_table(args.prefetcher)
     # On --ara-cache the L1D never sees a vector access, so a
@@ -715,7 +767,7 @@ if l2_prefetcher_active:
 if args.stream_demote != "none" and not prefetcher_vector_chain_table \
         and not args.stream_demote_demand:
     print("Error: --stream-demote needs a vector-chain-table prefetcher "
-          "(--prefetcher gdp or viper) or --stream-demote-demand "
+          "(--prefetcher viper_final) or --stream-demote-demand "
           "to feed the stream-page registry")
     sys.exit(1)
 
@@ -730,6 +782,11 @@ if args.vector_max_transform_stages < 1:
     print("Error: --vector-max-transform-stages must be >= 1")
     sys.exit(1)
 
+if args.tyche_dct_entries < 2:
+    # Same bound the C++ constructor enforces (tyche_table.cc).
+    print("Error: --tyche-dct-entries must be >= 2 (head + link)")
+    sys.exit(1)
+
 if args.stream_demote_monotone and not args.stream_demote_demand:
     print("Error: --stream-demote-monotone gates only demand-side "
           "registrations — it needs --stream-demote-demand (it would "
@@ -738,8 +795,8 @@ if args.stream_demote_monotone and not args.stream_demote_demand:
 
 if scalar_prefetcher_active:
     # Second, independent prefetcher on the scalar L1D (dual configs:
-    # e.g. stride on the scalar side next to gdp/vimp on the vector
-    # side). The argparse choices already exclude gdp.
+    # e.g. stride on the scalar side next to viper_final/vimp on the
+    # vector side). The argparse choices already exclude viper_final.
     try:
         scalar_factory = build_prefetcher(
             args.scalar_prefetcher, scalar_pf_params
@@ -782,6 +839,8 @@ if args.vector_cache:
         prefetcher_needs_chain_table=prefetcher_tyche_table,
         prefetcher_needs_vector_chain_table=prefetcher_vector_chain_table,
         vector_dct_entries=args.vector_dct_entries,
+        vector_backprop_memo=args.vector_backprop_memo,
+        vector_folded_forms=args.vector_folded_forms,
         vector_max_transform_stages=args.vector_max_transform_stages,
         prefetcher_needs_revela_table=prefetcher_revela_table,
         revela_stt_entries=args.revela_stt_entries,
@@ -812,6 +871,8 @@ elif args.ara_cache:
         prefetcher_needs_chain_table=prefetcher_tyche_table,
         prefetcher_needs_vector_chain_table=prefetcher_vector_chain_table,
         vector_dct_entries=args.vector_dct_entries,
+        vector_backprop_memo=args.vector_backprop_memo,
+        vector_folded_forms=args.vector_folded_forms,
         vector_max_transform_stages=args.vector_max_transform_stages,
         prefetcher_needs_revela_table=prefetcher_revela_table,
         revela_stt_entries=args.revela_stt_entries,
@@ -834,7 +895,11 @@ elif args.unified_cache:
         prefetcher_needs_mmu=prefetcher_mmu,
         prefetcher_needs_chain_table=prefetcher_tyche_table,
         prefetcher_needs_vector_chain_table=prefetcher_vector_chain_table,
+        tyche_dct_entries=args.tyche_dct_entries,
+        tyche_live_window=args.tyche_live_window,
         vector_dct_entries=args.vector_dct_entries,
+        vector_backprop_memo=args.vector_backprop_memo,
+        vector_folded_forms=args.vector_folded_forms,
         vector_max_transform_stages=args.vector_max_transform_stages,
         prefetcher_needs_revela_table=prefetcher_revela_table,
         revela_stt_entries=args.revela_stt_entries,
@@ -1000,12 +1065,18 @@ _path_map = os.environ.get("GEM5_GUEST_PATH_MAP")
 if _path_map:
     from m5.objects import RedirectPath
 
-    _guest_prefix, _host_prefix = _path_map.split("=", 1)
+    # One or more mappings, separated by ';':
+    #   GEM5_GUEST_PATH_MAP="<guest1>=<host1>;<guest2>=<host2>"
+    # Native runs need several when the workload's argv references more
+    # than one tree (e.g. the benchmark binary in argv[0] plus its input
+    # files from another directory); every one of them must be rewritten
+    # or the guest argv lengths differ from the docker runs.
+    _pairs = [e.split("=", 1) for e in _path_map.split(";") if e]
     # Syscall-time redirection is a SYSTEM param, not a Process one:
     # Process::checkPathRedirect iterates system->redirectPaths
     # (src/sim/process.cc), and the stdlib board is the System.
     board.redirect_paths = [
-        RedirectPath(app_path=_guest_prefix, host_paths=[_host_prefix])
+        RedirectPath(app_path=g, host_paths=[h]) for g, h in _pairs
     ]
     for _core in board.get_processor().get_cores():
         _workloads = _core.core.workload
@@ -1016,10 +1087,10 @@ if _path_map:
         for _proc in _workloads:
             # executable keeps the host path (the ELF is loaded from
             # disk); only argv is rewritten to the guest-canonical form.
-            _proc.cmd = [
-                str(c).replace(_host_prefix, _guest_prefix)
-                for c in _proc.cmd
-            ]
+            _cmd = [str(c) for c in _proc.cmd]
+            for _g, _h in _pairs:
+                _cmd = [c.replace(_h, _g) for c in _cmd]
+            _proc.cmd = _cmd
 
 import m5  # For curTick()
 

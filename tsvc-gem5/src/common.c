@@ -12,6 +12,51 @@
 int ip_locality_L = 1;
 int ip_locality_W = 1;
 unsigned ip_locality_seed = 12345;
+int ip_synth = 0;
+
+/* Block-structured synthetic ip[] (tsvc argv -synth).
+ *
+ * N elements of real_t span nlines = N / epl cache lines (epl = 16 for
+ * 32-bit real_t on 64B lines). ip[] is split into epl blocks of nlines
+ * entries. Each block visits every one of the nlines lines exactly once,
+ * in a fresh random order (sampling without replacement), and each visit
+ * takes a random still-unused element of that line (per-line shuffled
+ * offset order, block k consumes the k-th). Over the epl blocks every
+ * element is used exactly once, so ip[] is a permutation of 0..N-1 (the
+ * scatter kernels need that for vec/novec checksum equality).
+ * Caller seeds rand(). */
+static void gen_ip_synth(int *ip, int N)
+{
+    const int epl = 64 / (int)sizeof(real_t);
+    if (N % epl != 0) {
+        fprintf(stderr, "ip synth: N=%d not a multiple of %d\n", N, epl);
+        exit(1);
+    }
+    const int nlines = N / epl;
+    int *order = (int *) malloc(nlines * sizeof(int));
+    int *offs  = (int *) malloc(N * sizeof(int)); /* offs[line*epl + k] */
+    for (int line = 0; line < nlines; line++) {
+        int *o = offs + line * epl;
+        for (int k = 0; k < epl; k++) o[k] = k;
+        for (int k = epl - 1; k > 0; k--) {
+            int j = rand() % (k + 1);
+            int tmp = o[k]; o[k] = o[j]; o[j] = tmp;
+        }
+    }
+    for (int blk = 0; blk < epl; blk++) {
+        for (int l = 0; l < nlines; l++) order[l] = l;
+        for (int l = nlines - 1; l > 0; l--) {
+            int j = rand() % (l + 1);
+            int tmp = order[l]; order[l] = order[j]; order[j] = tmp;
+        }
+        for (int l = 0; l < nlines; l++) {
+            const int line = order[l];
+            ip[blk * nlines + l] = line * epl + offs[line * epl + blk];
+        }
+    }
+    free(order);
+    free(offs);
+}
 
 void set_1d_array(real_t * arr, int length, real_t value, int stride);
 void set_2d_array(real_t arr[LEN_2D][LEN_2D], real_t value, int stride);
@@ -167,9 +212,10 @@ void set_2d_array(real_t arr[LEN_2D][LEN_2D], real_t value, int stride)
     }
 }
 
-void init(int** ip, real_t* s1, real_t* s2){
+void init(int** ip, int** ip2d, real_t* s1, real_t* s2){
     xx = (real_t*) memalign(ARRAY_ALIGNMENT, LEN_1D*sizeof(real_t));
     *ip = (int *) memalign(ARRAY_ALIGNMENT, LEN_1D*sizeof(real_t));
+    *ip2d = NULL;
 
     // Original TSVC ip initialization
     // ip's regular and highly local pattern 
@@ -213,8 +259,19 @@ void init(int** ip, real_t* s1, real_t* s2){
     // element-by-element, so same-line accesses sit W positions apart.
     // Set via tsvc argv: -L <n> -W <n> -S <seed> (defaults 1/1/12345
     // keep fully-random gathers).
+    //
+    // -synth replaces this generator with gen_ip_synth() above (L/W
+    // ignored, -S still seeds) and also builds ip2d[], a LEN_2D-sized
+    // block-structured permutation of 0..LEN_2D-1 for s4116, whose
+    // gather indexes a LEN_2D-wide aa[][] row. Without -synth ip2d is
+    // NULL and s4116 keeps reading ip[] as before.
 
-    {
+    if (ip_synth) {
+        *ip2d = (int *) memalign(ARRAY_ALIGNMENT, LEN_2D*sizeof(int));
+        srand(ip_locality_seed);
+        gen_ip_synth(*ip, LEN_1D);
+        gen_ip_synth(*ip2d, LEN_2D);
+    } else {
         const int epl = 64 / (int)sizeof(real_t); /* elements per line */
         const int L = ip_locality_L;
         const int W = ip_locality_W;
@@ -786,11 +843,30 @@ int initialise_arrays(const char* name)
     } else if (!strcmp(name, "s4112")) {
         set_1d_array(a, LEN_1D, one,unit);
         set_1d_array(b, LEN_1D, any,frac);
+    } else if (!strcmp(name, "s4112_strided")) {
+        set_1d_array(a, LEN_1D, one,unit);
+        set_1d_array(b, LEN_1D, any,frac);
+    } else if (!strcmp(name, "multi_way")) {
+        set_1d_array(a, LEN_1D, one,unit);
+        set_1d_array(b, LEN_1D, any,frac);
+        set_1d_array(c, LEN_1D, any,frac);
+    } else if (!strcmp(name, "seg1")) {
+        set_1d_array(a, LEN_1D, one,unit);
+        set_1d_array(b, LEN_1D, any,frac);
+    } else if (!strcmp(name, "seg2")) {
+        set_1d_array(a, LEN_1D, one,unit);
+        set_1d_array(b, LEN_1D, any,frac);
+        set_1d_array(c, LEN_1D, any,frac);
     } else if (!strcmp(name, "s4113")) {
         set_1d_array(a, LEN_1D,zero,unit);
         set_1d_array(b, LEN_1D, one,unit);
         set_1d_array(c, LEN_1D, any,frac2);
     } else if (!strcmp(name, "s4114")) {
+        set_1d_array(a, LEN_1D,zero,unit);
+        set_1d_array(b, LEN_1D, one,unit);
+        set_1d_array(c, LEN_1D, any,frac);
+        set_1d_array(d, LEN_1D, any,frac);
+    } else if (!strcmp(name, "s4114_modified")) {
         set_1d_array(a, LEN_1D,zero,unit);
         set_1d_array(b, LEN_1D, one,unit);
         set_1d_array(c, LEN_1D, any,frac);
@@ -1105,9 +1181,19 @@ real_t calc_checksum(const char * name)
         return sum_a();
     } else if (!strcmp(name, "s4112")) {
         return sum_a();
+    } else if (!strcmp(name, "s4112_strided")) {
+        return sum_a();
+    } else if (!strcmp(name, "multi_way")) {
+        return sum_a();
+    } else if (!strcmp(name, "seg1")) {
+        return sum_a();
+    } else if (!strcmp(name, "seg2")) {
+        return sum_a();
     } else if (!strcmp(name, "s4113")) {
         return sum_a();
     } else if (!strcmp(name, "s4114")) {
+        return sum_a();
+    } else if (!strcmp(name, "s4114_modified")) {
         return sum_a();
     } else if (!strcmp(name, "s4117")) {
         return sum_a();
