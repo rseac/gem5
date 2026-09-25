@@ -42,6 +42,7 @@
  */
 
 #include "cpu/o3/cpu.hh"
+#include "cpu/ara/ara_coprocessor.hh"
 
 #include "cpu/activity.hh"
 #include "cpu/checker/cpu.hh"
@@ -113,6 +114,7 @@ CPU::CPU(const BaseO3CPUParams &params)
       globalFTSeqNum(1),
       system(params.system),
       lastRunningCycle(curCycle()),
+      araCoprocessor(params.araCoprocessor),
       cpuStats(this)
 {
     fatal_if(FullSystem && params.numThreads > 1,

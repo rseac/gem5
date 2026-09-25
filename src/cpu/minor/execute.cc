@@ -36,6 +36,14 @@
  */
 
 #include "cpu/minor/execute.hh"
+#include "cpu/ara/ara_coprocessor.hh"
+
+static bool isAraInst(gem5::minor::MinorDynInstPtr inst, gem5::AraCoprocessor* ara) {
+    if (!inst->staticInst->isVector() || !ara) return false;
+    std::string name = inst->staticInst->getName();
+    if (name == "vsetvli" || name == "vsetivli" || name == "vsetvl") return false;
+    return true;
+}
 
 #include <functional>
 
@@ -771,7 +779,7 @@ Execute::issue(ThreadID thread_id)
                             extra_dest_retire_lat +
                             extra_assumed_lat,
                             cpu.getContext(thread_id),
-                            issued_mem_ref && extra_assumed_lat == Cycles(0));
+                            (issued_mem_ref && extra_assumed_lat == Cycles(0) && !isAraInst(inst, cpu.araCoprocessor)));
 
                         /* Push the instruction onto the inFlight queue so
                          *  it can be committed in order */
@@ -812,6 +820,37 @@ Execute::issue(ThreadID thread_id)
 
             if (!discarded && !inst->isBubble()) {
                 num_insts_issued++;
+
+                if (!inst->isFault() && isAraInst(inst, cpu.araCoprocessor)) {
+                    // gem5 cracks vector macro-instructions into micro-ops
+                    // (e.g. vfmacc.vf VL=512 -> 9 micro-ops). Each micro-op
+                    // carries the same architectural VL in the CSR. If we
+                    // naively push all N micro-ops, AraCoprocessor executes
+                    // NxT cycles instead of T - a huge serialisation penalty.
+                    //
+                    // Fix: only the *last* (or only) micro-op drives real Ara
+                    // timing; all preceding siblings are immediately completed
+                    // so MinorCPU can commit them without stalling, while the
+                    // last micro-op uses the full architectural VL (already
+                    // in the CSR) to compute the correct execution time.
+                    bool isLastOrOnly = !inst->staticInst->isMicroop()
+                                     || inst->staticInst->isLastMicroop();
+                    if (isLastOrOnly) {
+                        DPRINTF(MinorExecute,
+                            "Pushing vector instruction %s to Ara "
+                            "(last/only micro-op).\n", *inst);
+                        cpu.araCoprocessor->pushInstruction(
+                            inst->staticInst,
+                            cpu.getContext(thread_id),
+                            inst->id.execSeqNum);
+                    } else {
+                        // Non-last micro-op: retire immediately, no Ara work.
+                        DPRINTF(MinorExecute,
+                            "Skipping intermediate micro-op %s "
+                            "(immediately completed).\n", *inst);
+                        cpu.araCoprocessor->markCompleted(inst->id.execSeqNum);
+                    }
+                }
 
                 if (num_insts_issued == issueLimit)
                     DPRINTF(MinorExecute, "Reached inst issue limit\n");
@@ -1294,8 +1333,18 @@ Execute::commit(ThreadID thread_id, bool only_commit_microops, bool discard,
                     /* All instructions can be committed if they have the
                      *  right execSeqNum and there are no in-flight
                      *  mem insts before us */
-                    try_to_commit = true;
-                    completed_inst = true;
+                    if (!inst->isFault() && isAraInst(inst, cpu.araCoprocessor)) {
+                        if (cpu.araCoprocessor->hasCompleted(inst->id.execSeqNum)) {
+                            try_to_commit = true;
+                            completed_inst = true;
+                        } else {
+                            try_to_commit = false;
+                            completed_inst = false;
+                        }
+                    } else {
+                        try_to_commit = true;
+                        completed_inst = true;
+                    }
                 }
             }
 

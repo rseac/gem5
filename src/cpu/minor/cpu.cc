@@ -37,6 +37,7 @@
 
 #include "cpu/minor/cpu.hh"
 
+#include "cpu/ara/ara_coprocessor.hh"
 #include "cpu/minor/dyn_inst.hh"
 #include "cpu/minor/fetch1.hh"
 #include "cpu/minor/pipeline.hh"
@@ -49,6 +50,7 @@ namespace gem5
 
 MinorCPU::MinorCPU(const BaseMinorCPUParams &params) :
     BaseCPU(params),
+    araCoprocessor(params.araCoprocessor),
     threadPolicy(params.threadPolicy),
     stats(this)
 {

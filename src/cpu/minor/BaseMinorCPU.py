@@ -302,6 +302,7 @@ class BaseMinorCPU(BaseCPU):
     type = "BaseMinorCPU"
     cxx_header = "cpu/minor/cpu.hh"
     cxx_class = "gem5::MinorCPU"
+    araCoprocessor = Param.AraCoprocessor(NULL, "Ara vector coprocessor")
 
     @classmethod
     def memory_mode(cls):
@@ -404,12 +405,12 @@ class BaseMinorCPU(BaseCPU):
         2, "Maximum number of stores that the store buffer can issue per cycle"
     )
     executeLSQRequestsQueueSize = Param.Unsigned(
-        1, "Size of LSQ requests queue (address translation queue)"
+        100, "Size of LSQ requests queue (address translation queue)"
     )
     executeLSQTransfersQueueSize = Param.Unsigned(
-        2, "Size of LSQ transfers queue (memory transaction queue)"
+        100, "Size of LSQ transfers queue (memory transaction queue)"
     )
-    executeLSQStoreBufferSize = Param.Unsigned(5, "Size of LSQ store buffer")
+    executeLSQStoreBufferSize = Param.Unsigned(512, "Size of LSQ store buffer")
     executeBranchDelay = Param.Cycles(
         1,
         "Delay from Execute deciding to branch and Fetch1 reacting"

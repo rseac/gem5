@@ -83,6 +83,8 @@ class ThreadContext;
 class Checkpoint;
 class Process;
 
+class AraCoprocessor;
+
 namespace o3
 {
 
@@ -97,6 +99,8 @@ class CPU : public BaseCPU
 {
   public:
     typedef std::list<DynInstPtr>::iterator ListIt;
+
+    gem5::AraCoprocessor *araCoprocessor;
 
     friend class ThreadContext;
 

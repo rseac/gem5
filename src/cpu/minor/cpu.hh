@@ -56,6 +56,8 @@
 namespace gem5
 {
 
+class AraCoprocessor;
+
 namespace minor
 {
 
@@ -91,6 +93,8 @@ class MinorCPU : public BaseCPU
     Random::RandomPtr rng = Random::genRandom();
 
   public:
+    AraCoprocessor *araCoprocessor;
+
     /** Activity recording for pipeline.  This belongs to Pipeline but
      *  stages will access it through the CPU as the MinorCPU object
      *  actually mediates idling behaviour */

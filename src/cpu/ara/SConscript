@@ -1,0 +1,7 @@
+Import('*')
+
+SimObject('AraCoprocessor.py', sim_objects=['AraCoprocessor'])
+
+Source('ara_coprocessor.cc')
+
+DebugFlag('AraCoprocessor')

@@ -39,6 +39,7 @@
 
 from m5.citations import add_citation
 from m5.defines import buildEnv
+from m5.objects.AraCoprocessor import *
 from m5.objects.BaseCPU import BaseCPU
 
 # from m5.objects.O3Checker import O3Checker
@@ -57,6 +58,8 @@ class BaseO3CPU(BaseCPU):
     type = "BaseO3CPU"
     cxx_class = "gem5::o3::CPU"
     cxx_header = "cpu/o3/dyn_inst.hh"
+    
+    araCoprocessor = Param.AraCoprocessor(NULL, "Ara coprocessor instance")
 
     @classmethod
     def memory_mode(cls):
