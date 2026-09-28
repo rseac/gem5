@@ -61,3 +61,44 @@ To compile and run handwritten test cases for RISC-V vector ISA
 cd apps
 make riscv_tests
 ```
+
+### Running under gem5 (AraCoprocessor timing model)
+
+Everything above targets the AraXL baremetal/RTL (Verilator) hardware
+simulation flow. This repo also carries a gem5-side, SE-mode (syscall
+emulation) analytical timing model of Ara, `AraCoprocessor`
+(`src/cpu/ara/ara_coprocessor.{cc,hh}`), attached to `MinorCPU`. It's an
+approximate, fast model rather than a cycle-exact RTL replica - the point is
+to run full RiVEC benchmarks in gem5 far faster than Verilator, at the cost
+of some timing accuracy.
+
+**Build gem5** (from the repo root, via the project's Docker image):
+```bash
+docker run --rm -u $(id -u):$(id -g) -v "$(pwd)":/gem5 -w /gem5 \
+    rseac/gem5-ara:latest scons build/RISCV/gem5.opt -j4
+```
+
+**Build the benchmarks for gem5 SE mode**: the compiled `*_se.exe` binaries
+already checked in under `apps_gem5/bin/` are gitignored (build artifacts);
+rebuild them from the `riscv-vectorized-benchmark-suite/` sources the same
+way the RTL flow does, targeting the gem5 SE-mode toolchain rather than the
+baremetal one.
+
+**Run a benchmark**:
+```bash
+docker run --rm -u $(id -u):$(id -g) -v "$(pwd)":/gem5 -w /gem5 \
+    rseac/gem5-ara:latest build/RISCV/gem5.opt run_gem5_ara.py \
+    apps_gem5/bin/matmul_se.exe apps_gem5/riscv-vectorized-benchmark-suite/_matmul/input/data_64.in
+```
+`run_gem5_ara.py` configures a single-issue, in-order `MinorCPU` tuned to
+match CVA6, with the `AraCoprocessor` attached (default `num_lanes=4`,
+`vlen=4096`). Each benchmark prints `[ROI-LATENCY]: N cycles` for its
+timed region.
+
+**Current accuracy** (MAPE against a matching Ara RTL/Verilator baseline,
+`results_4L_4096V/status.csv`), averaged across the 11-benchmark RiVEC
+suite: **18.5%**, ranging from 2.0% (pathfinder) to 38.1% (jacobi-2d). See
+`HANDOFF.md` for the full benchmark-by-benchmark table, every fix made to
+reach this, and two changes that were tried and reverted after regressing
+the broader suite despite improving a narrow subset. This work lives on the
+`ara-coprocessor-timing-model` branch.
