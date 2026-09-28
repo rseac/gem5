@@ -10,6 +10,41 @@ system software changes, and compile-time and run-time system optimizations.
 
 The main website can be found at <http://www.gem5.org>.
 
+## This branch: AraCoprocessor RISC-V Vector Timing Model
+
+This branch (`ara-coprocessor-timing-model`) adds `AraCoprocessor`
+(`src/cpu/ara/ara_coprocessor.{cc,hh}`), an analytical timing model of
+[Ara](https://github.com/pulp-platform/ara), a RISC-V "V" (vector extension)
+coprocessor, attached to `MinorCPU`. It's not a cycle-exact RTL replica -
+it's a fast, approximate model that estimates Ara's timing well enough to
+run full RiVEC vector benchmarks under gem5's syscall-emulation (SE) mode,
+at a fraction of the cost of running the same programs against Ara's actual
+RTL under Verilator.
+
+**What's in this branch:**
+- `AraCoprocessor` itself: models vector-register-file hazards, per-lane
+  execution throughput, a memory queue for vector loads/stores (with
+  separate cost terms for unit-stride vs. strided/indexed access), and
+  writeback timing - integrated with `MinorCPU`'s pipeline via a small set
+  of RISC-V-vector-aware hooks in `execute.cc` and `fetch2.cc`.
+- A `run_gem5_ara.py` SE-mode run script and a matched RiVEC benchmark
+  suite under `apps_gem5/` (see `apps_gem5/README.md` for build/run
+  instructions).
+- A functional-unit-pool configuration in `run_gem5_ara.py` that gives
+  strided/indexed vector memory ops extra outstanding-request concurrency,
+  matched to Ara's real RTL address-generation queue depth - MinorCPU's
+  default pool has exactly one functional unit for every memory op class,
+  which otherwise serializes every element of a strided/indexed load
+  through a single self-stalling functional unit.
+
+**Accuracy**: averaged 18.5% MAPE (mean absolute percentage error) against
+a matching Ara RTL/Verilator cycle-count baseline across an 11-benchmark
+RiVEC suite, ranging from 2.0% (pathfinder) to 38.1% (jacobi-2d). See
+`HANDOFF.md` for the full per-benchmark table, the correctness bugs fixed
+to get there, and two calibration attempts that were tried and reverted
+after being found to regress the broader suite despite improving a narrow
+subset of benchmarks.
+
 ## Testing and code coverage status
 
 **Note**: These regard tests run on the develop branch of gem5:
