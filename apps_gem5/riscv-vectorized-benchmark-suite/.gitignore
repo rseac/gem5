@@ -1,0 +1,7 @@
+*.swp
+output/
+m5out/
+*.S
+*.o
+*.dump
+netlist_sizes.h

@@ -716,6 +716,289 @@ LSQ::SplitDataRequest::sendNextFragmentToTranslation()
         BaseMMU::Read : BaseMMU::Write));
 }
 
+void
+LSQ::ElementBatchDataRequest::finish(const Fault &fault_,
+    const RequestPtr &request_, ThreadContext *tc, BaseMMU::Mode mode)
+{
+    port.numAccessesInDTLB--;
+
+    [[maybe_unused]] unsigned int expected_fragment_index =
+        numTranslatedFragments;
+
+    numInTranslationFragments--;
+    numTranslatedFragments++;
+
+    DPRINTFS(MinorMem, (&port), "Received translation response for element"
+             " batch fragment %d of request: %s delayed:%d %s\n",
+             expected_fragment_index, *inst, isTranslationDelayed,
+             fault_ != NoFault ? fault_->name() : "");
+
+    assert(request_ == fragmentRequests[expected_fragment_index]);
+
+    /* Wake up next cycle to get things going again in case the
+     *  tryToSendToTransfers does take */
+    port.cpu.wakeupOnEvent(Pipeline::ExecuteStageId);
+
+    if (fault_ != NoFault) {
+        /* tryToSendToTransfers will handle the fault */
+        inst->translationFault = fault_;
+
+        DPRINTFS(MinorMem, (&port), "Faulting translation for element"
+            " batch fragment: %d of request: %s\n",
+            expected_fragment_index, *inst);
+
+        if (expected_fragment_index > 0 || isTranslationDelayed)
+            tryToSuppressFault();
+        if (expected_fragment_index == 0) {
+            if (isTranslationDelayed && inst->translationFault == NoFault) {
+                completeDisabledMemAccess();
+                setState(Complete);
+            } else {
+                setState(Translated);
+            }
+        } else if (inst->translationFault == NoFault) {
+            setState(Translated);
+            numTranslatedFragments--;
+            makeFragmentPackets();
+        } else {
+            setState(Translated);
+        }
+        port.tryToSendToTransfers(this);
+    } else if (numTranslatedFragments == numFragments) {
+        makeFragmentPackets();
+        setState(Translated);
+        port.tryToSendToTransfers(this);
+    } else {
+        /* Avoid calling translateTiming from within ::finish */
+        assert(!translationEvent.scheduled());
+        port.cpu.schedule(translationEvent, curTick());
+    }
+}
+
+LSQ::ElementBatchDataRequest::ElementBatchDataRequest(LSQ &port_,
+    MinorDynInstPtr inst_, bool isLoad_, PacketDataPtr data_,
+    uint64_t *res_, std::vector<Addr> elem_addrs_, unsigned int elem_size_) :
+    LSQRequest(port_, inst_, isLoad_, data_, res_),
+    translationEvent([this]{ sendNextFragmentToTranslation(); },
+                     "elementBatchTranslationEvent"),
+    numFragments(elem_addrs_.size()),
+    numInTranslationFragments(0),
+    numTranslatedFragments(0),
+    numIssuedFragments(0),
+    numRetiredFragments(0),
+    elemSize(elem_size_),
+    elemAddrs(std::move(elem_addrs_)),
+    fragmentRequests(),
+    fragmentPackets()
+{
+}
+
+LSQ::ElementBatchDataRequest::~ElementBatchDataRequest()
+{
+    for (auto i = fragmentPackets.begin(); i != fragmentPackets.end(); i++)
+        delete *i;
+}
+
+void
+LSQ::ElementBatchDataRequest::makeFragmentRequests()
+{
+    for (unsigned int i = 0; i < elemAddrs.size(); i++) {
+        RequestPtr fragment = std::make_shared<Request>();
+        fragment->setContext(request->contextId());
+        fragment->setVirt(elemAddrs[i], elemSize, request->getFlags(),
+            request->requestorId(), request->getPC());
+        fragmentRequests.push_back(fragment);
+    }
+}
+
+void
+LSQ::ElementBatchDataRequest::makeFragmentPackets()
+{
+    assert(numTranslatedFragments > 0);
+
+    DPRINTFS(MinorMem, (&port), "Making packets for element batch"
+        " request: %s\n", *inst);
+
+    for (unsigned int fragment_index = 0;
+         fragment_index < numTranslatedFragments;
+         fragment_index++)
+    {
+        RequestPtr fragment = fragmentRequests[fragment_index];
+
+        uint8_t *request_data = NULL;
+
+        if (!isLoad) {
+            request_data = new uint8_t[elemSize];
+            std::memcpy(request_data, data + (fragment_index * elemSize),
+                elemSize);
+        }
+
+        assert(fragment->hasPaddr());
+
+        PacketPtr fragment_packet =
+            makePacketForRequest(fragment, isLoad, this, request_data);
+
+        fragmentPackets.push_back(fragment_packet);
+        request->setFlags(fragment->getFlags());
+    }
+
+    request->setPaddr(fragmentRequests[0]->getPaddr());
+    makePacket();
+}
+
+void
+LSQ::ElementBatchDataRequest::startAddrTranslation()
+{
+    makeFragmentRequests();
+
+    if (numFragments > 0) {
+        setState(LSQ::LSQRequest::InTranslation);
+        numInTranslationFragments = 0;
+        numTranslatedFragments = 0;
+
+        sendNextFragmentToTranslation();
+    } else {
+        disableMemAccess();
+        setState(LSQ::LSQRequest::Complete);
+    }
+}
+
+PacketPtr
+LSQ::ElementBatchDataRequest::getHeadPacket()
+{
+    assert(numIssuedFragments < numTranslatedFragments);
+
+    return fragmentPackets[numIssuedFragments];
+}
+
+void
+LSQ::ElementBatchDataRequest::stepToNextPacket()
+{
+    assert(numIssuedFragments < numTranslatedFragments);
+
+    numIssuedFragments++;
+}
+
+void
+LSQ::ElementBatchDataRequest::retireResponse(PacketPtr response)
+{
+    assert(inst->translationFault == NoFault);
+    assert(numRetiredFragments < numTranslatedFragments);
+
+    Addr resp_addr = response->req->getVaddr();
+    unsigned int elem_idx = 0;
+    bool found = false;
+    for (unsigned int i = 0; i < elemAddrs.size(); i++) {
+        if (elemAddrs[i] == resp_addr) {
+            elem_idx = i;
+            found = true;
+            break;
+        }
+    }
+    assert(found);
+
+    DPRINTFS(MinorMem, (&port), "Retiring element batch fragment addr:"
+        " 0x%x elem_idx: %d (retired fragment num: %d)\n",
+        resp_addr, elem_idx, numRetiredFragments);
+
+    numRetiredFragments++;
+
+    if (skipped) {
+        DPRINTFS(MinorMem, (&port), "Skipping this fragment\n");
+    } else if (response->isError()) {
+        DPRINTFS(MinorMem, (&port), "Fragment has an error, skipping\n");
+        setSkipped();
+        packet->copyError(response);
+    } else {
+        if (isLoad) {
+            if (!data) {
+                data = new uint8_t[elemAddrs.size() * elemSize];
+            }
+            std::memcpy(data + (elem_idx * elemSize),
+                response->getConstPtr<uint8_t>(),
+                elemSize);
+        }
+    }
+
+    if (skipped && !hasPacketsInMemSystem()) {
+        DPRINTFS(MinorMem, (&port), "Completed skipped element batch\n");
+        setState(Complete);
+        if (packet->needsResponse())
+            packet->makeResponse();
+    }
+
+    if (numRetiredFragments == numTranslatedFragments)
+        setState(Complete);
+
+    if (!skipped && isComplete()) {
+        if (!data) {
+            data = new uint8_t[elemAddrs.size() * elemSize];
+        }
+        if (isLoad) {
+            std::memcpy(packet->getPtr<uint8_t>(), data,
+                elemAddrs.size() * elemSize);
+        }
+        packet->makeResponse();
+    }
+}
+
+void
+LSQ::ElementBatchDataRequest::sendNextFragmentToTranslation()
+{
+    unsigned int fragment_index = numTranslatedFragments;
+
+    ThreadContext *thread = port.cpu.getContext(inst->id.threadId);
+
+    DPRINTFS(MinorMem, (&port), "Submitting DTLB request for element batch"
+        " fragment: %d\n", fragment_index);
+
+    port.numAccessesInDTLB++;
+    numInTranslationFragments++;
+
+    thread->getMMUPtr()->translateTiming(
+        fragmentRequests[fragment_index], thread, this, (isLoad ?
+        BaseMMU::Read : BaseMMU::Write));
+}
+
+Fault
+LSQ::pushElementBatchRequest(MinorDynInstPtr inst, bool isLoad,
+    uint8_t *data, const std::vector<Addr> &elem_addrs,
+    unsigned int elem_size, Request::Flags flags)
+{
+    assert(inst->translationFault == NoFault || inst->inLSQ);
+
+    if (inst->inLSQ) {
+        return inst->translationFault;
+    }
+
+    uint8_t *request_data = NULL;
+    unsigned int whole_size = elem_addrs.size() * elem_size;
+
+    if (!isLoad) {
+        request_data = new uint8_t[whole_size];
+        std::memcpy(request_data, data, whole_size);
+    }
+
+    LSQRequestPtr request = new ElementBatchDataRequest(
+        *this, inst, isLoad, request_data, NULL, elem_addrs, elem_size);
+
+    if (inst->traceData)
+        inst->traceData->setMem(elem_addrs.empty() ? 0 : elem_addrs[0],
+            whole_size, flags);
+
+    int cid = cpu.threads[inst->id.threadId]->getTC()->contextId();
+    request->request->setContext(cid);
+    request->request->setVirt(
+        elem_addrs.empty() ? 0 : elem_addrs[0], whole_size, flags,
+        cpu.dataRequestorId(), inst->pc->instAddr());
+
+    requests.push(request);
+    inst->inLSQ = true;
+    request->startAddrTranslation();
+
+    return inst->translationFault;
+}
+
 bool
 LSQ::StoreBuffer::canInsert() const
 {

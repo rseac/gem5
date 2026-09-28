@@ -36,6 +36,7 @@
  */
 
 #include "cpu/minor/execute.hh"
+#include "arch/riscv/isa.hh"
 #include "cpu/ara/ara_coprocessor.hh"
 
 static bool isAraInst(gem5::minor::MinorDynInstPtr inst, gem5::AraCoprocessor* ara) {
@@ -839,9 +840,22 @@ Execute::issue(ThreadID thread_id)
                         DPRINTF(MinorExecute,
                             "Pushing vector instruction %s to Ara "
                             "(last/only micro-op).\n", *inst);
+                        // Capture VL/VTYPE now, at this instruction's own
+                        // issue time, rather than passing the ThreadContext
+                        // through for AraCoprocessor to read later: its
+                        // commandQueue can back up behind busy lanes, and
+                        // vsetvli isn't gated on Ara completion (see
+                        // isAraInst() above), so a live read at dequeue
+                        // time could pick up a later, unrelated vsetvli's
+                        // VL/VTYPE instead of this instruction's own.
+                        ThreadContext *ara_tc = cpu.getContext(thread_id);
+                        uint32_t ara_vl =
+                            ara_tc->readMiscReg(RiscvISA::MISCREG_VL);
+                        uint64_t ara_vtype =
+                            ara_tc->readMiscReg(RiscvISA::MISCREG_VTYPE);
                         cpu.araCoprocessor->pushInstruction(
                             inst->staticInst,
-                            cpu.getContext(thread_id),
+                            ara_vl, ara_vtype,
                             inst->id.execSeqNum);
                     } else {
                         // Non-last micro-op: retire immediately, no Ara work.
@@ -1335,6 +1349,15 @@ Execute::commit(ThreadID thread_id, bool only_commit_microops, bool discard,
                      *  mem insts before us */
                     if (!inst->isFault() && isAraInst(inst, cpu.araCoprocessor)) {
                         if (cpu.araCoprocessor->hasCompleted(inst->id.execSeqNum)) {
+                            // hasCompleted() only checks; without this the
+                            // seqNum stays in AraCoprocessor's
+                            // completedInstructions vector forever, which
+                            // both never shrinks and is linearly scanned by
+                            // every future hasCompleted() call - a
+                            // classic O(n^2) blowup that looks like a
+                            // livelock (100% CPU, no forward progress)
+                            // once enough vector instructions have run.
+                            cpu.araCoprocessor->markCommitted(inst->id.execSeqNum);
                             try_to_commit = true;
                             completed_inst = true;
                         } else {

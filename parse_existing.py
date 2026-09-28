@@ -1,6 +1,5 @@
 import os, sys, csv
 import numpy as np
-import re
 
 BASELINE_CSV = "/home/twiga/code/github/ai/my-timing-project/benchmark_suite/ara/results_4L_4096V/status.csv"
 BENCHMARK_MAP = {
@@ -30,15 +29,13 @@ print(f"{'Benchmark':<20} | {'Ara RTL (ROI)':<15} | {'gem5':<10} | {'Error %':<1
 print("-" * 65)
 
 for b in BENCHMARK_MAP:
-    out_file = f"m5out/out_{b}.txt"
+    stats_file = f"m5out/{b[1:]}/stats.txt"
     cycles = 0
-    if os.path.exists(out_file):
-        with open(out_file, "r") as f:
+    if os.path.exists(stats_file):
+        with open(stats_file, "r") as f:
             for line in f:
-                if "[ROI-LATENCY]:" in line or "Time:" in line:
-                    m = re.search(r'(\d+)\s+cycles', line)
-                    if m:
-                        cycles = int(m.group(1))
+                if "system.cpu.numCycles" in line:
+                    cycles = int(line.split()[1])
                     break
     
     rtl_cyc = baseline_cycles.get(b, 0)

@@ -1,0 +1,13 @@
+bin
+common/link.ld
+*.S
+*.o
+*.a
+*.exe
+*log*
+se_build/
+output/
+*.input
+*.in
+*.mtx
+*.nets

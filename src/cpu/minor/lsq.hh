@@ -386,6 +386,89 @@ class LSQ : public Named
         { }
     };
 
+    /** Batches several independent, non-contiguous element accesses (e.g.
+     *  the elements of a strided vector load) into a single LSQRequest, so
+     *  their memory requests can be in flight concurrently instead of each
+     *  paying a full round trip before the next one is even issued - unlike
+     *  SplitDataRequest, whose fragments are contiguous sub-ranges of one
+     *  address split only at cache-line boundaries, this request's
+     *  fragments can be at arbitrary, independent addresses. Modelled
+     *  closely on SplitDataRequest's translation/issue/retire machinery.
+     *  Restricted to the unmasked case by its caller - see
+     *  LSQ::pushElementBatchRequest(). */
+    class ElementBatchDataRequest : public LSQRequest
+    {
+      protected:
+        /** Event to step between translations */
+        EventFunctionWrapper translationEvent;
+
+        /** Number of elements in this batch (== elemAddrs.size()) */
+        unsigned int numFragments;
+
+        /** Number of fragments in the address translation mechanism */
+        unsigned int numInTranslationFragments;
+
+        /** Number of fragments that have completed address translation */
+        unsigned int numTranslatedFragments;
+
+        /** Number of fragments already issued to memory */
+        unsigned int numIssuedFragments;
+
+        /** Number of fragments retired back to this request */
+        unsigned int numRetiredFragments;
+
+        /** Size, in bytes, of a single element */
+        unsigned int elemSize;
+
+        /** Independent virtual address of each element in the batch */
+        std::vector<Addr> elemAddrs;
+
+        /** Fragment Requests corresponding to each element's address */
+        std::vector<RequestPtr> fragmentRequests;
+
+        /** Packets matching fragmentRequests to issue to memory */
+        std::vector<Packet *> fragmentPackets;
+
+      protected:
+        /** TLB response interface */
+        void finish(const Fault &fault_, const RequestPtr &request_,
+                    ThreadContext *tc, BaseMMU::Mode mode);
+
+      public:
+        ElementBatchDataRequest(LSQ &port_, MinorDynInstPtr inst_,
+            bool isLoad_, PacketDataPtr data_, uint64_t *res_,
+            std::vector<Addr> elem_addrs_, unsigned int elem_size_);
+
+        ~ElementBatchDataRequest();
+
+      public:
+        /** Make one Request per element, at that element's own address */
+        void makeFragmentRequests();
+
+        /** Make the packets to go with the requests */
+        void makeFragmentPackets();
+
+        void startAddrTranslation();
+
+        PacketPtr getHeadPacket();
+
+        void stepToNextPacket();
+
+        bool hasPacketsInMemSystem()
+        { return numIssuedFragments != numRetiredFragments; }
+
+        bool sentAllPackets()
+        { return numIssuedFragments == numTranslatedFragments; }
+
+        /** Looks up which element a response belongs to by matching its
+         *  address (responses may arrive out of order since fragments are
+         *  pipelined) rather than assuming response order matches issue
+         *  order. */
+        void retireResponse(PacketPtr packet_);
+
+        void sendNextFragmentToTranslation();
+    };
+
     class SplitDataRequest : public LSQRequest
     {
       protected:
@@ -717,6 +800,15 @@ class LSQ : public Named
                       uint64_t *res, AtomicOpFunctorPtr amo_op,
                       const std::vector<bool>& byte_enable =
                           std::vector<bool>());
+
+    /** Push a batch of independent, equally-sized element accesses (e.g.
+     *  the elements of an unmasked strided vector load) as a single
+     *  in-flight LSQ request - see ElementBatchDataRequest. All elements
+     *  are assumed active (unmasked); callers with a mask should fall back
+     *  to individual pushRequest() calls instead. */
+    Fault pushElementBatchRequest(MinorDynInstPtr inst, bool isLoad,
+                      uint8_t *data, const std::vector<Addr> &elem_addrs,
+                      unsigned int elem_size, Request::Flags flags);
 
     /** Push a predicate failed-representing request into the queues just
      *  to maintain commit order */

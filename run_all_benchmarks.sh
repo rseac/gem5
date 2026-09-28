@@ -1,10 +1,18 @@
 #!/bin/bash
 mkdir -p m5out
 
-# Need some benchmarks to pass extra args as noted in HANDOFF.md:
-# matmul, particlefilter, somier, swaptions
-# But run_gem5_ara.py might not support arbitrary trailing args properly unless configured.
-# Let's just run them as-is.
+declare -A args
+args["_axpy"]=""
+args["_blackscholes"]=""
+args["_jacobi-2d"]=""
+args["_lavaMD"]=""
+args["_matmul"]="apps_gem5/riscv-vectorized-benchmark-suite/_matmul/input/data_64.in"
+args["_particlefilter"]="-x 128 -y 128 -z 2 -np 256"
+args["_pathfinder"]=""
+args["_somier"]="5 10"
+args["_spmv"]=""
+args["_streamcluster"]=""
+args["_swaptions"]="-run"
 
 BENCHMARKS=(
     "_axpy:axpy_se.exe"
@@ -26,7 +34,11 @@ for entry in "${BENCHMARKS[@]}"; do
     bin_name="${entry##*:}"
     
     echo "Running $bench_name ($bin_name)..."
-    docker run --rm -v $(pwd):/gem5 -w /gem5 rseac/gem5-ara:latest build/RISCV/gem5.opt run_gem5_ara.py apps_gem5/bin/$bin_name > m5out/out_${bench_name}.txt 2>&1
+    if [ -z "${args[$bench_name]}" ]; then
+        docker run --rm -v $(pwd):/gem5 -w /gem5 rseac/gem5-ara:latest build/RISCV/gem5.opt run_gem5_ara.py apps_gem5/bin/$bin_name > m5out/out_${bench_name}.txt 2>&1
+    else
+        docker run --rm -v $(pwd):/gem5 -w /gem5 rseac/gem5-ara:latest build/RISCV/gem5.opt run_gem5_ara.py apps_gem5/bin/$bin_name "${args[$bench_name]}" > m5out/out_${bench_name}.txt 2>&1
+    fi
 done
 
 echo "Parsing results:"

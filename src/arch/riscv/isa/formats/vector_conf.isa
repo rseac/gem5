@@ -178,6 +178,22 @@ def template VConfExecute {{
 
 
 
+        // Only touch PCState (and so only trigger MinorCPU's normal
+        // predicted-vs-actual squash) when vl/vtype actually change. This
+        // was previously unconditional, so every vsetvli - even ones
+        // re-asserting the exact same configuration, which kernels that
+        // call it inside a hot loop with a fixed AVL do on every iteration
+        // (e.g. matmul once or twice per output element) - forced a full
+        // pipeline squash+refetch regardless of whether anything needed to
+        // be corrected.
+        if (new_vl != current_vl || (uint64_t)new_vtype != (uint64_t)Vtype) {
+            RiscvISA::PCState pc = tc->pcState().as<RiscvISA::PCState>();
+            pc.vl(new_vl);
+            pc.vtype(new_vtype);
+            pc.new_vconf(true);
+            xc->pcState(pc);
+        }
+
         %(write_code)s;
 
         %(op_wb)s;

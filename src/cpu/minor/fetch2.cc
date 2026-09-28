@@ -40,6 +40,7 @@
 #include <string>
 
 #include "arch/generic/decoder.hh"
+#include "arch/riscv/pcstate.hh"
 #include "base/logging.hh"
 #include "base/trace.hh"
 #include "cpu/minor/pipeline.hh"
@@ -206,6 +207,24 @@ Fetch2::predictBranch(MinorDynInstPtr inst, BranchData &branch)
         cpu.fetchStats[inst->id.threadId]->numBranches++;
         if (branchPredictor.predict(inst->staticInst,
                     inst->id.fetchSeqNum, *inst_pc, inst->id.threadId)) {
+            // Propagate this instruction's vl/vtype forward onto the
+            // predicted PCState, so a vsetvli's new configuration reaches
+            // the next fetched instruction correctly (see
+            // ara_gem5_vsetvli_bug.md). This previously did a blanket
+            // set(inst_pc, inst->pc) that overwrote the *entire* predicted
+            // PCState with the branch instruction's own - including
+            // _compressed (16- vs 32-bit width), which predict() had
+            // already set correctly for the target and has nothing to do
+            // with the branch instruction's own width. That mismatch made
+            // the predicted PCState disagree with the real fetched target's
+            // PCState on essentially every taken branch, not just vsetvli,
+            // forcing a full squash+refetch on every one of them.
+            RiscvISA::PCState *riscv_pc =
+                static_cast<RiscvISA::PCState *>(inst_pc.get());
+            const RiscvISA::PCState *riscv_inst_pc =
+                static_cast<const RiscvISA::PCState *>(inst->pc.get());
+            riscv_pc->vl(riscv_inst_pc->vl());
+            riscv_pc->vtype(riscv_inst_pc->vtype());
             set(branch.target, *inst_pc);
             inst->predictedTaken = true;
             set(inst->predictedTarget, inst_pc);

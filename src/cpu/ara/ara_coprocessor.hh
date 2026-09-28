@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <unordered_set>
 #include <vector>
 #ifndef __CPU_ARA_ARA_COPROCESSOR_HH__
 #define __CPU_ARA_ARA_COPROCESSOR_HH__
@@ -15,6 +16,14 @@
 namespace gem5
 {
 // ... (VectorRegisterFile, OperandRequester, VectorLane definitions) ...
+
+
+    struct WritebackEvent {
+        InstSeqNum seqNum;
+        uint32_t destReg;
+        unsigned byteIndex;
+        uint64_t readyCycle;
+    };
 
 class VectorRegisterFile {
   private:
@@ -58,19 +67,31 @@ class VectorRegisterFile {
     }
 
     void addRead(unsigned reg_idx) {
-        if (reg_idx < pendingReads.size()) { pendingReads[reg_idx]++; printf("addRead(%d) -> %d\n", reg_idx, pendingReads[reg_idx]); }
+        if (reg_idx < pendingReads.size()) {
+            pendingReads[reg_idx]++;
+            if (reg_idx == 7) printf("[v7] addRead -> %d\n", pendingReads[reg_idx]);
+        }
     }
-    
+
     void removeRead(unsigned reg_idx) {
-        if (reg_idx < pendingReads.size()) { pendingReads[reg_idx]--; printf("removeRead(%d) -> %d\n", reg_idx, pendingReads[reg_idx]); }
+        if (reg_idx < pendingReads.size()) {
+            pendingReads[reg_idx]--;
+            if (reg_idx == 7) printf("[v7] removeRead -> %d\n", pendingReads[reg_idx]);
+        }
     }
-    
+
     void addWrite(unsigned reg_idx) {
-        if (reg_idx < pendingWrites.size()) pendingWrites[reg_idx]++;
+        if (reg_idx < pendingWrites.size()) {
+            pendingWrites[reg_idx]++;
+            if (reg_idx == 7) printf("[v7] addWrite -> %d\n", pendingWrites[reg_idx]);
+        }
     }
-    
+
     void removeWrite(unsigned reg_idx) {
-        if (reg_idx < pendingWrites.size()) pendingWrites[reg_idx]--;
+        if (reg_idx < pendingWrites.size()) {
+            pendingWrites[reg_idx]--;
+            if (reg_idx == 7) printf("[v7] removeWrite -> %d\n", pendingWrites[reg_idx]);
+        }
     }
     
     int getPendingReads(unsigned reg_idx) const { return pendingReads[reg_idx]; }
@@ -146,7 +167,7 @@ class VectorLane {
 
     bool isQueueEmpty() const { return instQueue.empty(); }
 
-    bool tick(std::vector<InstSeqNum>& completedInsts) {
+    bool tick(std::vector<InstSeqNum>& completedInsts, std::vector<WritebackEvent>& writebackQueue, uint64_t currentCycle) {
         if (instQueue.empty()) return false;
 
         InFlightInst& activeInst = instQueue.front();
@@ -180,12 +201,17 @@ class VectorLane {
             // instructions in the lane queue can observe writeback.
             // All 4 lanes run in lockstep, so let Lane 0 mark the full 32 bytes for the whole cycle
             if (laneId == 0 && activeInst.hasVrfDest && !activeInst.destIsOwnSource) {
-                // datapathBytes is e.g. 8 bytes per lane, 4 lanes = 32 bytes per cycle total
                 unsigned bytesPerCycle = datapathBytes * 4; 
                 unsigned bytesDone = activeInst.chunksProcessed * bytesPerCycle;
                 unsigned byteStart = bytesDone - bytesPerCycle;
+                
+                int pipelineLatency = 1;
+                if (activeInst.inst->getName().find("vf") != std::string::npos) {
+                    pipelineLatency = 5;
+                }
+                
                 for (unsigned b = byteStart; b < bytesDone; b++) {
-                    vrf->markReady(activeInst.dest, b);
+                    writebackQueue.push_back({activeInst.seqNum, activeInst.dest, b, currentCycle + pipelineLatency});
                 }
             }
 
@@ -223,11 +249,20 @@ class AraCoprocessor : public ClockedObject
     VectorRegisterFile vrf;
     std::vector<VectorLane> lanes;
 
-    struct PendingCmd { StaticInstPtr inst; ThreadContext *tc; InstSeqNum seqNum; };
+    // vl/vtype are captured by the caller at the instruction's actual issue
+    // time (see pushInstruction() below) rather than a ThreadContext
+    // pointer read lazily here - the command queue can back up behind busy
+    // lanes, and vsetvli isn't gated on Ara completion (see isAraInst() in
+    // execute.cc), so a live readMiscReg() at dequeue time can pick up a
+    // later, unrelated vsetvli's VL/VTYPE instead of this instruction's own.
+    struct PendingCmd {
+        StaticInstPtr inst; uint32_t vl; uint64_t vtype; InstSeqNum seqNum;
+    };
     std::queue<PendingCmd> commandQueue;
 
     // Track active memory instructions separately to model decoupled VLSU
     std::vector<InFlightInst> memoryQueue;
+    std::vector<WritebackEvent> writebackQueue;
 
     // A request the port declined (sendTimingReq() returned false); held
     // here until recvReqRetry() lets us resend it. While set, no further
@@ -286,26 +321,28 @@ class AraCoprocessor : public ClockedObject
     // is the issuing MinorDynInst's unique id (id.execSeqNum) - see the
     // InFlightInst::seqNum comment for why StaticInstPtr alone can't
     // identify which dynamic occurrence this is.
-    void pushInstruction(StaticInstPtr inst, ThreadContext* tc,
+    void pushInstruction(StaticInstPtr inst, uint32_t vl, uint64_t vtype,
         InstSeqNum seq_num);
 
-    // Scalar-Vector synchronization, keyed by seqNum (see above).
-    std::vector<InstSeqNum> completedInstructions;
+    // Scalar-Vector synchronization, keyed by seqNum (see above). A hash
+    // set rather than a vector: hasCompleted() is called on every commit
+    // attempt for every vector instruction, so a linear scan here becomes
+    // an O(n^2) blowup over a long run - it looks like a livelock (100%
+    // CPU, no forward progress) once enough instructions have completed,
+    // even though markCommitted() is (now) called to keep this from
+    // growing unboundedly in the first place.
+    std::unordered_set<InstSeqNum> completedInstructions;
 
     bool hasCompleted(InstSeqNum seq_num) {
-        auto it = std::find(completedInstructions.begin(), completedInstructions.end(), seq_num);
-        return it != completedInstructions.end();
+        return completedInstructions.count(seq_num) != 0;
     }
 
     void markCommitted(InstSeqNum seq_num) {
-        auto it = std::find(completedInstructions.begin(), completedInstructions.end(), seq_num);
-        if (it != completedInstructions.end()) {
-            completedInstructions.erase(it);
-        }
+        completedInstructions.erase(seq_num);
     }
 
     void markCompleted(InstSeqNum seq_num) {
-        completedInstructions.push_back(seq_num);
+        completedInstructions.insert(seq_num);
     }
 
     bool isQueueEmpty() const {
