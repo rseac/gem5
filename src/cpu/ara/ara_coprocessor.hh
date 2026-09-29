@@ -93,7 +93,7 @@ class VectorRegisterFile {
             if (reg_idx == 7) printf("[v7] removeWrite -> %d\n", pendingWrites[reg_idx]);
         }
     }
-    
+
     int getPendingReads(unsigned reg_idx) const { return pendingReads[reg_idx]; }
     int getPendingWrites(unsigned reg_idx) const { return pendingWrites[reg_idx]; }
     bool hasHazard(unsigned reg_idx) const {
@@ -143,18 +143,21 @@ class VectorLane {
   private:
     unsigned laneId;
     unsigned datapathBytes;
+    unsigned numLanes;
     VectorRegisterFile* vrf;
 
     // Pipelined Instruction Queues for this lane
     std::queue<InFlightInst> instQueue;
-    
+
     // Active Execution State
     OperandRequester reqA;
     OperandRequester reqB;
 
   public:
-    VectorLane(unsigned id, unsigned width_bits, VectorRegisterFile* _vrf) 
-        : laneId(id), datapathBytes(width_bits / 8), vrf(_vrf), reqA(_vrf), reqB(_vrf) {}
+    VectorLane(unsigned id, unsigned width_bits, unsigned num_lanes,
+               VectorRegisterFile* _vrf)
+        : laneId(id), datapathBytes(width_bits / 8), numLanes(num_lanes),
+          vrf(_vrf), reqA(_vrf), reqB(_vrf) {}
 
     void pushInstruction(InFlightInst finst) {
         instQueue.push(finst);
@@ -187,11 +190,22 @@ class VectorLane {
         
         bool srcA_ready = true;
         bool srcB_ready = true;
-        
-        // We only care if it's currently pending write from ANOTHER instruction
+
+        // We only care if it's currently pending write from ANOTHER instruction.
+        // Gated by numSrcRegs, matching every addRead/removeRead call site (see
+        // the vec_src_count comment in processTick()): when an instruction has
+        // fewer than 2 real vector sources, srcA/srcB default to 0, which
+        // aliases the real v0 mask register. Checking an unused defaulted
+        // operand made every 1-source instruction (e.g. vlff_trimvl_v_micro)
+        // spuriously wait on v0's readiness even though v0 was never one of
+        // its actual operands - at num_lanes=8, where more chunks widen the
+        // window during which v0 is legitimately pending from an unrelated
+        // instruction, this phantom dependency caused a permanent deadlock.
         for (unsigned b = 0; b < bytesNeeded; b++) {
-            if (!vrf->isReady(activeInst.srcA, b)) srcA_ready = false;
-            if (!vrf->isReady(activeInst.srcB, b)) srcB_ready = false;
+            if (activeInst.numSrcRegs > 0 && !vrf->isReady(activeInst.srcA, b))
+                srcA_ready = false;
+            if (activeInst.numSrcRegs > 1 && !vrf->isReady(activeInst.srcB, b))
+                srcB_ready = false;
         }
 
         if (srcA_ready && srcB_ready) {
@@ -199,17 +213,28 @@ class VectorLane {
 
             // Mark dest bytes ready as they're produced, so downstream
             // instructions in the lane queue can observe writeback.
-            // All 4 lanes run in lockstep, so let Lane 0 mark the full 32 bytes for the whole cycle
+            // All lanes run in lockstep, so let Lane 0 mark the full
+            // datapathBytes*numLanes bytes for the whole cycle. This was
+            // previously hardcoded to `datapathBytes * 4`, which happened
+            // to be correct only because num_lanes=4 was the only
+            // configuration ever tested - at any other lane count, this
+            // marked fewer destination bytes ready per chunk than the
+            // instruction's own totalChunksNeeded (computed elsewhere
+            // from the real numLanes) assumed, so the last bytes of any
+            // sufficiently large destination register were NEVER marked
+            // ready, permanently hazarding any later instruction that
+            // read them - a genuine, previously-undiscovered deadlock at
+            // num_lanes=8 caught by an unseen-benchmark sweep.
             if (laneId == 0 && activeInst.hasVrfDest && !activeInst.destIsOwnSource) {
-                unsigned bytesPerCycle = datapathBytes * 4; 
+                unsigned bytesPerCycle = datapathBytes * numLanes;
                 unsigned bytesDone = activeInst.chunksProcessed * bytesPerCycle;
                 unsigned byteStart = bytesDone - bytesPerCycle;
-                
+
                 int pipelineLatency = 1;
                 if (activeInst.inst->getName().find("vf") != std::string::npos) {
                     pipelineLatency = 5;
                 }
-                
+
                 for (unsigned b = byteStart; b < bytesDone; b++) {
                     writebackQueue.push_back({activeInst.seqNum, activeInst.dest, b, currentCycle + pipelineLatency});
                 }

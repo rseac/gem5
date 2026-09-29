@@ -119,14 +119,21 @@ system.cpu = MinorCPU(
 )
 
 
+# Lane count and VLEN are configurable via ARA_LANES/ARA_VLEN env vars
+# (default 4/4096, matching every prior use of this script) so the same
+# AraCoprocessor config VP++ was validated across (2/4/8 lanes x
+# 1024/2048/4096 VLEN) can be swept without touching this file per run.
+ara_lanes = int(os.environ.get("ARA_LANES", 4))
+ara_vlen = int(os.environ.get("ARA_VLEN", 4096))
+
 # RiscvISA's own vlen (default 256 bits) is the *real* architectural VLEN
 # that vsetvli honors - it is a separate parameter from AraCoprocessor's
 # own vlen below (which only sizes the coprocessor's internal mock model)
 # and was previously left unset, silently running every benchmark at 1/16
 # of the RTL baseline's VLEN=4096 and thus ~16x more vector-loop trips.
-system.cpu.isa = [RiscvISA(vlen=4096, elen=64)]
+system.cpu.isa = [RiscvISA(vlen=ara_vlen, elen=64)]
 
-system.cpu.araCoprocessor = AraCoprocessor(num_lanes=4, vlen=4096)
+system.cpu.araCoprocessor = AraCoprocessor(num_lanes=ara_lanes, vlen=ara_vlen)
 system.membus = SystemXBar(width=512, forward_latency=0, response_latency=0, snoop_response_latency=0, header_latency=0)
 system.cpu.icache_port = system.membus.cpu_side_ports
 system.cpu.dcache_port = system.membus.cpu_side_ports

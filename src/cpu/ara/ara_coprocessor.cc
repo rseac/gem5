@@ -20,7 +20,7 @@ AraCoprocessor::AraCoprocessor(const AraCoprocessorParams &params) :
 {
     // Initialize the vector lanes
     for (unsigned i = 0; i < numLanes; i++) {
-        lanes.emplace_back(i, datapathWidth, &vrf);
+        lanes.emplace_back(i, datapathWidth, numLanes, &vrf);
     }
 }
 
@@ -211,8 +211,26 @@ AraCoprocessor::processTick()
         DPRINTF(AraCoprocessor, "Read CSRs for %s. VL: %u, SEW: %u\n",
                 inst->getName(), active_vl, sew_bits);
 
+        // Memory (VLSU) instructions are processed by the memory queue at
+        // axiDataWidth bytes/cycle (see the "Execute VLSU Queue" block
+        // below), not by the vector lanes at numLanes*datapathWidth
+        // bytes/cycle. Sizing chunks_needed off the lane bandwidth for a
+        // memory op is only safe when the lane bandwidth happens to be <=
+        // the AXI bandwidth (true for every num_lanes<=4 config, since
+        // 4*64 == the default 256-bit axiDataWidth) - at num_lanes=8, the
+        // lane-bandwidth chunk (8*64=512 bits=64 bytes) is larger than one
+        // AXI-paced writeback tick (256 bits=32 bytes), so a load needing
+        // e.g. 40 bytes was marked totalChunksNeeded=1 (looks done after a
+        // single AXI tick) while the memory queue's own writeback loop
+        // (bytesDone = chunksProcessed * axiDataWidth/8) had only actually
+        // marked the first 32 of those 40 bytes ready - the last 8 bytes
+        // were NEVER marked ready, permanently hazarding any later
+        // instruction that read them. A genuine, previously-undiscovered
+        // deadlock at num_lanes=8, independent of the earlier VectorLane
+        // writeback-granularity bug also found by the same sweep.
+        bool isMemInst = inst->isLoad() || inst->isStore();
         unsigned total_bits = active_vl * sew_bits;
-        unsigned bits_per_cycle = numLanes * datapathWidth;
+        unsigned bits_per_cycle = isMemInst ? axiDataWidth : (numLanes * datapathWidth);
         unsigned chunks_needed = (total_bits + bits_per_cycle - 1) / bits_per_cycle;
 
         std::string instName = inst->getName();
