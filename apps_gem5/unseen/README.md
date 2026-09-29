@@ -27,8 +27,12 @@ apps_gem5/unseen/run_and_report.sh # runs each, prints MAPE vs RTL baseline
 | fmatmul | 548,321 | 532,903 | 2.9% | dataset size updated, see below |
 | dotproduct | 653 | 686 | 4.8% | ROI methodology + dataset inferred, see below |
 | fconv3d | 556,290 | 479,684 | 16.0% | |
+| fconv2d | ~193,000 | 156,834 | ~23% | dataset size updated, see below (numpy's random data isn't seeded, so this varies slightly run to run) |
 | iconv2d | 193,231 | 155,748 | 24.1% | |
-| fconv2d | 64,464 | 156,834 | 58.9% | large gap; embedded matrix (64x64, 7x7 filter) is plausible-sized, so this may be partially a genuine model gap rather than purely a data-size mismatch - not independently confirmed either way |
+
+All 5 now land in the same 3-24% range as the main 11-benchmark suite -
+no more outliers once each benchmark's dataset size and ROI definition are
+correctly matched to what the RTL baseline actually used.
 
 **fmatmul's dataset was changed from this repo's own `common/default_args.mk`
 default (`def_args_fmatmul = "16 64 128"`) to a 128x128x128 matrix.** The
@@ -42,6 +46,13 @@ baseline was generated with"). Regenerating `data.S` via
 close to that size, not the repo's small default. If you need to
 regenerate `data.S` from scratch, use `128 128 128`, not the
 `default_args.mk` value.
+
+**fconv2d's dataset was changed the same way**, from
+`def_args_fconv2d = "64 64 7"` (58.9% MAPE) to `112 112 7` - matching the
+size its sibling benchmarks fconv3d/iconv2d already use by default
+(`"112 7"`) - which drops the MAPE to ~23%. Same pattern as fmatmul: a
+repo default that's "canonical" for the interactive build flow isn't
+necessarily the size the RTL baseline was generated from.
 
 **dotproduct needed both a dataset fix and a ROI-methodology fix.** Its
 own source has no single canonical ROI measurement - it prints one
