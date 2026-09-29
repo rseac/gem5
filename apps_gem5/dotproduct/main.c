@@ -62,6 +62,15 @@ int main() {
 
   int64_t runtime_s, runtime_v;
 
+  // This benchmark, unlike the others in this family, has no single
+  // canonical ROI measurement in its original source - it prints a
+  // "Vector runtime" per inner stripmining iteration across four
+  // datatypes, with no outer wrap. Added here for a single, comparable
+  // [ROI-LATENCY] figure covering the whole vector+scalar workload;
+  // this is our own interpretation, not verified against the exact
+  // region the original RTL/paper baseline measured.
+  int64_t roi_start = get_cycle_count();
+
   for (uint64_t avl = 8; avl <= (vsize >> 3); avl *= 8) {
     // Dotp
     printf("Calulating 64b dotp with vectors with length = %lu\n", avl);
@@ -161,6 +170,9 @@ int main() {
       }
     }
   }
+
+  int64_t roi_cycles = get_cycle_count() - roi_start;
+  printf("[ROI-LATENCY]: %ld cycles\n", roi_cycles);
 
   printf("SUCCESS.\n");
 
