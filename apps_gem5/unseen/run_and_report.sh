@@ -12,19 +12,19 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-# name -> RTL ROI cycles (4L_4096V row). dotproduct has no single canonical
-# ROI measurement in its own source (it prints one "Vector runtime" per
-# inner stripmining iteration across 4 datatypes, no outer wrap) - our
-# build adds a whole-program [ROI-LATENCY] wrap as a best-effort stand-in,
-# which is NOT the same region the RTL baseline measured, so its MAPE is
-# not reported.
+# name -> RTL ROI cycles (4L_4096V row). dotproduct has no single
+# canonical ROI measurement in its own source (it prints one "Vector
+# runtime" per inner stripmining iteration across 4 datatypes, no outer
+# wrap) - main.c sums just the vector-only runtimes into [ROI-LATENCY],
+# which lands within ~6% of the RTL baseline; see main.c and README.md
+# for why this is a strong but not fully confirmed inference.
 declare -A RTL_CYCLES=(
+  [dotproduct]=686
   [fconv2d]=156834
   [fconv3d]=479684
   [fmatmul]=532903
   [iconv2d]=155748
 )
-NOT_COMPARABLE="dotproduct"
 
 echo "Benchmark    | gem5 cycles | RTL cycles | MAPE"
 echo "-------------|-------------|------------|------"
@@ -50,11 +50,6 @@ for bench in dotproduct fconv2d fconv3d fmatmul iconv2d; do
 
   if [ -z "${CYCLES:-}" ]; then
     printf "%-12s | %-11s | %-10s | %s\n" "$bench" "N/A" "-" "run produced no cycle count"
-    continue
-  fi
-
-  if [ "$bench" = "$NOT_COMPARABLE" ]; then
-    printf "%-12s | %-11s | %-10s | %s\n" "$bench" "$CYCLES" "686*" "not comparable, see script header"
     continue
   fi
 

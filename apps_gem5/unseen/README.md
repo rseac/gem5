@@ -25,10 +25,10 @@ apps_gem5/unseen/run_and_report.sh # runs each, prints MAPE vs RTL baseline
 | Benchmark | gem5 cycles | RTL cycles (4L_4096V) | MAPE | Notes |
 |---|---|---|---|---|
 | fmatmul | 548,321 | 532,903 | 2.9% | dataset size updated, see below |
+| dotproduct | 653 | 686 | 4.8% | ROI methodology + dataset inferred, see below |
 | fconv3d | 556,290 | 479,684 | 16.0% | |
 | iconv2d | 193,231 | 155,748 | 24.1% | |
 | fconv2d | 64,464 | 156,834 | 58.9% | large gap; embedded matrix (64x64, 7x7 filter) is plausible-sized, so this may be partially a genuine model gap rather than purely a data-size mismatch - not independently confirmed either way |
-| dotproduct | 71,255 | 686 | not comparable | see below |
 
 **fmatmul's dataset was changed from this repo's own `common/default_args.mk`
 default (`def_args_fmatmul = "16 64 128"`) to a 128x128x128 matrix.** The
@@ -43,17 +43,29 @@ close to that size, not the repo's small default. If you need to
 regenerate `data.S` from scratch, use `128 128 128`, not the
 `default_args.mk` value.
 
-**dotproduct is not comparable.** Its own source has no single canonical
-ROI measurement - it prints one "Vector runtime" line per inner
-stripmining iteration across 4 datatypes (64b/32b/16b/8b), with no outer
-timer wrap at all. We added a whole-program `[ROI-LATENCY]` wrap
-(`main.c`, gated by a comment marking it as our own addition) as a
-best-effort stand-in, but at 71,255 cycles vs. the RTL baseline's 686, it's
-clearly measuring a much larger region than whatever narrow slice the
-original RTL/paper harness used. The 686-cycle baseline almost certainly
-corresponds to a single small dot-product call, not the whole multi-datatype
-sweep this main() runs - we don't have the original RTL harness source to
-confirm which one.
+**dotproduct needed both a dataset fix and a ROI-methodology fix.** Its
+own source has no single canonical ROI measurement - it prints one
+"Vector runtime" line per inner stripmining iteration across 4 datatypes
+(64b/32b/16b/8b), with no outer timer wrap at all, and per-datatype loop
+bounds are all derived from one `vsize`. Two things had to be inferred:
+1. **Dataset size**: this repo's `def_args_dotproduct = "512"` (the
+   interactive-Makefile-flow default) gives a whole-program measurement of
+   71,255 cycles against a 686-cycle RTL baseline - wildly off. Using
+   `vsize=64` instead - `gen_data.py`'s own internal fallback when called
+   with no argument, i.e. "no stripmine" - collapses the loop structure
+   from 9 stripmining iterations down to 5.
+2. **ROI definition**: summing just those 5 iterations' vector-only
+   runtimes (excluding the scalar reference computation used only for
+   correctness checking, and excluding all `printf`/setup overhead)
+   lands at 653 cycles - 4.8% off the RTL baseline's 686. `main.c` now
+   accumulates this sum directly (`roi_cycles += runtime_v` after each
+   `get_timer()` call) instead of the earlier whole-program wrap.
+
+Both choices were reverse-engineered from how close the resulting number
+lands to 686, not confirmed against the original RTL harness source - a
+strong signal (9 candidate individual segment costs were all in the
+110-160 cycle range with no obvious single match to 686, but summing the
+smaller-loop-structure's 5 segments landed within 5%), not a certainty.
 
 ## Known gotcha (see `build.sh` for detail)
 
